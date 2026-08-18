@@ -1,0 +1,243 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>aria2c manager</title>
+<link rel="icon" href="/favicon.ico">
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <span class="logo">⇊</span>
+    <div>
+      <h1>aria2c manager</h1>
+      <span id="aria2-pill" class="pill pill-idle">connecting…</span>
+    </div>
+  </div>
+
+  <div class="stats">
+    <div class="stat"><label>Down</label><b id="stat-down">–</b></div>
+    <div class="stat"><label>Up</label><b id="stat-up">–</b></div>
+    <div class="stat"><label>Active</label><b id="stat-active">0</b></div>
+    <div class="stat"><label>Waiting</label><b id="stat-waiting">0</b></div>
+    <div class="stat"><label>Stopped</label><b id="stat-stopped">0</b></div>
+  </div>
+
+  <div class="topactions">
+    <div class="limitbox" title="Global speed limits — 0 means unlimited. Accepts K/M suffix.">
+      <label>↓ limit</label><input id="limit-down" size="6" placeholder="0">
+      <label>↑ limit</label><input id="limit-up" size="6" placeholder="0">
+      <label>max&nbsp;jobs</label><input id="limit-jobs" size="3" placeholder="5">
+      <button id="btn-limits" class="btn btn-small">Apply</button>
+    </div>
+    <button id="btn-add" class="btn btn-primary">+ Add download</button>
+    <button id="btn-pause-all" class="btn">Pause all</button>
+    <button id="btn-resume-all" class="btn">Resume all</button>
+    <button id="btn-purge" class="btn btn-danger" title="Remove completed/error results from the list">Purge</button>
+  </div>
+</header>
+
+<nav class="tabs">
+  <button class="tab active" data-tab="downloads">Downloads</button>
+  <button class="tab" data-tab="settings">Settings</button>
+  <button class="tab" data-tab="hosters">Hosters <span id="hoster-badge" class="badge">0</span></button>
+  <button class="tab" data-tab="rules">Rules <span id="rules-badge" class="badge">0</span></button>
+  <button class="tab" data-tab="log">Log</button>
+  <button class="tab" data-tab="help">Userscript</button>
+  <div class="spacer"></div>
+  <label class="switch" title="Master switch for all custom download-action rules">
+    <input type="checkbox" id="rules-master"><span>Rules engine</span>
+  </label>
+</nav>
+
+<main>
+  <!-- ---------------- downloads ---------------- -->
+  <section id="tab-downloads" class="tabpane active">
+    <div class="filterbar">
+      <button class="chip active" data-filter="all">All</button>
+      <button class="chip" data-filter="active">Active</button>
+      <button class="chip" data-filter="waiting">Queued</button>
+      <button class="chip" data-filter="paused">Paused</button>
+      <button class="chip" data-filter="complete">Complete</button>
+      <button class="chip" data-filter="error">Error</button>
+      <button class="chip chip-history" data-filter="history" title="Finished downloads the manager has recorded, kept across restarts">History</button>
+      <input id="search" class="search" placeholder="Filter by name…">
+    </div>
+    <div id="history-bar" class="historybar" hidden>
+      <span id="history-summary" class="hint"></span>
+      <button id="btn-history-clear" class="btn btn-small btn-danger">Clear history</button>
+    </div>
+    <div id="downloads" class="downloads"></div>
+    <p id="empty" class="empty">No downloads. Hit <b>+ Add download</b> or send one from the userscript.</p>
+  </section>
+
+  <!-- ---------------- settings ---------------- -->
+  <section id="tab-settings" class="tabpane">
+    <div class="panehead">
+      <h2>Global aria2 options</h2>
+      <div>
+        <input id="opt-search" class="search" placeholder="Filter options…">
+        <button id="btn-opt-reload" class="btn btn-small">Reload</button>
+        <button id="btn-opt-save" class="btn btn-primary btn-small">Save changed</button>
+      </div>
+    </div>
+    <p class="hint">Changes apply to the running aria2c immediately and are written to
+      <code id="cfg-path">config.yaml</code> so they survive a restart. Edited fields are highlighted.</p>
+    <div id="options-groups"></div>
+    <details id="options-advanced-wrap">
+      <summary>All options (advanced)</summary>
+      <div id="options-advanced" class="optgrid"></div>
+    </details>
+    <div class="panehead"><h2>aria2c process</h2></div>
+    <div id="proc-info" class="kv"></div>
+    <button id="btn-restart-aria2" class="btn btn-danger btn-small">Restart aria2c</button>
+  </section>
+
+  <!-- ---------------- hoster queue ---------------- -->
+  <section id="tab-hosters" class="tabpane">
+    <div class="panehead">
+      <h2>Hoster queue</h2>
+      <div>
+        <span id="hoster-status" class="pill pill-idle">idle</span>
+        <button id="btn-hoster-pause" class="btn btn-small">Pause queue</button>
+        <button id="btn-hoster-clear" class="btn btn-small">Clear finished</button>
+      </div>
+    </div>
+    <p class="hint">Paste <b>file page</b> links (not direct links). Each one is resolved
+      to a fresh direct link only when its turn comes, handed to aria2, and the next
+      starts once it finishes. Sites needing a wait are waited out; a captcha is handed
+      to you — <span id="hoster-sites"></span></p>
+
+    <div class="addrow">
+      <textarea id="hoster-urls" rows="2"
+        placeholder="https://www.mediafire.com/file/…/file&#10;https://kenfiles.com/…"></textarea>
+      <div class="addrow-side">
+        <input id="hoster-dir" placeholder="Save to (optional)">
+        <button id="btn-hoster-add" class="btn btn-primary">Queue links</button>
+      </div>
+    </div>
+
+    <div id="hoster-list" class="downloads"></div>
+    <p id="hoster-empty" class="empty">Queue is empty.</p>
+  </section>
+
+  <!-- ---------------- rules ---------------- -->
+  <section id="tab-rules" class="tabpane">
+    <div class="panehead">
+      <h2>Custom download actions</h2>
+      <div>
+        <label class="inline-field" title="Which speed figure rules judge by">
+          <span>Judge speed by</span>
+          <select id="rules-speed-source">
+            <option value="hybrid">measured, else aria2 (default)</option>
+            <option value="measured">measured write speed only</option>
+            <option value="aria2">aria2's reported speed</option>
+          </select>
+        </label>
+        <button id="btn-rule-add" class="btn btn-small">+ New rule</button>
+        <button id="btn-rules-save" class="btn btn-primary btn-small">Save rules</button>
+      </div>
+    </div>
+    <p class="hint">A rule fires when its conditions hold <em>continuously</em> for the
+      hold time, then that download enters cooldown. Default rule: pause+resume when speed
+      stays under 50&nbsp;KiB/s for 3&nbsp;s.</p>
+    <div id="rules-list"></div>
+    <div class="panehead"><h2>Recent triggers</h2></div>
+    <div id="rule-triggers" class="loglist"></div>
+  </section>
+
+  <!-- ---------------- log ---------------- -->
+  <section id="tab-log" class="tabpane">
+    <div class="panehead">
+      <h2>Event log</h2>
+      <div><button id="btn-log-clear" class="btn btn-small">Clear view</button></div>
+    </div>
+    <div id="loglist" class="loglist"></div>
+  </section>
+
+  <!-- ---------------- help ---------------- -->
+  <section id="tab-help" class="tabpane">
+    <div class="panehead"><h2>Tampermonkey integration</h2></div>
+    <p class="hint">Install <code>userscript/aria2c-catcher.user.js</code> in Tampermonkey. It
+      sends downloads here with the page's cookies, referer and user-agent, so
+      login-protected files still work.</p>
+    <div class="kv">
+      <div><label>Intake endpoint</label><code id="help-endpoint"></code></div>
+      <div><label>Ping</label><code id="help-ping"></code></div>
+    </div>
+    <h3>Minimal request</h3>
+    <pre id="help-snippet"></pre>
+    <p class="hint">Any tool can use this: <code>curl -X POST … -d '{"url":"…"}'</code> works too.</p>
+  </section>
+</main>
+
+<!-- ---------------- add dialog ---------------- -->
+<dialog id="add-dialog">
+  <form id="add-form" method="dialog">
+    <h2>Add download</h2>
+
+    <label class="field">
+      <span>URLs <small>one per line — http(s), ftp, magnet:</small></span>
+      <textarea id="add-uris" rows="4" placeholder="https://example.com/file.iso&#10;magnet:?xt=urn:btih:…"></textarea>
+    </label>
+
+    <label class="field">
+      <span>…or a .torrent / .metalink file</span>
+      <input type="file" id="add-file" accept=".torrent,.meta4,.metalink">
+    </label>
+
+    <div class="grid2">
+      <label class="field"><span>Save to directory</span><input id="add-dir" placeholder="(default)"></label>
+      <label class="field"><span>Rename to <small>single file only</small></span><input id="add-out" placeholder="(from server)"></label>
+      <label class="field"><span>Connections per server <small>max-connection-per-server</small></span><input id="add-conn" type="number" min="1" max="16" placeholder="16"></label>
+      <label class="field"><span>Parts / split <small>split</small></span><input id="add-split" type="number" min="1" placeholder="16"></label>
+      <label class="field"><span>Min part size <small>min-split-size</small></span><input id="add-minsplit" placeholder="1M"></label>
+      <label class="field"><span>Speed limit <small>max-download-limit</small></span><input id="add-limit" placeholder="0"></label>
+      <label class="field"><span>Referer</span><input id="add-referer" placeholder="(none)"></label>
+      <label class="field"><span>User-Agent</span><input id="add-ua" placeholder="(default)"></label>
+      <label class="field"><span>Cookie header</span><input id="add-cookie" placeholder="k=v; k2=v2"></label>
+      <label class="field"><span>Proxy <small>all-proxy</small></span><input id="add-proxy" placeholder="(none)"></label>
+      <label class="field"><span>Checksum <small>e.g. sha-256=…</small></span><input id="add-checksum" placeholder="(none)"></label>
+      <label class="field"><span>Queue position <small>blank = end</small></span><input id="add-position" type="number" min="0" placeholder="end"></label>
+    </div>
+
+    <label class="field"><span>Extra headers <small>one per line, <code>Name: value</code></small></span>
+      <textarea id="add-headers" rows="2" placeholder="Authorization: Bearer …"></textarea></label>
+
+    <div class="checkrow">
+      <label><input type="checkbox" id="add-paused"> Add paused</label>
+      <label><input type="checkbox" id="add-mirrors"> Treat all URLs as mirrors of one file</label>
+    </div>
+
+    <div class="dialog-actions">
+      <button type="button" id="add-cancel" class="btn">Cancel</button>
+      <button type="button" id="add-submit" class="btn btn-primary">Add</button>
+    </div>
+  </form>
+</dialog>
+
+<div id="toasts" class="toasts"></div>
+<template id="row-template">
+  <article class="dl">
+    <div class="dl-main">
+      <button class="chev" title="Details">▸</button>
+      <div class="dl-body">
+        <div class="dl-title">
+          <span class="dl-name"></span>
+          <span class="dl-badges"></span>
+        </div>
+        <div class="bar"><div class="bar-fill"></div></div>
+        <div class="dl-meta"></div>
+      </div>
+      <div class="dl-actions"></div>
+    </div>
+    <div class="dl-detail" hidden></div>
+  </article>
+</template>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

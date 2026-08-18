@@ -1,0 +1,260 @@
+# aria2c-manager configuration.
+# Copy to config.yaml and edit. Every key is optional — anything you leave out
+# falls back to the built-in default shown here.
+#
+#   cp config.example.yaml config.yaml
+
+server:
+  # Loopback only. There is no authentication, so do not bind this to 0.0.0.0
+  # on a shared network.
+  host: 127.0.0.1
+  port: 6810
+  open_browser: false
+
+# How often the manager polls aria2 (seconds). This is also the tick rate of the
+# rules engine, so keep it at or below the smallest rule `for_seconds`.
+poll_interval: 1.0
+
+aria2:
+  # true  -> the manager spawns and supervises its own aria2c
+  # false -> attach to an aria2c you already run (set rpc.secret to match)
+  managed: true
+  binary: aria2c
+  restart_on_exit: true
+  startup_timeout: 20.0
+
+  # true  -> aria2c is shut down together with the manager (downloads pause and
+  #          resume next run; closing the terminal is handled gracefully)
+  # false -> aria2c is left running when the manager exits, so downloads carry on
+  #          in the background; the next run adopts it again
+  stop_on_exit: true
+
+  rpc:
+    host: 127.0.0.1
+    port: 6800
+    # Blank + managed: a random secret is generated and stored (mode 0600) at
+    # ~/.local/share/aria2c-manager/rpc-secret. It is kept rather than being
+    # per-run so that a NEW manager can still talk to an aria2c left behind by an
+    # old one (terminal closed, crash) and adopt it instead of failing to bind
+    # this port. Set one explicitly if you attach to an external aria2c.
+    secret: ""
+
+  # Downloads survive restarts through this session file.
+  session_file: ~/.local/share/aria2c-manager/aria2.session
+  log_file: ~/.local/share/aria2c-manager/aria2.log
+
+  # Raw aria2c flags appended last, for anything not covered below.
+  extra_args: []
+  #  - --bt-tracker=udp://tracker.opentrackr.org:1337/announce
+
+  # Passed to aria2c as --key=value and editable live from the Settings tab.
+  # Any valid aria2c long option works here; an invalid one stops aria2c from
+  # starting (check the log file if that happens).
+  options:
+    dir: ~/Downloads
+    continue: "true"
+
+    # Queue and parallelism
+    max-concurrent-downloads: "5"     # how many downloads run at once
+    max-connection-per-server: "16"   # parallel connections to one host (max 16)
+    split: "16"                       # parts a single file is cut into
+    min-split-size: "1M"              # don't split below this
+
+    # Retry behaviour
+    max-tries: "10"
+    retry-wait: "5"
+    timeout: "60"
+    connect-timeout: "30"
+
+    # Speed limits — 0 means unlimited; accepts K/M suffixes
+    max-overall-download-limit: "0"
+    max-download-limit: "0"
+    max-overall-upload-limit: "0"
+    max-upload-limit: "0"
+
+    # Disk
+    file-allocation: "prealloc"       # none | prealloc | trunc | falloc
+    auto-file-renaming: "true"
+    allow-overwrite: "false"
+    disk-cache: "32M"
+
+    # BitTorrent
+    follow-torrent: "true"
+    bt-max-peers: "55"
+    seed-ratio: "1.0"
+    enable-dht: "true"
+
+    # HTTP
+    http-accept-gzip: "true"
+    remote-time: "true"
+
+    # Logging
+    console-log-level: "warn"
+    log-level: "notice"
+    summary-interval: "0"
+
+# ---------------------------------------------------------------------------
+# Finished-download history.
+#
+# aria2's session file only stores downloads that are *unfinished* — that is what
+# makes resume work, but it means completed downloads disappear from the list on
+# the next restart, and aria2's own "purge" erases them sooner. The manager keeps
+# its own record so finished downloads stay listed under the History filter, with
+# enough detail to queue one again.
+#
+# This is bookkeeping only. In-progress downloads are never at risk: they live in
+# aria2's session file plus the .aria2 control file next to the partial file, and
+# resume automatically after a restart or a crash.
+history:
+  enabled: true
+  file: ~/.local/share/aria2c-manager/history.json
+  # Oldest entries are dropped past this count. 0 = unlimited.
+  max_entries: 2000
+
+# ---------------------------------------------------------------------------
+# Hoster queue.
+#
+# Holds *file page* URLs (https://www.mediafire.com/file/…/file,
+# https://kenfiles.com/…) rather than direct links. Each one is resolved to a
+# fresh direct link only when its turn arrives — these links expire quickly —
+# then handed to aria2. The next job starts once the current download finishes.
+#
+# Sites that only need a countdown are handled end to end. Sites with a captcha
+# park in "needs you": an image code can be typed into the web UI, while
+# Turnstile/reCAPTCHA/hCaptcha are never attempted automatically — their tokens
+# only exist inside a real browser. For those, "Open page" arms the userscript to
+# submit the forms, wait out the countdown and hand the finished link back, so
+# all you do is tick the box. If Cloudflare guards the page itself, the
+# userscript can share that host's cookies (incl. cf_clearance) and the manager
+# then resolves it server-side.
+hosters:
+  enabled: true
+
+  # 1 = strictly sequential: one download at a time, which is what free-tier
+  # hosts expect. Raise it only if you know the host tolerates parallel grabs.
+  max_active: 1
+
+  # How often the queue worker checks on things (seconds).
+  poll_interval: 1.0
+
+  # Refuse a host that demands a longer countdown than this (seconds).
+  wait_cap_seconds: 120
+
+  # Resolve/download attempts before a job is marked failed. A dead or deleted
+  # file fails immediately regardless.
+  max_attempts: 3
+  retry_backoff_seconds: 30
+
+  # The queue survives restarts through this file. Cookies shared from the
+  # browser (for hosts behind Cloudflare) go in hoster-cookies.json beside it,
+  # written 0600 and never returned by the API.
+  state_file: ~/.local/share/aria2c-manager/hosters.json
+
+  # Sent when scraping pages. Blank = a normal desktop Chrome string.
+  user_agent: ""
+
+  # Where hoster downloads land. Blank = aria2's own dir.
+  dir: ""
+
+  # XFileSharing clones share one code path — add their domains here and they
+  # work with no new code (kenfiles.com is built in).
+  xfilesharing_domains: []
+  #  - somefiles.example
+  #  - anotherhost.example
+
+  # Attach extra hosts to any resolver by name: {resolver: [hosts]}
+  # Resolver names: mediafire, xfilesharing, direct
+  resolver_domains: {}
+  #  mediafire: [mediafire-mirror.example]
+
+# ---------------------------------------------------------------------------
+# Custom download actions.
+#
+# Each rule watches every download once per poll tick. When all `when`
+# conditions hold *continuously* for `for_seconds`, the action fires once and
+# that download enters `cooldown_seconds` for this rule.
+#
+# Conditions (all optional, all must match):
+#   statuses:            list of aria2 statuses; default [active]
+#   speed_below:         download speed under N bytes/s
+#   speed_above:         download speed over N bytes/s
+#   connections_below:   fewer than N live connections
+#   min_age_seconds:     ignore downloads younger than this (avoids ramp-up)
+#   min_progress /
+#   max_progress:        percentage window
+#   min_size:            total size at least N bytes
+#   torrent_only:        true -> BitTorrent downloads only
+#   http_only:           true -> non-BitTorrent only
+#   name_matches:        regex against the download name
+#
+# Actions:
+#   pause_resume         pause, wait resume_after_seconds, unpause  <- the classic stall fix
+#                        Pausing frees a concurrency slot and aria2 starts the
+#                        next queued download, so by default the action takes the
+#                        slot back afterwards (`preserve_slot: true`). Set it to
+#                        false to leave aria2's own behaviour alone, in which case
+#                        the stalled download swaps places with the next one.
+#   force_pause_resume   same, but drops connections immediately
+#   restart              remove and re-add with the same URLs/options (HTTP/FTP only)
+#   set_option           apply `options:` to that download (e.g. fewer connections)
+#   stop                 pause and leave it paused
+#   log_only             just record it in the log
+#
+# Safety valves: cooldown_seconds and max_triggers stop a rule from thrashing.
+#
+# Which speed figure rules judge by. Also selectable in the Rules tab.
+#   hybrid (default) - the measured figure when available, else aria2's.
+#   measured         - bytes actually written over the last ~3s only. aria2's own
+#                      downloadSpeed is a long moving average, so it keeps
+#                      reporting e.g. 5 MB/s for seconds after a transfer has
+#                      actually stalled; the measured figure does not. While no
+#                      measurement exists yet, a rule will not fire at all.
+#   aria2            - aria2's smoothed number, lag included.
+# A single rule can override this with `when: {speed_source: aria2}`.
+rules_speed_source: hybrid
+rules_enabled: true
+rules:
+  # The requirement: below X bytes/s for 3 seconds -> pause and resume.
+  - name: stall-recovery
+    enabled: true
+    description: Pause+resume a download that drops below 50 KiB/s for 3s.
+    when:
+      statuses: [active]
+      speed_below: 51200      # 50 KiB/s
+      for_seconds: 3
+      min_age_seconds: 8      # let it ramp up first
+      max_progress: 99.0      # leave nearly-finished files alone
+    action: pause_resume
+    resume_after_seconds: 1.5
+    preserve_slot: true       # take the concurrency slot back after resuming
+    cooldown_seconds: 25
+    max_triggers: 20
+
+  - name: dead-download-restart
+    enabled: false
+    description: Fully re-add a download stuck at 0 B/s for a minute.
+    when:
+      statuses: [active]
+      speed_below: 1
+      for_seconds: 60
+      min_age_seconds: 15
+    action: restart
+    cooldown_seconds: 120
+    max_triggers: 5
+
+  # Example: back off a host that only ever gives us one usable connection.
+  - name: reduce-connections-when-throttled
+    enabled: false
+    description: Some servers throttle heavy parallelism; ask for less.
+    when:
+      statuses: [active]
+      speed_below: 262144     # 256 KiB/s
+      connections_below: 4
+      for_seconds: 20
+      min_age_seconds: 20
+    action: set_option
+    options:
+      max-connection-per-server: "4"
+      split: "4"
+    cooldown_seconds: 300
+    max_triggers: 2

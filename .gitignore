@@ -1,0 +1,59 @@
+# ---------------------------------------------------------------- Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Virtualenvs (run.sh picks up ./.venv automatically)
+.venv/
+venv/
+env/
+ENV/
+
+# Packaging / tooling caches
+build/
+dist/
+*.egg-info/
+.eggs/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.tox/
+.coverage
+.coverage.*
+htmlcov/
+
+# ------------------------------------------------- local config and state
+# config.example.yaml is the tracked template; config.yaml is yours. It holds
+# machine-specific paths, your tuned rules, and possibly an explicit RPC secret.
+/config.yaml
+
+# Runtime state. These normally live in ~/.local/share/aria2c-manager, but they
+# land here if you point the *_file settings at the checkout. Two of them are
+# sensitive: rpc-secret, and hoster-cookies.json (browser session cookies,
+# including Cloudflare clearance).
+rpc-secret
+hoster-cookies.json
+hosters.json
+history.json
+*.session
+aria2.log
+*.tmp
+
+# aria2 control files and anything downloaded into the checkout
+*.aria2
+/downloads/
+/dl/
+
+# --------------------------------------------------------- editors and OS
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# ------------------------------------------------------------- Claude Code
+# Project-level .claude/ config is worth committing; the local overrides are not.
+.claude/settings.local.json

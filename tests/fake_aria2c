@@ -1,0 +1,56 @@
+#!/usr/bin/env python3
+"""An aria2c stand-in for testing managed mode.
+
+Accepts (and ignores) aria2c-style --key=value flags, honours
+--rpc-listen-port / --rpc-secret, serves the fake JSON-RPC API, and exits when
+aria2.shutdown is called — like the real thing.
+"""
+
+from __future__ import annotations
+
+import signal
+import sys
+import threading
+from http.server import ThreadingHTTPServer
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from tests.fake_aria2 import FakeAria2, make_handler  # noqa: E402
+
+
+def main() -> int:
+    port, secret = 6800, ""
+    for arg in sys.argv[1:]:
+        if arg.startswith("--rpc-listen-port="):
+            port = int(arg.split("=", 1)[1])
+        elif arg.startswith("--rpc-secret="):
+            secret = arg.split("=", 1)[1]
+
+    stopping = threading.Event()
+
+    class ExitingFake(FakeAria2):
+        def dispatch(self, method, params):
+            result = super().dispatch(method, params)
+            if method in ("aria2.shutdown", "aria2.forceShutdown"):
+                threading.Timer(0.2, stopping.set).start()
+            return result
+
+    state = ExitingFake(secret)
+    state.add("big.iso", 4 * 1024 * 1024 * 1024, stall_after=4.0)
+    state.add("movie.mkv", 2 * 1024 * 1024 * 1024)
+
+    httpd = ThreadingHTTPServer(("127.0.0.1", port), make_handler(state))
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    print(f"fake aria2c listening on port {port}", flush=True)
+
+    signal.signal(signal.SIGTERM, lambda *_: stopping.set())
+    signal.signal(signal.SIGINT, lambda *_: stopping.set())
+    stopping.wait()
+    httpd.shutdown()
+    state.stop()
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

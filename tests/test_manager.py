@@ -1,0 +1,1150 @@
+"""End-to-end checks for aria2c-manager, driven against tests/fake_aria2.py.
+
+    python3 tests/test_manager.py
+
+No aria2c installation needed: the manager attaches to the fake RPC server in
+unmanaged mode. The interesting assertion is the last one — the stall-recovery
+rule must actually pause and resume a download whose speed drops.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import base64
+import contextlib
+import json
+import sys
+import time
+from pathlib import Path
+
+import aiohttp
+import uvicorn
+import yaml
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from aria2c_manager.api import clean_options, create_app, piece_map, split_uris  # noqa: E402
+from aria2c_manager.config import Config  # noqa: E402
+from tests.fake_aria2 import serve  # noqa: E402
+from tests.harness import check, free_port, summary, wait_for  # noqa: E402
+
+
+# --------------------------------------------------------------------------
+# pure-function tests
+# --------------------------------------------------------------------------
+def test_units() -> None:
+    print("\nunit: helpers")
+    check("clean_options stringifies and drops blanks",
+          clean_options({"split": 8, "continue": True, "dir": "  ", "x": None}) ==
+          {"split": "8", "continue": "true"})
+    check("clean_options keeps header lists",
+          clean_options({"header": ["A: 1", "", "B: 2"]}) == {"header": ["A: 1", "B: 2"]})
+    check("clean_options strips leading dashes",
+          clean_options({"--split": 4}) == {"split": "4"})
+    check("split_uris splits lines and dedupes",
+          split_uris(["a\nb", " b "], "c") == ["a", "b", "c"])
+    check("piece_map of a full bitfield is all 100",
+          piece_map("ff", 8, buckets=4) == [100, 100, 100, 100])
+    check("piece_map of an empty bitfield is all 0",
+          piece_map("00", 8, buckets=4) == [0, 0, 0, 0])
+    check("piece_map handles a half-done bitfield",
+          piece_map("f0", 8, buckets=2) == [100, 0])
+    check("piece_map tolerates no bitfield", piece_map("", 0) == [])
+
+    print("\nunit: rules validation")
+    from aria2c_manager.rules import RuleEngine
+
+    engine = RuleEngine.__new__(RuleEngine)  # validate() needs no collaborators
+    good = {"name": "r", "when": {"speed_below": 100, "for_seconds": 3}, "action": "pause_resume"}
+    check("valid rule passes", engine.validate(good) == [], str(engine.validate(good)))
+    check("unknown action rejected",
+          any("unknown action" in p for p in engine.validate({**good, "action": "explode"})))
+    check("nameless rule rejected",
+          any("name" in p for p in engine.validate({**good, "name": ""})))
+    check("condition-less rule rejected",
+          any("at least one" in p for p in engine.validate({**good, "when": {}})))
+    check("set_option without options rejected",
+          any("set_option" in p for p in engine.validate({**good, "action": "set_option"})))
+    check("bad regex rejected",
+          any("regex" in p for p in engine.validate(
+              {**good, "when": {**good["when"], "name_matches": "("}})))
+
+
+# --------------------------------------------------------------------------
+# end-to-end
+# --------------------------------------------------------------------------
+async def test_e2e(tmp_dir: Path) -> None:
+    rpc_port, web_port = free_port(), free_port()
+    httpd, fake = serve(rpc_port, secret="test-secret")
+
+    config_path = tmp_dir / "config.yaml"
+    config_path.write_text(yaml.safe_dump({
+        "server": {"host": "127.0.0.1", "port": web_port},
+        "poll_interval": 0.5,
+        "aria2": {
+            "managed": False,
+            "rpc": {"host": "127.0.0.1", "port": rpc_port, "secret": "test-secret"},
+        },
+        "history": {"enabled": True, "file": str(tmp_dir / "history.json")},
+        "rules_enabled": True,
+        "rules": [{
+            "name": "stall-recovery",
+            "enabled": True,
+            "when": {"statuses": ["active"], "speed_below": 51200,
+                     "for_seconds": 2, "min_age_seconds": 0},
+            "action": "pause_resume",
+            "resume_after_seconds": 0.5,
+            "cooldown_seconds": 30,
+            "max_triggers": 5,
+        }],
+    }))
+
+    cfg = Config(config_path)
+    app = create_app(cfg)
+    server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=web_port,
+                                           log_level="error", access_log=False))
+    task = asyncio.create_task(server.serve())
+    base = f"http://127.0.0.1:{web_port}"
+
+    async with aiohttp.ClientSession() as http:
+        async def get(path):
+            async with http.get(base + path) as res:
+                return res.status, await res.json()
+
+        async def post(path, body=None):
+            async with http.post(base + path, json=body) as res:
+                return res.status, await res.json()
+
+        # --- startup
+        print("\ne2e: startup")
+        up = await wait_for(lambda: server.started, 15)
+        check("web server starts", up)
+        if not up:
+            return
+
+        status, ping = await get("/api/ping")
+        check("GET /api/ping", status == 200 and ping.get("ok"))
+
+        ready = await wait_for(lambda: _state_has_downloads(http, base), 10)
+        check("state stream picks up the fake downloads", ready)
+
+        status, state = await get("/api/state")
+        names = {d["name"] for d in state["downloads"]}
+        check("aria2 version detected", state["aria2"]["version"].endswith("-fake"),
+              state["aria2"].get("version"))
+        check("seeded downloads visible", {"big.iso", "movie.mkv", "queued.zip"} <= names, str(names))
+        # The very first snapshot can land before the fake has transferred a
+        # single byte, so poll until progress shows up.
+        check("normalisation computes progress/eta",
+              await wait_for(lambda: _download_progressing(http, base, "movie.mkv"), 8))
+        check("queue position exposed",
+              any(d.get("queuePosition") == 0 for d in state["downloads"] if d["status"] == "waiting"))
+
+        # --- UI assets
+        print("\ne2e: static UI")
+        for path in ("/", "/static/app.js", "/static/style.css"):
+            async with http.get(base + path) as res:
+                body = await res.text()
+            check(f"serves {path}", res.status == 200 and len(body) > 500, f"{res.status}, {len(body)}B")
+
+        # A 204 with a body makes h11 raise "Too much data for declared
+        # Content-Length" on every browser favicon request.
+        async with http.get(base + "/favicon.ico") as res:
+            icon = await res.read()
+            declared = res.headers.get("content-length")
+        check("favicon returns a body with a matching Content-Length",
+              res.status == 200 and icon and declared == str(len(icon)),
+              f"status={res.status} len={len(icon)} content-length={declared}")
+        check("favicon is not a bodyless status", res.status not in (204, 304))
+
+        # --- adding
+        print("\ne2e: adding downloads")
+        status, added = await post("/api/downloads", {
+            "uris": ["https://example.invalid/one.zip", "https://example.invalid/two.zip"],
+            "options": {"dir": str(tmp_dir), "split": 4, "header": ["X-Test: 1"]},
+        })
+        check("POST /api/downloads adds each URL separately",
+              status == 200 and len(added["gids"]) == 2, json.dumps(added))
+        new_gid = added["gids"][0]
+        check("options reached aria2",
+              fake.downloads[new_gid].options.get("split") == "4",
+              str(fake.downloads[new_gid].options))
+
+        status, mirrored = await post("/api/downloads", {
+            "uris": ["https://a.invalid/f.iso", "https://b.invalid/f.iso"],
+            "mirrors": True,
+        })
+        check("mirrors mode makes one download", status == 200 and len(mirrored["gids"]) == 1)
+
+        status, paused_add = await post("/api/downloads", {
+            "url": "https://example.invalid/later.bin", "paused": True})
+        check("paused add lands paused",
+              status == 200 and fake.downloads[paused_add["gids"][0]].status == "paused")
+
+        status, bad = await post("/api/downloads", {"uris": []})
+        check("empty add is rejected with 400", status == 400)
+
+        torrent = base64.b64encode(b"d8:announce3:foo4:infod4:name4:teste").decode()
+        status, tor = await post("/api/downloads/file", {"data": torrent, "kind": "torrent"})
+        check("POST /api/downloads/file accepts a base64 torrent", status == 200 and tor["gids"])
+
+        status, badb64 = await post("/api/downloads/file", {"data": "!!!not base64!!!"})
+        check("invalid base64 is rejected with 400", status == 400)
+
+        # --- per-download commands
+        print("\ne2e: per-download commands")
+        target = next(d for d in state["downloads"] if d["name"] == "movie.mkv")["gid"]
+        status, _ = await post(f"/api/download/{target}/pause")
+        check("pause works", status == 200 and fake.downloads[target].status == "paused")
+        status, _ = await post(f"/api/download/{target}/resume")
+        # Real aria2 (and now the fake) moves an unpaused download to *waiting*;
+        # its scheduler promotes it on the next tick.
+        check("resume works",
+              status == 200
+              and await wait_for(lambda: fake.downloads[target].status == "active", 5),
+              fake.downloads[target].status)
+
+        await wait_for(lambda: fake.downloads[target].status == "active", 5)
+        status, detail = await get(f"/api/download/{target}")
+        check("detail returns status/files/servers", status == 200
+              and detail["status"]["gid"] == target
+              and len(detail["files"]) == 1
+              and len(detail["servers"]) == 1,
+              f"{status} files={len(detail.get('files', []))} servers={len(detail.get('servers', []))}")
+        check("detail returns a piece map", len(detail["pieceMap"]) > 0)
+        check("detail lists live connections",
+              bool(detail["servers"]) and len(detail["servers"][0]["servers"]) == 2)
+
+        status, applied = await post(f"/api/download/{target}/options",
+                                     {"options": {"max-download-limit": "1M"}})
+        check("per-download options apply",
+              status == 200 and fake.downloads[target].options["max-download-limit"] == "1M")
+
+        status, sel = await post(f"/api/download/{target}/select", {"indices": [1]})
+        check("file selection applies",
+              status == 200 and fake.downloads[target].options["select-file"] == "1")
+
+        queued = next(d for d in state["downloads"] if d["status"] == "waiting")["gid"]
+        status, pos = await post(f"/api/download/{queued}/position", {"pos": 0, "how": "POS_SET"})
+        check("queue reposition works", status == 200 and pos["ok"])
+        status, badpos = await post(f"/api/download/{queued}/position", {"pos": 0, "how": "NOPE"})
+        check("bad reposition rejected with 400", status == 400)
+
+        # --- global commands
+        print("\ne2e: global commands")
+        status, _ = await post("/api/global/pause-all")
+        check("pause all pauses everything", status == 200
+              and all(d.status != "active" for d in fake.downloads.values()))
+        status, _ = await post("/api/global/resume-all")
+        check("resume all resumes", status == 200 and await wait_for(
+            lambda: any(d.status == "active" for d in fake.downloads.values()), 5),
+              str({d.name: d.status for d in fake.downloads.values()}))
+
+        status, opts = await get("/api/global/options")
+        check("GET /api/global/options", status == 200 and "max-concurrent-downloads" in opts)
+        status, saved = await post("/api/global/options",
+                                   {"options": {"max-concurrent-downloads": "9"}})
+        check("global options apply to aria2",
+              status == 200 and fake.global_options["max-concurrent-downloads"] == "9")
+        persisted = yaml.safe_load(config_path.read_text())
+        check("global options persist to config.yaml",
+              persisted["aria2"]["options"]["max-concurrent-downloads"] == "9",
+              json.dumps(persisted.get("aria2", {})))
+
+        # --- rules API
+        print("\ne2e: rules API")
+        status, rules = await get("/api/rules")
+        check("GET /api/rules lists rules and actions",
+              status == 200 and rules["rules"][0]["name"] == "stall-recovery"
+              and "pause_resume" in rules["actions"])
+        status, toggled = await post("/api/rules/stall-recovery/toggle", {"enabled": False})
+        check("rule toggle off", status == 200 and toggled["rule"]["enabled"] is False)
+        status, toggled = await post("/api/rules/stall-recovery/toggle", {"enabled": True})
+        check("rule toggle on", status == 200 and toggled["rule"]["enabled"] is True)
+        status, missing = await post("/api/rules/nope/toggle", {"enabled": True})
+        check("unknown rule toggle is 404", status == 404)
+        status, rejected = await post("/api/rules", {"rules": [{"name": "x", "action": "boom", "when": {}}]})
+        check("invalid rule set is rejected with 400", status == 400,
+              json.dumps(rejected)[:120])
+
+        # --- SSE
+        print("\ne2e: SSE stream")
+        frames: list[str] = []
+        async with http.get(base + "/api/events") as res:
+            check("SSE content type", res.headers.get("content-type", "").startswith("text/event-stream"))
+            deadline = time.monotonic() + 6
+            async for line in res.content:
+                frames.append(line.decode("utf-8", "replace"))
+                if sum(1 for f in frames if f.startswith("event: state")) >= 2:
+                    break
+                if time.monotonic() > deadline:
+                    break
+        check("SSE pushes repeated state frames",
+              sum(1 for f in frames if f.startswith("event: state")) >= 2,
+              f"{len(frames)} lines")
+        check("SSE sends the event backlog", any(f.startswith("event: backlog") for f in frames))
+
+        # --- THE watchdog: speed below X for N seconds -> pause + resume
+        print("\ne2e: stall-recovery rule (the custom download action)")
+        stalling = next(d for d in fake.downloads.values() if d.name == "big.iso")
+        healthy = next(d for d in fake.downloads.values() if d.name == "movie.mkv")
+        before_pauses = stalling.pause_count
+        # Baseline taken here: earlier tests paused this one deliberately.
+        healthy_pauses_before = healthy.pause_count
+        fired = await wait_for(lambda: stalling.pause_count > before_pauses, 20)
+        check("rule paused the stalled download", fired,
+              f"pause_count={stalling.pause_count}, speed={stalling.speed}")
+        resumed = await wait_for(lambda: stalling.resume_count >= stalling.pause_count, 10)
+        check("rule resumed it again", resumed,
+              f"pause={stalling.pause_count} resume={stalling.resume_count}")
+        check("download is running after recovery", stalling.status == "active", stalling.status)
+
+        # The action logs once it has finished, which now includes reclaiming the
+        # concurrency slot, so wait for the entry rather than assuming it is there.
+        await wait_for(lambda: _log_has_level(http, base, "rule"), 15)
+        status, log = await get("/api/log")
+        rule_events = [e for e in log["events"] if e["level"] == "rule"]
+        check("trigger is written to the event log", bool(rule_events),
+              json.dumps(log["events"][:3]))
+        check("trigger names the rule and action",
+              bool(rule_events) and rule_events[0].get("rule") == "stall-recovery"
+              and rule_events[0].get("action") == "pause_resume")
+        check("trigger list is exposed for the UI", bool(log["triggers"]))
+
+        check("rule left the healthy download alone",
+              healthy.pause_count == healthy_pauses_before,
+              f"pause_count went {healthy_pauses_before} -> {healthy.pause_count}")
+
+        # --- restart action
+        print("\ne2e: restart action / retry endpoint")
+        retry_target = next(d for d in fake.downloads.values() if d.name == "one.zip")
+        status, retried = await post(f"/api/download/{retry_target.gid}/retry")
+        check("retry re-adds the download", status == 200 and "re-added" in retried["detail"],
+              json.dumps(retried))
+
+        # --- removal
+        print("\ne2e: removal and purge")
+        victim = next(d for d in fake.downloads.values() if d.name == "two.zip")
+        async with http.delete(base + f"/api/download/{victim.gid}?force=true&purge=true") as res:
+            removed_ok = res.status == 200
+        check("DELETE removes a download", removed_ok and victim.gid not in fake.downloads)
+        status, _ = await post("/api/global/purge")
+        check("purge clears finished results", status == 200
+              and not any(d.status in ("complete", "error", "removed") for d in fake.downloads.values()))
+
+        # --- userscript intake
+        print("\ne2e: userscript intake")
+        status, ping = await get("/api/userscript/ping")
+        check("userscript ping reports readiness", status == 200 and ping["ok"] and ping["aria2"])
+
+        status, us = await post("/api/userscript/add", {
+            "url": "https://example.invalid/protected/file.iso?token=abc",
+            "filename": "../../escape.iso",
+            "referer": "https://example.invalid/page",
+            "cookie": "session=xyz; theme=dark",
+            "userAgent": "TestUA/1.0",
+            "headers": {"Authorization": "Bearer t"},
+            "dir": str(tmp_dir),
+        })
+        check("userscript add succeeds", status == 200 and us["ok"] and us["count"] == 1)
+        got = fake.downloads[us["gids"][0]].options
+        check("referer forwarded", got.get("referer") == "https://example.invalid/page")
+        check("user-agent forwarded", got.get("user-agent") == "TestUA/1.0")
+        check("cookie became a Cookie header", "Cookie: session=xyz; theme=dark" in got.get("header", []))
+        check("extra headers forwarded", "Authorization: Bearer t" in got.get("header", []))
+        check("filename is basename-only (no path escape)", got.get("out") == "escape.iso",
+              str(got.get("out")))
+        check("dir forwarded", got.get("dir") == str(tmp_dir))
+
+        status, multi = await post("/api/userscript/add", {
+            "urls": ["https://example.invalid/a.zip", "https://example.invalid/b.zip"]})
+        check("userscript batch add", status == 200 and multi["count"] == 2)
+
+        status, nourl = await post("/api/userscript/add", {})
+        check("userscript add without a url is 400", status == 400)
+
+        # --- finished-download history (survives restarts and purges)
+        print("\ne2e: finished-download history")
+        history_file = tmp_dir / "history.json"
+        recorded = await wait_for(lambda: _history_has(http, base), 20)
+        check("finished downloads are recorded", recorded)
+        status, hist = await get("/api/history?limit=50")
+        check("GET /api/history returns entries and a summary",
+              status == 200 and hist["entries"] and "count" in hist["summary"])
+        entry = hist["entries"][0]
+        check("entry keeps name, size and status",
+              entry["name"] and entry["status"] in ("complete", "error", "removed")
+              and entry["total"] >= 0, json.dumps(entry)[:160])
+        check("entry keeps the URL so it can be queued again", bool(entry.get("url")),
+              json.dumps(entry)[:160])
+        check("history is written to disk", history_file.is_file(), str(history_file))
+
+        # Purging aria2's own results must not erase our record.
+        before = len(hist["entries"])
+        await post("/api/global/purge")
+        await asyncio.sleep(1.5)
+        status, after_purge = await get("/api/history?limit=50")
+        check("history survives aria2's purgeDownloadResult",
+              len(after_purge["entries"]) >= before,
+              f"{before} -> {len(after_purge['entries'])}")
+
+        readd_key = next((e["key"] for e in after_purge["entries"] if e.get("url")), None)
+        if readd_key:
+            status, readded = await post("/api/history/readd", {"key": readd_key})
+            check("a past download can be queued again from history",
+                  status == 200 and readded.get("gid"), f"{status} {json.dumps(readded)[:120]}")
+
+        status, gone = await post("/api/history-clear")
+        check("history can be cleared", status == 200 and gone["removed"] >= 1, str(gone))
+
+        # --- error propagation from aria2
+        print("\ne2e: error handling")
+        # aria2 answers application errors with HTTP 400 plus a JSON-RPC error
+        # body; the client must read the body, not just the status, or every
+        # "already removed" looks like a dead daemon.
+        async with http.post(base + "/api/download/deadbeef/pause") as res:
+            status, err = res.status, await res.json()
+        check("aria2 application error surfaces as 502 with its real message",
+              status == 502 and "No such download" in str(err.get("error")), json.dumps(err))
+        check("an aria2 error is NOT reported as 'not running'",
+              "not running" not in str(err.get("error")).lower(), json.dumps(err))
+
+        async with http.delete(base + "/api/download/deadbeefdeadbeef?force=true&purge=true") as res:
+            del_status = res.status
+            del_body = await res.json()
+        check("deleting an already-gone download is a clean success",
+              del_status == 200 and del_body.get("ok") is True,
+              f"{del_status} {json.dumps(del_body)}")
+
+        status, cfg_out = await get("/api/config")
+        check("GET /api/config hides the RPC secret", status == 200
+              and cfg_out["aria2"]["rpc"]["secret"] == "***")
+
+        status, proc = await get("/api/aria2/status")
+        check("aria2 status reports unmanaged mode", status == 200 and proc["managed"] is False)
+
+    server.should_exit = True
+    with contextlib.suppress(asyncio.TimeoutError):
+        await asyncio.wait_for(task, timeout=10)
+    httpd.shutdown()
+    fake.stop()
+
+
+async def test_managed(tmp_dir: Path) -> None:
+    """Managed mode: spawn a child, notice a crash, restart it, shut it down."""
+    import os
+    import signal
+
+    print("\ne2e: managed aria2c process")
+    rpc_port, web_port = free_port(), free_port()
+    shim = Path(__file__).resolve().parent / "fake_aria2c"
+
+    config_path = tmp_dir / "managed.yaml"
+    config_path.write_text(yaml.safe_dump({
+        "server": {"host": "127.0.0.1", "port": web_port},
+        "poll_interval": 0.5,
+        "aria2": {
+            "managed": True,
+            "binary": str(shim),
+            "restart_on_exit": True,
+            "startup_timeout": 15.0,
+            "rpc": {"host": "127.0.0.1", "port": rpc_port, "secret": "managed-secret"},
+            "session_file": str(tmp_dir / "aria2.session"),
+            "log_file": str(tmp_dir / "aria2.log"),
+            "options": {"dir": str(tmp_dir / "dl")},
+        },
+        "rules_enabled": False,
+        "rules": [],
+    }))
+
+    cfg = Config(config_path)
+    app = create_app(cfg)
+    server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=web_port,
+                                           log_level="error", access_log=False))
+    task = asyncio.create_task(server.serve())
+    base = f"http://127.0.0.1:{web_port}"
+
+    async with aiohttp.ClientSession() as http:
+        async def status() -> dict:
+            async with http.get(base + "/api/aria2/status") as res:
+                return await res.json()
+
+        await wait_for(lambda: server.started, 15)
+        started = await wait_for(lambda: _running(http, base), 20)
+        check("manager spawns aria2c and reaches its RPC", started)
+        if not started:
+            server.should_exit = True
+            with contextlib.suppress(asyncio.TimeoutError):
+                await asyncio.wait_for(task, timeout=10)
+            return
+
+        info = await status()
+        first_pid = info["pid"]
+        check("child pid is reported", isinstance(first_pid, int) and first_pid > 0, str(first_pid))
+        check("version comes from the child", info["version"].endswith("-fake"), info["version"])
+        check("mode is reported as managed", info["managed"] is True)
+        check("download dir was created", (tmp_dir / "dl").is_dir())
+        check("state flows through the managed child",
+              await wait_for(lambda: _state_has_downloads(http, base), 10))
+
+        # Kill it the hard way and confirm the supervisor brings it back.
+        os.kill(first_pid, signal.SIGKILL)
+        restarted = await wait_for(
+            lambda: _pid_changed(http, base, first_pid), 25, interval=0.5)
+        check("supervisor restarts aria2c after a crash", restarted)
+        info = await status()
+        check("restart counter incremented", info["restarts"] >= 1, str(info["restarts"]))
+        check("crash was logged", await _log_contains(http, base, "exited with code"))
+
+        # Explicit restart via the API.
+        pid_before = info["pid"]
+        async with http.post(base + "/api/aria2/restart") as res:
+            check("POST /api/aria2/restart succeeds", res.status == 200)
+        info = await status()
+        check("explicit restart replaces the process",
+              info["running"] and info["pid"] != pid_before, str(info["pid"]))
+        final_pid = info["pid"]
+
+    server.should_exit = True
+    with contextlib.suppress(asyncio.TimeoutError):
+        await asyncio.wait_for(task, timeout=15)
+    gone = await wait_for(lambda: not _pid_alive(final_pid), 12, interval=0.4)
+    check("child is stopped when the manager exits", gone, f"pid {final_pid} still alive")
+
+
+def test_rule_timing() -> None:
+    """Regressions around *when* a rule is allowed to fire."""
+    print("\nunit: rule timing and speed source")
+    from aria2c_manager.rules import RuleEngine, Tracker
+
+    engine = RuleEngine.__new__(RuleEngine)
+    engine.cfg = _FakeCfg()
+
+    when = {"statuses": ["active"], "speed_below": 256000,
+            "for_seconds": 1, "min_age_seconds": 8}
+    now = 1000.0
+
+    def dl(**kw):
+        base = {"gid": "g", "status": "active", "downloadSpeed": 0, "measuredSpeed": None,
+                "connections": 4, "progress": 10.0, "total": 1 << 30, "isTorrent": False,
+                "name": "f.bin"}
+        base.update(kw)
+        return base
+
+    # A download can sit queued for ages; its grace period must start when it
+    # actually begins transferring, not when it first appeared in the queue.
+    queued_long_ago = Tracker(first_seen=now - 600, active_since=now - 1)
+    check("a just-started download is inside its grace period even after a long wait",
+          engine._matches(when, dl(), queued_long_ago, now) is False)
+    running_a_while = Tracker(first_seen=now - 600, active_since=now - 30)
+    check("a download that has been running past the grace period is judged",
+          engine._matches(when, dl(), running_a_while, now) is True)
+
+    # A non-active download is never a candidate.
+    check("a queued download is never matched",
+          engine._matches(when, dl(status="waiting"), running_a_while, now) is False)
+    check("a paused download is never matched",
+          engine._matches(when, dl(status="paused"), running_a_while, now) is False)
+
+    # Speed source: aria2's average lags, the measured delta does not.
+    lagging = dl(downloadSpeed=5_000_000, measuredSpeed=0)
+    check("the measured delta is used by default, so a stall is seen at once",
+          engine._matches(when, lagging, running_a_while, now) is True)
+    check("speed_source: aria2 opts back into the smoothed average",
+          engine._matches({**when, "speed_source": "aria2"}, lagging, running_a_while, now)
+          is False)
+    check("measured speed is what gets reported for a trigger",
+          engine.speed_of(lagging, when) == 0)
+    check("aria2's figure is reported when asked for",
+          engine.speed_of(lagging, {"speed_source": "aria2"}) == 5_000_000)
+    check("a missing measurement falls back to aria2's number",
+          engine.speed_of(dl(downloadSpeed=1234, measuredSpeed=None), when) == 1234)
+
+
+class _FakeCfg:
+    def __init__(self, **values):
+        self.values = values
+
+    def get(self, key, default=None):
+        return self.values.get(key, default)
+
+
+def test_speed_sources() -> None:
+    """aria2 / measured / hybrid must each behave as advertised."""
+    print("\nunit: speed source choices")
+    from aria2c_manager.rules import RuleEngine
+
+    engine = RuleEngine.__new__(RuleEngine)
+    engine.cfg = _FakeCfg()
+    lagging = {"downloadSpeed": 5_000_000, "measuredSpeed": 0}
+    fresh = {"downloadSpeed": 5_000_000, "measuredSpeed": None}
+
+    check("hybrid is the default", engine.speed_source() == "hybrid")
+    check("an unknown value falls back to hybrid",
+          engine.speed_source({"speed_source": "nonsense"}) == "hybrid")
+
+    check("aria2 source reports aria2's average",
+          engine.speed_of(lagging, {"speed_source": "aria2"}) == 5_000_000)
+    check("measured source reports the write speed",
+          engine.speed_of(lagging, {"speed_source": "measured"}) == 0)
+    check("measured source reports unknown when there is no sample yet",
+          engine.speed_of(fresh, {"speed_source": "measured"}) is None)
+    check("hybrid prefers the measurement",
+          engine.speed_of(lagging, {"speed_source": "hybrid"}) == 0)
+    check("hybrid falls back to aria2 without a measurement",
+          engine.speed_of(fresh, {"speed_source": "hybrid"}) == 5_000_000)
+
+    engine.cfg = _FakeCfg(rules_speed_source="aria2")
+    check("the global setting applies when a rule says nothing",
+          engine.speed_of(lagging) == 5_000_000)
+    check("a rule overrides the global setting",
+          engine.speed_of(lagging, {"speed_source": "measured"}) == 0)
+
+    # A rule must not fire on a speed it cannot measure.
+    from aria2c_manager.rules import Tracker
+    engine.cfg = _FakeCfg()
+    tracker = Tracker(first_seen=0.0, active_since=1.0)
+    row = {"gid": "g", "status": "active", "connections": 4, "progress": 5.0,
+           "total": 1 << 30, "isTorrent": False, "name": "f", **fresh}
+    strict = {"statuses": ["active"], "speed_below": 1000,
+              "speed_source": "measured", "min_age_seconds": 0}
+    check("a rule does not fire while the measured speed is unknown",
+          engine._matches(strict, row, tracker, 100.0) is False)
+
+
+def test_measured_speed() -> None:
+    print("\nunit: measured speed")
+    from aria2c_manager.state import Poller
+
+    poller = Poller.__new__(Poller)
+    poller._progress = {}
+
+    def sample(completed, at):
+        row = {"gid": "a", "completed": completed}
+        poller._measure_speed(row, at)
+        return row["measuredSpeed"]
+
+    check("no measurement on the first sighting", sample(1_000_000, 100.0) is None)
+    check("no measurement until the window is wide enough",
+          sample(1_500_000, 100.5) is None)
+    check("speed is the byte delta across the window",
+          sample(3_000_000, 102.0) == 1_000_000, "expected 1 MiB/s")
+
+    # A download that is merely slow completes data in lumps; one empty tick in
+    # the middle of the window must not read as a stall.
+    poller._progress.clear()
+    sample(0, 200.0); sample(0, 201.0)
+    lumpy = sample(600_000, 202.0)
+    check("a lumpy but healthy download is not measured as stalled",
+          lumpy and lumpy > 250_000, str(lumpy))
+
+    poller._progress.clear()
+    sample(1_000_000, 300.0); sample(1_000_000, 301.5)
+    check("a genuinely stalled download measures zero even if aria2 claims speed",
+          sample(1_000_000, 303.0) == 0)
+
+    poller._progress.clear()
+    sample(1_000_000, 400.0)
+    check("a restarted file reports no measurement rather than a negative speed",
+          sample(500_000, 402.0) is None)
+
+
+def test_history(tmp_dir: Path) -> None:
+    """Clearing history must stick, even though aria2 keeps listing the downloads."""
+    print("\nunit: history")
+    from aria2c_manager.history import History
+
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    path = tmp_dir / "history.json"
+    cfg = Config(tmp_dir / "cfg.yaml") if (tmp_dir / "cfg.yaml").is_file() else None
+    if cfg is None:
+        (tmp_dir / "cfg.yaml").write_text(yaml.safe_dump(
+            {"history": {"enabled": True, "file": str(path)}}))
+        cfg = Config(tmp_dir / "cfg.yaml")
+
+    history = History(cfg)
+    finished = {"downloads": [
+        {"gid": "g1", "status": "complete", "name": "a.bin", "path": "/dl/a.bin",
+         "total": 10, "completed": 10, "firstUri": "http://x/a.bin"},
+        {"gid": "g2", "status": "error", "name": "b.bin", "path": "/dl/b.bin",
+         "total": 10, "completed": 3, "errorMessage": "boom"},
+    ]}
+    history.observe(finished)
+    check("finished downloads are recorded", len(history.list()) == 2)
+
+    # aria2 still has both in its results, so the next poll re-observes them.
+    removed = history.remove("/dl/a.bin")
+    history.observe(finished)
+    check("a removed entry stays removed across the next poll",
+          removed and len(history.list()) == 1, str(history.list()))
+
+    history.observe(finished)
+    count = history.clear()
+    history.observe(finished)   # the poll that used to undo the clear
+    check("clear() removes everything", count >= 1)
+    check("cleared history stays empty across the next poll",
+          history.list() == [], str(history.list()))
+
+    # Downloading the same file again must record it once more.
+    history.observe({"downloads": [
+        {"gid": "g3", "status": "active", "name": "a.bin", "path": "/dl/a.bin",
+         "total": 10, "completed": 1},
+    ]})
+    history.observe(finished)
+    check("re-downloading a dismissed file records it again",
+          any(e["path"] == "/dl/a.bin" for e in history.list()), str(history.list()))
+
+    history.save(force=True)
+    reloaded = History(cfg)
+    check("tombstones persist across a restart",
+          reloaded.summary()["dismissed"] >= 1, str(reloaded.summary()))
+
+
+async def test_slot_preservation(tmp_dir: Path) -> None:
+    """With one concurrency slot, a stall fix must not hand the slot away.
+
+    Pausing an active download frees a slot and aria2 immediately promotes the
+    next queued item; unpausing puts ours back in the *queue*, not back to
+    running. Without the reclaim step the two silently swap places.
+    """
+    print("\ne2e: a stalled download keeps its slot")
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    rpc_port, web_port = free_port(), free_port()
+    httpd, fake = serve(rpc_port, secret="slot-secret", seed=False)
+    fake.global_options["max-concurrent-downloads"] = "1"
+
+    first = fake.add("FIRST.bin", 4 << 30)
+    first.status = "active"
+    second = fake.add("SECOND.bin", 4 << 30)
+    second.status = "waiting"
+
+    config_path = tmp_dir / "slot.yaml"
+    config_path.write_text(yaml.safe_dump({
+        "server": {"host": "127.0.0.1", "port": web_port},
+        "poll_interval": 0.5,
+        "aria2": {"managed": False,
+                  "rpc": {"host": "127.0.0.1", "port": rpc_port, "secret": "slot-secret"}},
+        "history": {"enabled": False},
+        "hosters": {"enabled": False, "state_file": str(tmp_dir / "h.json")},
+        "rules_enabled": False, "rules": [],
+    }))
+    cfg = Config(config_path)
+    app = create_app(cfg)
+    server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=web_port,
+                                           log_level="error", access_log=False))
+    task = asyncio.create_task(server.serve())
+    base = f"http://127.0.0.1:{web_port}"
+
+    async with aiohttp.ClientSession() as http:
+        await wait_for(lambda: server.started, 15)
+        engine = app.state.engine
+
+        check("only one download runs to begin with",
+              fake.downloads[first.gid].status == "active"
+              and fake.downloads[second.gid].status == "waiting")
+
+        detail = await engine._dispatch(
+            {"resume_after_seconds": 0.5, "preserve_slot": True},
+            "pause_resume",
+            {"gid": first.gid, "downloadSpeed": 1000, "name": "FIRST.bin"},
+        )
+        await asyncio.sleep(1.5)
+        check("the stalled download is running again, not queued",
+              fake.downloads[first.gid].status == "active",
+              f"FIRST={fake.downloads[first.gid].status} detail={detail}")
+        check("the queued download did not steal the slot",
+              fake.downloads[second.gid].status == "waiting",
+              f"SECOND={fake.downloads[second.gid].status}")
+        check("only one download is active afterwards",
+              sum(1 for d in fake.downloads.values() if d.status == "active") == 1)
+        check("the action reports what it did with the slot",
+              "slot" in detail, detail)
+
+        # Opting out must restore the old (aria2-native) behaviour.
+        detail = await engine._dispatch(
+            {"resume_after_seconds": 0.5, "preserve_slot": False},
+            "pause_resume",
+            {"gid": first.gid, "downloadSpeed": 1000, "name": "FIRST.bin"},
+        )
+        await asyncio.sleep(1.5)
+        check("preserve_slot: false leaves aria2's own behaviour alone",
+              fake.downloads[second.gid].status == "active"
+              and fake.downloads[first.gid].status == "waiting",
+              f"FIRST={fake.downloads[first.gid].status} SECOND={fake.downloads[second.gid].status}")
+
+    server.should_exit = True
+    with contextlib.suppress(asyncio.TimeoutError):
+        await asyncio.wait_for(task, timeout=10)
+    httpd.shutdown()
+    fake.stop()
+
+
+async def test_history_clear_purges(tmp_dir: Path) -> None:
+    """Clearing history must also drop aria2's finished results from the list."""
+    print("\ne2e: clearing history empties the finished list too")
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    rpc_port, web_port = free_port(), free_port()
+    httpd, fake = serve(rpc_port, secret="hist-secret", seed=False)
+    done = fake.add("finished.bin", 1024)
+    done.status = "complete"
+    done.completed = 1024
+    failed = fake.add("broken.bin", 1024)
+    failed.status = "error"
+    failed.error_message = "boom"
+
+    config_path = tmp_dir / "hist.yaml"
+    config_path.write_text(yaml.safe_dump({
+        "server": {"host": "127.0.0.1", "port": web_port},
+        "poll_interval": 0.4,
+        "aria2": {"managed": False,
+                  "rpc": {"host": "127.0.0.1", "port": rpc_port, "secret": "hist-secret"}},
+        "history": {"enabled": True, "file": str(tmp_dir / "history.json")},
+        "hosters": {"enabled": False, "state_file": str(tmp_dir / "h.json")},
+        "rules_enabled": False, "rules": [],
+    }))
+    cfg = Config(config_path)
+    app = create_app(cfg)
+    server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=web_port,
+                                           log_level="error", access_log=False))
+    task = asyncio.create_task(server.serve())
+    base = f"http://127.0.0.1:{web_port}"
+
+    async with aiohttp.ClientSession() as http:
+        async def get(path):
+            async with http.get(base + path) as res:
+                return await res.json()
+
+        await wait_for(lambda: server.started, 15)
+        recorded = await wait_for(
+            lambda: _history_count(http, base, 2), 10)
+        check("both finished downloads are recorded", recorded)
+        state = await get("/api/state")
+        check("and both are still listed by aria2",
+              len([d for d in state["downloads"]
+                   if d["status"] in ("complete", "error")]) == 2)
+
+        async with http.post(base + "/api/history-clear") as res:
+            cleared = await res.json()
+        check("clear reports what it removed", cleared["removed"] == 2, json.dumps(cleared))
+        check("clear purged aria2's results too", cleared["purgedAria2Results"] is True)
+
+        empty = await wait_for(lambda: _history_count(http, base, 0), 10)
+        check("history stays empty", empty)
+        gone = await wait_for(lambda: _no_finished_downloads(http, base), 10)
+        check("the finished rows disappear from the downloads list as well", gone,
+              json.dumps((await get("/api/state"))["downloads"]))
+
+    server.should_exit = True
+    with contextlib.suppress(asyncio.TimeoutError):
+        await asyncio.wait_for(task, timeout=10)
+    httpd.shutdown()
+    fake.stop()
+
+
+async def _history_count(http, base, expected: int) -> bool:
+    async with http.get(base + "/api/history") as res:
+        data = await res.json()
+    return len(data.get("entries", [])) == expected
+
+
+async def _no_finished_downloads(http, base) -> bool:
+    async with http.get(base + "/api/state") as res:
+        state = await res.json()
+    return not [d for d in state.get("downloads", [])
+                if d["status"] in ("complete", "error", "removed")]
+
+
+async def test_orphan_handling(tmp_dir: Path) -> None:
+    """An aria2c that outlives its manager must not break the next run.
+
+    Closing a terminal sends SIGHUP: the manager has to shut down gracefully
+    rather than dying on the spot and orphaning aria2c on the RPC port. And if it
+    is killed outright, the next run must adopt or reclaim that leftover process.
+    """
+    import os
+    import signal
+    import socket as socketlib
+    import subprocess
+
+    print("\ne2e: orphaned aria2c handling")
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    shim = Path(__file__).resolve().parent / "fake_aria2c"
+    rpc_port, web_port = free_port(), free_port()
+    session = tmp_dir / "aria2.session"
+    session.write_text("# session\n")  # so the shim's cmdline references it
+
+    config_path = tmp_dir / "orphan.yaml"
+    config_path.write_text(yaml.safe_dump({
+        "server": {"host": "127.0.0.1", "port": web_port},
+        "poll_interval": 0.5,
+        "aria2": {
+            "managed": True,
+            "binary": str(shim),
+            "rpc": {"host": "127.0.0.1", "port": rpc_port, "secret": "orphan-secret"},
+            "session_file": str(session),
+            "log_file": str(tmp_dir / "aria2.log"),
+            "options": {"dir": str(tmp_dir / "dl")},
+        },
+        "rules_enabled": False, "rules": [],
+        "hosters": {"enabled": False, "state_file": str(tmp_dir / "h.json")},
+        "history": {"enabled": False},
+    }))
+    base = f"http://127.0.0.1:{web_port}"
+
+    def manager() -> subprocess.Popen:
+        return subprocess.Popen(
+            [sys.executable, "-m", "aria2c_manager", "--config", str(config_path),
+             "--log-level", "warning"],
+            cwd=str(Path(__file__).resolve().parent.parent),
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+
+    def shim_pids() -> list[int]:
+        found = []
+        for entry in Path("/proc").iterdir():
+            if not entry.name.isdigit():
+                continue
+            try:
+                cmdline = (entry / "cmdline").read_bytes().decode("utf-8", "replace")
+            except OSError:
+                continue
+            if "fake_aria2c" in cmdline and f"--rpc-listen-port={rpc_port}" in cmdline:
+                found.append(int(entry.name))
+        return found
+
+    async def running() -> dict | None:
+        try:
+            async with aiohttp.ClientSession() as http:
+                async with http.get(base + "/api/aria2/status", timeout=aiohttp.ClientTimeout(total=5)) as res:
+                    return await res.json()
+        except Exception:
+            return None
+
+    proc = None
+    try:
+        # --- SIGHUP must shut everything down cleanly
+        proc = manager()
+        up = await wait_for(lambda: _status_running(running()), 25)
+        check("manager starts its own aria2c", up)
+        os.kill(proc.pid, signal.SIGHUP)
+        for _ in range(60):
+            if proc.poll() is not None:
+                break
+            await asyncio.sleep(0.5)
+        check("SIGHUP (closing the terminal) exits gracefully, not by signal",
+              proc.returncode == 0, f"exit code {proc.returncode}")
+        await wait_for(lambda: not shim_pids(), 10)
+        check("no aria2c is orphaned by SIGHUP", not shim_pids(), str(shim_pids()))
+
+        # --- a rerun after that must simply work
+        proc = manager()
+        check("the next run starts normally", await wait_for(lambda: _status_running(running()), 25))
+
+        # --- a hard kill DOES orphan it; the following run must recover
+        os.kill(proc.pid, signal.SIGKILL)
+        proc.wait(timeout=15)
+        await asyncio.sleep(1)
+        orphans = shim_pids()
+        check("SIGKILL leaves aria2c running (nothing can catch that signal)",
+              bool(orphans), str(orphans))
+
+        proc = manager()
+        adopted = await wait_for(lambda: _status_adopted(running()), 30)
+        check("the next run ADOPTS the orphan instead of failing to bind the port", adopted)
+        info = await running()
+        check("adopted instance is reported as running with its real pid",
+              info and info["running"] and info["pid"] in orphans,
+              json.dumps({k: info.get(k) for k in ("running", "pid", "adopted")} if info else {}))
+        proc.terminate(); proc.wait(timeout=25)
+        await wait_for(lambda: not shim_pids(), 12)
+        check("stopping the manager also stops the adopted aria2c", not shim_pids(), str(shim_pids()))
+
+        # --- a foreign listener must be reported, never killed
+        blocker = socketlib.socket()
+        blocker.setsockopt(socketlib.SOL_SOCKET, socketlib.SO_REUSEADDR, 1)
+        blocker.bind(("127.0.0.1", rpc_port))
+        blocker.listen(1)
+        try:
+            proc = manager()
+            await asyncio.sleep(9)
+            info = await running()
+            message = (info or {}).get("last_error", "")
+            check("an unrelated listener on the RPC port is reported clearly",
+                  info is not None and not info["running"] and "port" in message.lower(),
+                  f"running={(info or {}).get('running')} err={message[:120]}")
+            check("the foreign listener is left alone", blocker.fileno() != -1)
+        finally:
+            blocker.close()
+    finally:
+        if proc and proc.poll() is None:
+            proc.terminate()
+            with contextlib.suppress(subprocess.TimeoutExpired):
+                proc.wait(timeout=15)
+        for pid in shim_pids():
+            with contextlib.suppress(ProcessLookupError, PermissionError):
+                os.kill(pid, signal.SIGKILL)
+
+
+async def _status_running(coro) -> bool:
+    info = await coro
+    return bool(info and info.get("running"))
+
+
+async def _status_adopted(coro) -> bool:
+    info = await coro
+    return bool(info and info.get("running") and info.get("adopted"))
+
+
+def _pid_alive(pid: int) -> bool:
+    import os
+    try:
+        os.kill(pid, 0)
+    except (ProcessLookupError, PermissionError):
+        return False
+    return True
+
+
+async def _running(http, base) -> bool:
+    async with http.get(base + "/api/aria2/status") as res:
+        return (await res.json()).get("running") is True
+
+
+async def _pid_changed(http, base, old_pid: int) -> bool:
+    async with http.get(base + "/api/aria2/status") as res:
+        info = await res.json()
+    return bool(info.get("running")) and info.get("pid") not in (None, old_pid)
+
+
+async def _log_has_level(http, base, level: str) -> bool:
+    async with http.get(base + "/api/log") as res:
+        data = await res.json()
+    return any(e["level"] == level for e in data["events"])
+
+
+async def _log_contains(http, base, needle: str) -> bool:
+    async with http.get(base + "/api/log") as res:
+        data = await res.json()
+    return any(needle in e["message"] for e in data["events"])
+
+
+async def _history_has(http, base) -> bool:
+    async with http.get(base + "/api/history?limit=5") as res:
+        data = await res.json()
+    return bool(data.get("entries"))
+
+
+async def _state_has_downloads(http, base) -> bool:
+    async with http.get(base + "/api/state") as res:
+        state = await res.json()
+    return bool(state.get("downloads"))
+
+
+async def _download_progressing(http, base, name: str) -> bool:
+    async with http.get(base + "/api/state") as res:
+        state = await res.json()
+    for dl in state.get("downloads", []):
+        if dl["name"] == name:
+            return dl["progress"] > 0 and dl["eta"] is not None and dl["total"] > 0
+    return False
+
+
+# --------------------------------------------------------------------------
+def test_supervisor_argv(tmp_dir: Path) -> None:
+    """Managed mode: check the aria2c command line we would spawn."""
+    print("\nunit: supervisor argv")
+    from aria2c_manager.rpc import Aria2RPC
+    from aria2c_manager.supervisor import Aria2Supervisor, SupervisorError
+
+    config_path = tmp_dir / "argv.yaml"
+    config_path.write_text(yaml.safe_dump({
+        "aria2": {
+            "binary": "/bin/sh",  # stand-in so the lookup succeeds
+            "rpc": {"host": "127.0.0.1", "port": 6801, "secret": "s3cret"},
+            "session_file": str(tmp_dir / "aria2.session"),
+            "log_file": str(tmp_dir / "aria2.log"),
+            "options": {"dir": str(tmp_dir / "dl"), "split": 8, "continue": True},
+            "extra_args": ["--bt-tracker=udp://t.example:1337"],
+        },
+    }))
+    cfg = Config(config_path)
+    sup = Aria2Supervisor(cfg, Aria2RPC("127.0.0.1", 6801), lambda *a, **k: None)
+    argv = sup.build_argv()
+    joined = " ".join(argv)
+    check("rpc is enabled", "--enable-rpc=true" in argv)
+    check("rpc bound to loopback only", "--rpc-listen-all=false" in argv)
+    check("rpc port passed", "--rpc-listen-port=6801" in argv)
+    check("secret passed", "--rpc-secret=s3cret" in argv)
+    check("session saving enabled", "--save-session-interval=30" in argv)
+    check("options rendered as flags", "--split=8" in argv and "--continue=true" in argv)
+    check("bools stringified, not Python-cased", "--continue=True" not in joined)
+    check("extra_args appended last", argv[-1] == "--bt-tracker=udp://t.example:1337")
+    check("download dir created", (tmp_dir / "dl").is_dir())
+    check("no input-file flag when there is no session yet", "--input-file" not in joined)
+
+    (tmp_dir / "aria2.session").write_text("# session\n")
+    check("input-file added once a session exists",
+          any(a.startswith("--input-file=") for a in sup.build_argv()))
+
+    cfg.data["aria2"]["binary"] = "definitely-not-a-real-binary-xyz"
+    try:
+        sup.build_argv()
+        check("missing binary raises a helpful error", False, "no exception raised")
+    except SupervisorError as exc:
+        check("missing binary raises a helpful error", "not found in PATH" in str(exc), str(exc))
+
+
+def test_config(tmp_dir: Path) -> None:
+    print("\nunit: config")
+    path = tmp_dir / "cfg.yaml"
+    path.write_text(yaml.safe_dump({
+        "server": {"port": 7000},
+        "aria2": {"options": {"split": 32}},
+    }))
+    cfg = Config(path)
+    check("user values win", cfg.get("server.port") == 7000)
+    check("defaults fill the gaps", cfg.get("server.host") == "127.0.0.1")
+    check("nested user options merge, not replace",
+          cfg.get("aria2.options.split") == "32" and cfg.get("aria2.options.continue") == "true")
+    check("paths expanded", not str(cfg.get("aria2.session_file")).startswith("~"))
+    check("managed mode generates an RPC secret", len(cfg.get("aria2.rpc.secret")) > 10)
+
+    cfg.rules = [{"name": "only", "enabled": False, "when": {"speed_below": 1}, "action": "log_only"}]
+    cfg.save()
+    reread = yaml.safe_load(path.read_text())
+    check("save() persists rules", reread["rules"][0]["name"] == "only")
+    check("save() keeps unrelated user keys", reread["server"]["port"] == 7000)
+    check("save() does not write the generated secret",
+          "secret" not in json.dumps(reread.get("aria2", {})))
+
+
+def main() -> int:
+    import tempfile
+
+    with tempfile.TemporaryDirectory(prefix="aria2c-manager-test-") as tmp:
+        tmp_dir = Path(tmp)
+        for name in ("c1", "c2", "c3", "c4", "c6", "c7", "c8", "c9"):
+            (tmp_dir / name).mkdir(parents=True, exist_ok=True)
+        test_units()
+        test_rule_timing()
+        test_speed_sources()
+        test_measured_speed()
+        test_history(tmp_dir / "c7")
+        test_config(tmp_dir / "c1")
+        test_supervisor_argv(tmp_dir / "c2")
+        asyncio.run(test_e2e(tmp_dir / "c3"))
+        asyncio.run(test_managed(tmp_dir / "c4"))
+        asyncio.run(test_slot_preservation(tmp_dir / "c8"))
+        asyncio.run(test_history_clear_purges(tmp_dir / "c9"))
+        asyncio.run(test_orphan_handling(tmp_dir / "c6"))
+
+        # Hoster queue suite (resolvers, sequencing, captcha hand-off).
+        from tests import test_hosters
+
+        test_hosters.test_units()
+        asyncio.run(test_hosters.test_e2e(tmp_dir / "c5"))
+
+    return summary()
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
