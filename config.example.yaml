@@ -10,10 +10,18 @@ server:
   host: 127.0.0.1
   port: 6810
   open_browser: false
+  # Serve the browser UI at /. Off by default — the DankMaterialShell widget and
+  # the browser extension talk to the API directly, so the UI is opt-in. The
+  # REST/SSE API is served either way. Override for one run with --web-ui.
+  web_ui: false
 
 # How often the manager polls aria2 (seconds). This is also the tick rate of the
 # rules engine, so keep it at or below the smallest rule `for_seconds`.
 poll_interval: 1.0
+# Tick used when nothing is downloading *and* nothing is connected to the event
+# stream. Rules only ever act on live downloads, so backing off here costs
+# nothing; any command wakes the poller immediately.
+poll_interval_idle: 5.0
 
 aria2:
   # true  -> the manager spawns and supervises its own aria2c
@@ -110,62 +118,6 @@ history:
   file: ~/.local/share/aria2c-manager/history.json
   # Oldest entries are dropped past this count. 0 = unlimited.
   max_entries: 2000
-
-# ---------------------------------------------------------------------------
-# Hoster queue.
-#
-# Holds *file page* URLs (https://www.mediafire.com/file/…/file,
-# https://kenfiles.com/…) rather than direct links. Each one is resolved to a
-# fresh direct link only when its turn arrives — these links expire quickly —
-# then handed to aria2. The next job starts once the current download finishes.
-#
-# Sites that only need a countdown are handled end to end. Sites with a captcha
-# park in "needs you": an image code can be typed into the web UI, while
-# Turnstile/reCAPTCHA/hCaptcha are never attempted automatically — their tokens
-# only exist inside a real browser. For those, "Open page" arms the userscript to
-# submit the forms, wait out the countdown and hand the finished link back, so
-# all you do is tick the box. If Cloudflare guards the page itself, the
-# userscript can share that host's cookies (incl. cf_clearance) and the manager
-# then resolves it server-side.
-hosters:
-  enabled: true
-
-  # 1 = strictly sequential: one download at a time, which is what free-tier
-  # hosts expect. Raise it only if you know the host tolerates parallel grabs.
-  max_active: 1
-
-  # How often the queue worker checks on things (seconds).
-  poll_interval: 1.0
-
-  # Refuse a host that demands a longer countdown than this (seconds).
-  wait_cap_seconds: 120
-
-  # Resolve/download attempts before a job is marked failed. A dead or deleted
-  # file fails immediately regardless.
-  max_attempts: 3
-  retry_backoff_seconds: 30
-
-  # The queue survives restarts through this file. Cookies shared from the
-  # browser (for hosts behind Cloudflare) go in hoster-cookies.json beside it,
-  # written 0600 and never returned by the API.
-  state_file: ~/.local/share/aria2c-manager/hosters.json
-
-  # Sent when scraping pages. Blank = a normal desktop Chrome string.
-  user_agent: ""
-
-  # Where hoster downloads land. Blank = aria2's own dir.
-  dir: ""
-
-  # XFileSharing clones share one code path — add their domains here and they
-  # work with no new code (kenfiles.com is built in).
-  xfilesharing_domains: []
-  #  - somefiles.example
-  #  - anotherhost.example
-
-  # Attach extra hosts to any resolver by name: {resolver: [hosts]}
-  # Resolver names: mediafire, xfilesharing, direct
-  resolver_domains: {}
-  #  mediafire: [mediafire-mirror.example]
 
 # ---------------------------------------------------------------------------
 # Custom download actions.

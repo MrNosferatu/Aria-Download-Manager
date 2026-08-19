@@ -1,4 +1,4 @@
-"""aria2c-manager: background aria2c server + web UI + userscript intake."""
+"""aria2c-manager: background aria2c server + web UI + browser intake."""
 
 from .api import VERSION, create_app
 from .config import Config

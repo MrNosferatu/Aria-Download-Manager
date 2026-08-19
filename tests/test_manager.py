@@ -79,7 +79,7 @@ async def test_e2e(tmp_dir: Path) -> None:
 
     config_path = tmp_dir / "config.yaml"
     config_path.write_text(yaml.safe_dump({
-        "server": {"host": "127.0.0.1", "port": web_port},
+        "server": {"host": "127.0.0.1", "port": web_port, "web_ui": True},
         "poll_interval": 0.5,
         "aria2": {
             "managed": False,
@@ -156,6 +156,36 @@ async def test_e2e(tmp_dir: Path) -> None:
               res.status == 200 and icon and declared == str(len(icon)),
               f"status={res.status} len={len(icon)} content-length={declared}")
         check("favicon is not a bodyless status", res.status not in (204, 304))
+
+        # With server.web_ui off (the default) the API stays up and / explains
+        # itself instead of 404ing.
+        off_cfg = Config(tmp_dir / "web-ui-off.yaml")
+        off_cfg.data["server"]["web_ui"] = False
+        off_app = create_app(off_cfg)
+        off_routes = {getattr(r, "path", None) for r in off_app.routes}
+        check("web UI off: no /static mount", "/static" not in off_routes)
+        check("web UI off: the API is still routed", "/api/state" in off_routes)
+
+        # --- manager config writes
+        print("\ne2e: manager config")
+        status, before = await get("/api/config")
+        check("config is readable", status == 200 and "server" in before)
+
+        status, applied = await post("/api/config", {"web_ui": False})
+        check("web_ui can be written", status == 200 and applied["changed"]["server.web_ui"] is False)
+        check("a web_ui change asks for a restart", applied["restartRequired"] is True)
+
+        status, tuned = await post("/api/config", {"poll_interval_idle": 9.0})
+        check("idle interval can be written", status == 200 and tuned["changed"]["poll_interval_idle"] == 9.0)
+        check("a poll change needs no restart", tuned["restartRequired"] is False)
+
+        status, empty = await post("/api/config", {})
+        check("an empty config write is rejected", status == 400)
+
+        saved = yaml.safe_load(config_path.read_text())
+        check("the change reached config.yaml",
+              saved["server"]["web_ui"] is False and saved["poll_interval_idle"] == 9.0,
+              str(saved.get("server")))
 
         # --- adding
         print("\ne2e: adding downloads")
@@ -332,12 +362,12 @@ async def test_e2e(tmp_dir: Path) -> None:
         check("purge clears finished results", status == 200
               and not any(d.status in ("complete", "error", "removed") for d in fake.downloads.values()))
 
-        # --- userscript intake
-        print("\ne2e: userscript intake")
-        status, ping = await get("/api/userscript/ping")
-        check("userscript ping reports readiness", status == 200 and ping["ok"] and ping["aria2"])
+        # --- browser intake
+        print("\ne2e: browser intake")
+        status, ping = await get("/api/intake/ping")
+        check("intake ping reports readiness", status == 200 and ping["ok"] and ping["aria2"])
 
-        status, us = await post("/api/userscript/add", {
+        status, us = await post("/api/intake/add", {
             "url": "https://example.invalid/protected/file.iso?token=abc",
             "filename": "../../escape.iso",
             "referer": "https://example.invalid/page",
@@ -346,7 +376,7 @@ async def test_e2e(tmp_dir: Path) -> None:
             "headers": {"Authorization": "Bearer t"},
             "dir": str(tmp_dir),
         })
-        check("userscript add succeeds", status == 200 and us["ok"] and us["count"] == 1)
+        check("intake add succeeds", status == 200 and us["ok"] and us["count"] == 1)
         got = fake.downloads[us["gids"][0]].options
         check("referer forwarded", got.get("referer") == "https://example.invalid/page")
         check("user-agent forwarded", got.get("user-agent") == "TestUA/1.0")
@@ -356,12 +386,16 @@ async def test_e2e(tmp_dir: Path) -> None:
               str(got.get("out")))
         check("dir forwarded", got.get("dir") == str(tmp_dir))
 
-        status, multi = await post("/api/userscript/add", {
+        status, multi = await post("/api/intake/add", {
             "urls": ["https://example.invalid/a.zip", "https://example.invalid/b.zip"]})
-        check("userscript batch add", status == 200 and multi["count"] == 2)
+        check("intake batch add", status == 200 and multi["count"] == 2)
 
-        status, nourl = await post("/api/userscript/add", {})
-        check("userscript add without a url is 400", status == 400)
+        status, nourl = await post("/api/intake/add", {})
+        check("intake add without a url is 400", status == 400)
+
+        status, legacy = await get("/api/userscript/ping")
+        check("the pre-extension /api/userscript alias still answers",
+              status == 200 and legacy["ok"])
 
         # --- finished-download history (survives restarts and purges)
         print("\ne2e: finished-download history")
@@ -612,6 +646,34 @@ def test_speed_sources() -> None:
           engine._matches(strict, row, tracker, 100.0) is False)
 
 
+def test_idle_backoff():
+    """The poller only slows down when nothing is live and nobody is watching."""
+    print("\nunit: idle poll backoff")
+    from aria2c_manager.state import Poller, Store
+
+    store = Store()
+    poller = Poller(None, store, None, None, interval=1.0, idle_interval=5.0)
+
+    busy = {"counts": {"active": 1, "waiting": 0, "paused": 0}}
+    quiet = {"counts": {"active": 0, "waiting": 0, "paused": 0}}
+    queued = {"counts": {"active": 0, "waiting": 2, "paused": 0}}
+
+    check("a live download keeps the fast tick", poller._is_idle(busy) is False)
+    check("a queued download keeps the fast tick", poller._is_idle(queued) is False)
+    check("nothing live and nobody watching goes idle", poller._is_idle(quiet) is True)
+
+    queue = store.subscribe()
+    check("a connected UI keeps the fast tick", poller._is_idle(quiet) is False)
+    store.unsubscribe(queue)
+    check("dropping the last UI allows idling again", poller._is_idle(quiet) is True)
+
+    poller._idle = True
+    check("idle uses the slower interval", poller.current_interval == 5.0)
+    poller.poke()
+    check("any command drops back to the fast tick immediately",
+          poller._idle is False and poller.current_interval == 1.0)
+
+
 def test_measured_speed() -> None:
     print("\nunit: measured speed")
     from aria2c_manager.state import Poller
@@ -725,7 +787,6 @@ async def test_slot_preservation(tmp_dir: Path) -> None:
         "aria2": {"managed": False,
                   "rpc": {"host": "127.0.0.1", "port": rpc_port, "secret": "slot-secret"}},
         "history": {"enabled": False},
-        "hosters": {"enabled": False, "state_file": str(tmp_dir / "h.json")},
         "rules_enabled": False, "rules": [],
     }))
     cfg = Config(config_path)
@@ -799,7 +860,6 @@ async def test_history_clear_purges(tmp_dir: Path) -> None:
         "aria2": {"managed": False,
                   "rpc": {"host": "127.0.0.1", "port": rpc_port, "secret": "hist-secret"}},
         "history": {"enabled": True, "file": str(tmp_dir / "history.json")},
-        "hosters": {"enabled": False, "state_file": str(tmp_dir / "h.json")},
         "rules_enabled": False, "rules": [],
     }))
     cfg = Config(config_path)
@@ -886,7 +946,6 @@ async def test_orphan_handling(tmp_dir: Path) -> None:
             "options": {"dir": str(tmp_dir / "dl")},
         },
         "rules_enabled": False, "rules": [],
-        "hosters": {"enabled": False, "state_file": str(tmp_dir / "h.json")},
         "history": {"enabled": False},
     }))
     base = f"http://127.0.0.1:{web_port}"
@@ -1128,6 +1187,7 @@ def main() -> int:
         test_rule_timing()
         test_speed_sources()
         test_measured_speed()
+        test_idle_backoff()
         test_history(tmp_dir / "c7")
         test_config(tmp_dir / "c1")
         test_supervisor_argv(tmp_dir / "c2")
@@ -1136,12 +1196,6 @@ def main() -> int:
         asyncio.run(test_slot_preservation(tmp_dir / "c8"))
         asyncio.run(test_history_clear_purges(tmp_dir / "c9"))
         asyncio.run(test_orphan_handling(tmp_dir / "c6"))
-
-        # Hoster queue suite (resolvers, sequencing, captcha hand-off).
-        from tests import test_hosters
-
-        test_hosters.test_units()
-        asyncio.run(test_hosters.test_e2e(tmp_dir / "c5"))
 
     return summary()
 

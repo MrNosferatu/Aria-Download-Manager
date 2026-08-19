@@ -27,8 +27,14 @@ DEFAULTS: dict[str, Any] = {
         "port": 6810,
         # No auth by design: the socket is bound to loopback only.
         "open_browser": False,
+        # Serve the browser UI at /. Off by default: the DankMaterialShell
+        # widget and the browser extension both drive the API directly, so the
+        # UI is opt-in. The REST/SSE API is served either way.
+        "web_ui": False,
     },
     "poll_interval": 1.0,
+    # Used when nothing is downloading and no UI is connected to the stream.
+    "poll_interval_idle": 5.0,
     "aria2": {
         "managed": True,
         "binary": "aria2c",
@@ -82,26 +88,6 @@ DEFAULTS: dict[str, Any] = {
         "enabled": True,
         "file": str(DEFAULT_STATE_DIR / "history.json"),
         "max_entries": 2000,
-    },
-    # Hoster queue: page URLs (mediafire/kenfiles/…) resolved to direct links one
-    # at a time, each download finishing before the next starts.
-    "hosters": {
-        "enabled": True,
-        # 1 = strictly sequential, which is what free-tier hosts require.
-        "max_active": 1,
-        "poll_interval": 1.0,
-        # Refuse a host's countdown longer than this (seconds).
-        "wait_cap_seconds": 120,
-        "max_attempts": 3,
-        "retry_backoff_seconds": 30,
-        "state_file": str(DEFAULT_STATE_DIR / "hosters.json"),
-        "user_agent": "",
-        # Extra XFileSharing-clone domains handled by the kenfiles resolver.
-        "xfilesharing_domains": [],
-        # Attach extra hosts to any resolver: {resolver_name: [hosts]}
-        "resolver_domains": {},
-        # Blank = use aria2's own download directory.
-        "dir": "",
     },
     "rules_enabled": True,
     # Which speed figure rules judge by. Per-rule override: when.speed_source.
@@ -199,9 +185,6 @@ class Config:
         aria2["rpc"]["secret"] = secret
         for key in ("session_file", "log_file"):
             aria2[key] = str(expand(aria2[key]))
-        hosters = self.data.setdefault("hosters", {})
-        if hosters.get("state_file"):
-            hosters["state_file"] = str(expand(hosters["state_file"]))
         history = self.data.setdefault("history", {})
         if history.get("file"):
             history["file"] = str(expand(history["file"]))

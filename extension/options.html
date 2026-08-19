@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="ui.css">
+<title>aria2c manager — settings</title>
+</head>
+<body class="options">
+
+<h1>aria2c manager</h1>
+<p class="hint">The extension hands downloads to the local aria2c-manager daemon.
+  Start it first (<code>run.sh</code> or the systemd user unit).</p>
+
+<section>
+  <h2>Manager</h2>
+  <label class="field">
+    <span>Server URL</span>
+    <input id="server" placeholder="http://127.0.0.1:6810">
+  </label>
+  <div class="row-actions">
+    <button id="test">Test connection</button>
+    <span id="test-result" class="hint"></span>
+  </div>
+  <label class="field">
+    <span>Save to directory <small>blank = aria2's own dir</small></span>
+    <input id="dir" placeholder="(default)">
+  </label>
+  <label class="check"><input type="checkbox" id="paused"> Add new downloads paused</label>
+</section>
+
+<section>
+  <h2>What gets caught</h2>
+  <label class="check"><input type="checkbox" id="intercept">
+    Take over the browser's own downloads <small>cancel them here and queue them in aria2c</small></label>
+  <label class="check"><input type="checkbox" id="capture">
+    Auto-capture clicks on links that look like files</label>
+  <label class="check"><input type="checkbox" id="captureMagnets">
+    Always capture <code>magnet:</code> links</label>
+  <label class="check"><input type="checkbox" id="altClick">
+    Alt+click sends any link, even with capture off</label>
+  <label class="field">
+    <span>Minimum size <small>MiB — 0 sends everything</small></span>
+    <input id="minSizeMB" type="number" min="0" step="0.5">
+  </label>
+  <label class="field">
+    <span>Extensions to capture <small>comma separated</small></span>
+    <textarea id="extensions" rows="3"></textarea>
+  </label>
+  <label class="field">
+    <span>Never catch anything on these hosts <small>one per line</small></span>
+    <textarea id="blockedHosts" rows="3" placeholder="example.com"></textarea>
+  </label>
+</section>
+
+<section>
+  <h2>Feedback</h2>
+  <label class="check"><input type="checkbox" id="notify"> Tell me when something is queued or fails</label>
+  <label class="check"><input type="checkbox" id="pageToasts"> Prefer in-page toasts over system notifications</label>
+</section>
+
+<div class="save-bar">
+  <button id="save" class="primary">Save</button>
+  <button id="reset">Reset to defaults</button>
+  <span id="saved" class="hint"></span>
+</div>
+
+<script src="lib/common.js"></script>
+<script src="options.js"></script>
+</body>
+</html>

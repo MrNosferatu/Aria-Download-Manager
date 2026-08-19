@@ -1,4 +1,4 @@
-"""FastAPI application: REST commands, SSE state stream, userscript intake."""
+"""FastAPI application: REST commands, SSE state stream, browser intake."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ import base64
 import binascii
 import json
 import os
-import time
+import signal
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -20,7 +20,6 @@ from pydantic import BaseModel, Field
 
 from .config import STATIC_DIR, Config, stringify
 from .history import History
-from .hostqueue import HosterQueue
 from .rpc import DETAIL_KEYS, Aria2Error, Aria2RPC
 from .rules import ACTIONS, SPEED_SOURCES, RuleEngine
 from .state import Poller, Store
@@ -71,6 +70,19 @@ class PositionRequest(BaseModel):
     how: str = "POS_SET"  # POS_SET | POS_CUR | POS_END
 
 
+class ManagerConfigRequest(BaseModel):
+    """The handful of manager settings a UI may change.
+
+    Deliberately not a free-form config writer: everything else in config.yaml
+    is either machine-specific or unsafe to change from an unauthenticated
+    loopback API.
+    """
+
+    web_ui: bool | None = None
+    poll_interval: float | None = None
+    poll_interval_idle: float | None = None
+
+
 class RulesRequest(BaseModel):
     rules: list[dict[str, Any]] | None = None
     enabled: bool | None = None
@@ -82,46 +94,14 @@ class SelectFilesRequest(BaseModel):
     indices: list[int]
 
 
-class HosterAddRequest(BaseModel):
-    """Queue page URLs (mediafire.com/file/…, kenfiles.com/…) for resolution."""
-
-    urls: list[str] = Field(default_factory=list)
-    url: str | None = None
-    options: dict[str, Any] = Field(default_factory=dict)
-    position: int | None = None
-
-
-class HosterAnswerRequest(BaseModel):
-    """Reply to a parked job: a captcha code, or a link solved in the browser."""
-
-    code: str | None = None
-    direct_url: str | None = None
-
-
-class HosterReorderRequest(BaseModel):
-    ids: list[str]
-
-
 class HistoryKeyRequest(BaseModel):
     """History keys are filesystem paths, so they travel in the body, not the URL."""
 
     key: str
 
 
-class HosterCookiesRequest(BaseModel):
-    """Cookies the browser shares for a host, so the manager can reuse its session.
-
-    Cloudflare ties a cf_clearance cookie to the user agent that earned it, so the
-    UA must be sent alongside or the clearance is useless.
-    """
-
-    domain: str
-    cookies: dict[str, str] | str
-    user_agent: str | None = None
-
-
-class UserscriptRequest(BaseModel):
-    """Deliberately lenient: the userscript sends whatever the page gave it."""
+class IntakeRequest(BaseModel):
+    """Deliberately lenient: the browser extension sends whatever the page gave it."""
 
     url: str | None = None
     urls: list[str] = Field(default_factory=list)
@@ -197,12 +177,6 @@ def piece_map(bitfield: str, num_pieces: int, buckets: int = 256) -> list[int]:
     return out
 
 
-def _normalize_url(url: str) -> str:
-    """Loose URL comparison: ignore scheme, www, query and trailing slash."""
-    url = (url or "").split("#")[0].split("?")[0].split("://", 1)[-1]
-    return url.removeprefix("www.").rstrip("/").lower()
-
-
 def sse_frame(message: dict) -> str:
     return f"event: {message.get('type', 'message')}\ndata: {json.dumps(message.get('data'))}\n\n"
 
@@ -231,9 +205,14 @@ def create_app(cfg: Config) -> FastAPI:
         cfg, rpc, lambda level, message, **kw: store.add_event(level, message, **kw)
     )
     engine = RuleEngine(cfg, rpc, store)
-    poller = Poller(rpc, store, supervisor, engine, float(cfg.get("poll_interval", 1.0)))
-    hosters = HosterQueue(cfg, rpc, store, on_change=poller.poke)
-    poller.extras["hosters"] = hosters.public
+    poller = Poller(
+        rpc,
+        store,
+        supervisor,
+        engine,
+        float(cfg.get("poll_interval", 1.0)),
+        float(cfg.get("poll_interval_idle", 5.0)),
+    )
     history = History(cfg)
     poller.observers.append(history.observe)
 
@@ -247,18 +226,17 @@ def create_app(cfg: Config) -> FastAPI:
             supervisor.last_error = str(exc)
             store.add_event("error", f"aria2c unavailable: {exc}")
         poller.start()
-        hosters.start()
         try:
             yield
         finally:
+            store.publish({"type": "shutdown", "data": {"ok": True}})
             history.save(force=True)
-            await hosters.stop()
             await poller.stop()
             await supervisor.stop()
             await rpc.close()
 
     app = FastAPI(title="aria2c-manager", version=VERSION, lifespan=lifespan)
-    # Open CORS on purpose: the userscript posts from arbitrary page origins and
+    # Open CORS on purpose: the extension posts from arbitrary page origins and
     # the server is bound to loopback with no credentials of its own.
     app.add_middleware(
         CORSMiddleware,
@@ -273,7 +251,6 @@ def create_app(cfg: Config) -> FastAPI:
     app.state.supervisor = supervisor
     app.state.engine = engine
     app.state.poller = poller
-    app.state.hosters = hosters
     app.state.history = history
 
     @app.exception_handler(Aria2Error)
@@ -319,6 +296,51 @@ def create_app(cfg: Config) -> FastAPI:
     async def get_config():
         return cfg.public()
 
+    @app.post("/api/config")
+    async def set_config(req: ManagerConfigRequest):
+        changed: dict[str, Any] = {}
+        # `save()` writes the user's own file back, so every change has to land
+        # in both the live config and that copy.
+        if req.web_ui is not None:
+            cfg.data["server"]["web_ui"] = bool(req.web_ui)
+            cfg._user.setdefault("server", {})["web_ui"] = bool(req.web_ui)
+            changed["server.web_ui"] = bool(req.web_ui)
+        if req.poll_interval is not None:
+            value = max(0.25, float(req.poll_interval))
+            cfg.data["poll_interval"] = value
+            cfg._user["poll_interval"] = value
+            poller.interval = value
+            changed["poll_interval"] = value
+        if req.poll_interval_idle is not None:
+            value = max(poller.interval, float(req.poll_interval_idle))
+            cfg.data["poll_interval_idle"] = value
+            cfg._user["poll_interval_idle"] = value
+            poller.idle_interval = value
+            changed["poll_interval_idle"] = value
+        if not changed:
+            raise HTTPException(400, "nothing to change")
+        cfg.save()
+        store.add_event("info", "Config updated: " + ", ".join(sorted(changed)))
+        # Mounting/unmounting the static UI can only happen at startup, so say
+        # so rather than pretending the toggle took effect.
+        return {
+            "ok": True,
+            "changed": changed,
+            "restartRequired": "server.web_ui" in changed,
+            "config": cfg.public(),
+        }
+
+    @app.post("/api/restart")
+    async def restart_manager():
+        """Exit so the service manager brings us back with the new config."""
+
+        async def bye():
+            await asyncio.sleep(0.2)
+            os.kill(os.getpid(), signal.SIGTERM)
+
+        asyncio.create_task(bye())
+        return {"ok": True, "restarting": True}
+
     @app.get("/api/aria2/status")
     async def aria2_status():
         return supervisor.status()
@@ -350,6 +372,11 @@ def create_app(cfg: Config) -> FastAPI:
                     except asyncio.TimeoutError:
                         yield ": keepalive\n\n"
                         continue
+                    if message.get("type") == "shutdown":
+                        # The manager is going down; end the response instead of
+                        # holding the shutdown open. Clients reconnect on their own.
+                        yield sse_frame(message)
+                        return
                     yield sse_frame(message)
             finally:
                 store.unsubscribe(queue)
@@ -650,111 +677,23 @@ def create_app(cfg: Config) -> FastAPI:
         )
         return {"ok": True, "removed": removed, "purgedAria2Results": purged}
 
-    # ---- hoster queue ----------------------------------------------------
-    @app.get("/api/hoster")
-    async def hoster_list():
-        return hosters.public()
-
-    @app.get("/api/hoster/resolvers")
-    async def hoster_resolvers():
-        return {"resolvers": hosters.public()["resolvers"]}
-
-    @app.post("/api/hoster")
-    async def hoster_add(req: HosterAddRequest):
-        urls = split_uris(req.urls, req.url)
-        if not urls:
-            raise HTTPException(400, "no page URL given")
-        jobs = hosters.add(urls, clean_options(req.options), req.position)
-        return {"ok": True, "jobs": [job.to_dict() for job in jobs]}
-
-    @app.post("/api/hoster/{job_id}/answer")
-    async def hoster_answer(job_id: str, req: HosterAnswerRequest):
-        if not (req.code or req.direct_url):
-            raise HTTPException(400, "send either a captcha code or a direct_url")
-        try:
-            job = await hosters.answer(job_id, req.model_dump())
-        except KeyError:
-            raise HTTPException(404, f"no job {job_id}") from None
-        except ValueError as exc:
-            raise HTTPException(409, str(exc)) from None
-        return {"ok": True, "job": job.to_dict()}
-
-    @app.post("/api/hoster/{job_id}/retry")
-    async def hoster_retry(job_id: str):
-        if not hosters.retry(job_id):
-            raise HTTPException(404, f"no job {job_id}")
-        return {"ok": True}
-
-    @app.post("/api/hoster/{job_id}/cancel")
-    async def hoster_cancel(job_id: str):
-        if not hosters.cancel(job_id):
-            raise HTTPException(409, "job is already finished or unknown")
-        return {"ok": True}
-
-    @app.delete("/api/hoster/{job_id}")
-    async def hoster_remove(job_id: str):
-        if not hosters.remove(job_id):
-            raise HTTPException(404, f"no job {job_id}")
-        return {"ok": True}
-
-    @app.post("/api/hoster/reorder")
-    async def hoster_reorder(req: HosterReorderRequest):
-        hosters.reorder(req.ids)
-        return {"ok": True}
-
-    @app.post("/api/hoster/pause")
-    async def hoster_pause(paused: bool = Body(default=True, embed=True)):
-        hosters.set_paused(paused)
-        return {"ok": True, "paused": hosters.paused}
-
-    @app.post("/api/hoster/clear-finished")
-    async def hoster_clear():
-        return {"ok": True, "removed": hosters.clear_finished()}
-
-    @app.get("/api/hoster/cookies")
-    async def hoster_cookies_list():
-        """Which hosts we hold cookies for — names only, never values."""
-        return {"credentials": hosters.credential_summary()}
-
-    @app.post("/api/hoster/cookies")
-    async def hoster_cookies_set(req: HosterCookiesRequest):
-        try:
-            result = hosters.set_credentials(
-                req.domain, req.cookies, req.user_agent or ""
-            )
-        except ValueError as exc:
-            raise HTTPException(400, str(exc)) from None
-        return {"ok": True, **result}
-
-    # ---- userscript intake ----------------------------------------------
+    # ---- browser intake ---------------------------------------------------
+    # /api/userscript/* is the pre-extension name for these two, kept so
+    # anything already posting there keeps working.
+    @app.get("/api/intake/ping")
     @app.get("/api/userscript/ping")
-    async def userscript_ping():
+    async def intake_ping():
         return {
             "ok": True,
             "name": "aria2c-manager",
             "version": VERSION,
             "aria2": supervisor.status().get("running", False),
             "defaultDir": cfg.get("aria2.options.dir"),
-            "hosterDomains": sorted(
-                {domain for resolver in hosters.resolvers for domain in resolver.domains}
-            ),
         }
 
-    @app.post("/api/userscript/hoster")
-    async def userscript_hoster(req: HosterAddRequest):
-        """Queue a hoster *page* URL from the browser (not a direct link)."""
-        urls = split_uris(req.urls, req.url)
-        if not urls:
-            raise HTTPException(400, "no page URL given")
-        jobs = hosters.add(urls, clean_options(req.options), req.position)
-        return {
-            "ok": True,
-            "count": len(jobs),
-            "jobs": [{"id": j.id, "resolver": j.resolver, "state": j.state} for j in jobs],
-        }
-
+    @app.post("/api/intake/add")
     @app.post("/api/userscript/add")
-    async def userscript_add(req: UserscriptRequest, request: Request):
+    async def intake_add(req: IntakeRequest, request: Request):
         uris = split_uris(req.urls, req.url)
         if not uris:
             raise HTTPException(400, "no url given")
@@ -783,26 +722,12 @@ def create_app(cfg: Config) -> FastAPI:
         if req.paused:
             options["pause"] = "true"
 
-        # If a queued hoster job is parked waiting for a human on exactly this
-        # page, this link IS that job's answer — complete the job instead of
-        # starting an unrelated download.
-        parked = hosters.match_by_page(req.referer or "")
-        if parked and _normalize_url(uris[0]) != _normalize_url(parked.page_url):
-            job = await hosters.answer(parked.id, {"direct_url": uris[0]})
-            return {
-                "ok": True,
-                "matchedHosterJob": job.id,
-                "state": job.state,
-                "gids": [job.gid] if job.gid else [],
-                "count": 1,
-            }
-
         gids = [await rpc.add_uri([uri], dict(options), None) for uri in uris]
         poller.poke()
-        origin = request.headers.get("origin") or req.source or "userscript"
+        origin = request.headers.get("origin") or req.source or "browser"
         store.add_event(
             "info",
-            f"Userscript queued {os.path.basename(uris[0].split('?')[0]) or uris[0]}"
+            f"Browser queued {os.path.basename(uris[0].split('?')[0]) or uris[0]}"
             + (f" (+{len(uris) - 1} more)" if len(uris) > 1 else ""),
             gids=gids,
             source=origin,
@@ -810,7 +735,10 @@ def create_app(cfg: Config) -> FastAPI:
         return {"ok": True, "gids": gids, "count": len(gids)}
 
     # ---- static UI -------------------------------------------------------
-    if STATIC_DIR.is_dir():
+    # Off by default: with the DankMaterialShell widget or the browser extension
+    # driving it, the browser UI is optional. The REST/SSE API is unaffected.
+    web_ui = bool(cfg.get("server.web_ui", False))
+    if web_ui and STATIC_DIR.is_dir():
         app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
         @app.get("/")
@@ -826,5 +754,17 @@ def create_app(cfg: Config) -> FastAPI:
             if logo.is_file():
                 return FileResponse(str(logo), media_type="image/png")
             return Response(content=FAVICON_SVG, media_type="image/svg+xml")
+    else:
+
+        @app.get("/")
+        async def index_disabled():
+            return {
+                "ok": True,
+                "name": "aria2c-manager",
+                "version": VERSION,
+                "webUi": False,
+                "hint": "The web UI is off. Set server.web_ui: true in "
+                        f"{cfg.path}, or start with --web-ui. The API is unaffected.",
+            }
 
     return app

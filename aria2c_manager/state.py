@@ -116,6 +116,11 @@ class Store:
     def unsubscribe(self, queue: asyncio.Queue) -> None:
         self._subscribers.discard(queue)
 
+    @property
+    def has_subscribers(self) -> bool:
+        """Is any UI actually watching the stream right now?"""
+        return bool(self._subscribers)
+
     def publish(self, message: dict) -> None:
         for queue in list(self._subscribers):
             if queue.full():  # slow client: drop the oldest frame
@@ -152,22 +157,34 @@ class Store:
 class Poller:
     """Polls aria2 on an interval and drives the rule engine."""
 
-    def __init__(self, rpc: Aria2RPC, store: Store, supervisor, rules, interval: float = 1.0):
+    def __init__(
+        self,
+        rpc: Aria2RPC,
+        store: Store,
+        supervisor,
+        rules,
+        interval: float = 1.0,
+        idle_interval: float = 5.0,
+    ):
         self.rpc = rpc
         self.store = store
         self.supervisor = supervisor
         self.rules = rules
         self.interval = max(0.25, float(interval))
+        #: Used when nothing is downloading *and* no UI is connected. Rules only
+        #: ever act on live downloads, so slowing down here costs nothing.
+        self.idle_interval = max(self.interval, float(idle_interval))
         #: gid -> recent (timestamp, completedLength) samples, used to derive a
         #: responsive speed without aria2's long smoothing window.
         self._progress: dict[str, deque[tuple[float, int]]] = {}
-        #: name -> callable returning extra snapshot sections (e.g. the hoster queue)
+        #: name -> callable returning extra snapshot sections
         self.extras: dict[str, Any] = {}
         #: callables handed each finished snapshot (e.g. the history recorder)
         self.observers: list[Any] = []
         self._task: asyncio.Task | None = None
         self._wake = asyncio.Event()
         self._fail_streak = 0
+        self._idle = False
 
     def start(self) -> None:
         if self._task is None:
@@ -184,7 +201,24 @@ class Poller:
 
     def poke(self) -> None:
         """Force an immediate refresh (after a mutating command)."""
+        self._idle = False
         self._wake.set()
+
+    @property
+    def current_interval(self) -> float:
+        return self.idle_interval if self._idle else self.interval
+
+    def _is_idle(self, snapshot: dict) -> bool:
+        """Nothing to watch and nobody watching: back off the tick.
+
+        A connected UI always gets the full rate, and so does any download that
+        is running, waiting or paused — those are what rules judge.
+        """
+        if self.store.has_subscribers:
+            return False
+        counts = snapshot.get("counts") or {}
+        live = (counts.get("active", 0) + counts.get("waiting", 0) + counts.get("paused", 0))
+        return live == 0
 
     async def run(self) -> None:
         last = time.monotonic()
@@ -208,6 +242,7 @@ class Poller:
                         except Exception as exc:  # bookkeeping must not stop polling
                             self.store.add_event("error", f"Observer failed: {exc}")
                     self.store.set_snapshot(snapshot)
+                    self._idle = self._is_idle(snapshot)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
@@ -215,7 +250,7 @@ class Poller:
                 if self._fail_streak in (1, 5) or self._fail_streak % 30 == 0:
                     self.store.add_event("error", f"Poll failed: {exc}")
             try:
-                await asyncio.wait_for(self._wake.wait(), timeout=self.interval)
+                await asyncio.wait_for(self._wake.wait(), timeout=self.current_interval)
             except asyncio.TimeoutError:
                 pass
             else:

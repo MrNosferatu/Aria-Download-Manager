@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="ui.css">
+<title>aria2c manager</title>
+</head>
+<body class="popup">
+
+<header>
+  <div>
+    <h1>aria2c manager</h1>
+    <span id="status" class="pill">Connecting…</span>
+  </div>
+  <button id="open-ui" class="icon" title="Open the web UI">↗</button>
+</header>
+
+<div class="stats">
+  <div><label>Down</label><b id="down">–</b></div>
+  <div><label>Up</label><b id="up">–</b></div>
+  <div><label>Active</label><b id="active">0</b></div>
+  <div><label>Queued</label><b id="queued">0</b></div>
+</div>
+
+<form id="add" class="addrow">
+  <input id="url" placeholder="URL or magnet…" autocomplete="off">
+  <button type="submit" class="primary">Add</button>
+</form>
+
+<div id="list" class="list"></div>
+<p id="empty" class="empty">Nothing downloading.</p>
+
+<footer>
+  <label class="check"><input type="checkbox" id="site-block"> Skip auto-capture on <span id="host">this site</span></label>
+  <button id="options" class="link">Settings</button>
+</footer>
+
+<script src="lib/common.js"></script>
+<script src="popup.js"></script>
+</body>
+</html>

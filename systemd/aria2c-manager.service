@@ -8,8 +8,9 @@ Wants=network-online.target
 Type=simple
 WorkingDirectory=%h/GitHub/Aria2C
 ExecStart=/usr/bin/python3 -m aria2c_manager
-Restart=on-failure
-RestartSec=3
+# always, not on-failure: /api/restart exits cleanly to reload config
+Restart=always
+RestartSec=1
 # aria2c is a child of the manager; kill the whole group on stop so no
 # orphaned downloader survives.
 KillMode=control-group

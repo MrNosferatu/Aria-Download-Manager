@@ -43,10 +43,9 @@
 <nav class="tabs">
   <button class="tab active" data-tab="downloads">Downloads</button>
   <button class="tab" data-tab="settings">Settings</button>
-  <button class="tab" data-tab="hosters">Hosters <span id="hoster-badge" class="badge">0</span></button>
   <button class="tab" data-tab="rules">Rules <span id="rules-badge" class="badge">0</span></button>
   <button class="tab" data-tab="log">Log</button>
-  <button class="tab" data-tab="help">Userscript</button>
+  <button class="tab" data-tab="help">Extension</button>
   <div class="spacer"></div>
   <label class="switch" title="Master switch for all custom download-action rules">
     <input type="checkbox" id="rules-master"><span>Rules engine</span>
@@ -71,7 +70,7 @@
       <button id="btn-history-clear" class="btn btn-small btn-danger">Clear history</button>
     </div>
     <div id="downloads" class="downloads"></div>
-    <p id="empty" class="empty">No downloads. Hit <b>+ Add download</b> or send one from the userscript.</p>
+    <p id="empty" class="empty">No downloads. Hit <b>+ Add download</b> or send one from the browser extension.</p>
   </section>
 
   <!-- ---------------- settings ---------------- -->
@@ -94,34 +93,6 @@
     <div class="panehead"><h2>aria2c process</h2></div>
     <div id="proc-info" class="kv"></div>
     <button id="btn-restart-aria2" class="btn btn-danger btn-small">Restart aria2c</button>
-  </section>
-
-  <!-- ---------------- hoster queue ---------------- -->
-  <section id="tab-hosters" class="tabpane">
-    <div class="panehead">
-      <h2>Hoster queue</h2>
-      <div>
-        <span id="hoster-status" class="pill pill-idle">idle</span>
-        <button id="btn-hoster-pause" class="btn btn-small">Pause queue</button>
-        <button id="btn-hoster-clear" class="btn btn-small">Clear finished</button>
-      </div>
-    </div>
-    <p class="hint">Paste <b>file page</b> links (not direct links). Each one is resolved
-      to a fresh direct link only when its turn comes, handed to aria2, and the next
-      starts once it finishes. Sites needing a wait are waited out; a captcha is handed
-      to you — <span id="hoster-sites"></span></p>
-
-    <div class="addrow">
-      <textarea id="hoster-urls" rows="2"
-        placeholder="https://www.mediafire.com/file/…/file&#10;https://kenfiles.com/…"></textarea>
-      <div class="addrow-side">
-        <input id="hoster-dir" placeholder="Save to (optional)">
-        <button id="btn-hoster-add" class="btn btn-primary">Queue links</button>
-      </div>
-    </div>
-
-    <div id="hoster-list" class="downloads"></div>
-    <p id="hoster-empty" class="empty">Queue is empty.</p>
   </section>
 
   <!-- ---------------- rules ---------------- -->
@@ -160,10 +131,12 @@
 
   <!-- ---------------- help ---------------- -->
   <section id="tab-help" class="tabpane">
-    <div class="panehead"><h2>Tampermonkey integration</h2></div>
-    <p class="hint">Install <code>userscript/aria2c-catcher.user.js</code> in Tampermonkey. It
-      sends downloads here with the page's cookies, referer and user-agent, so
-      login-protected files still work.</p>
+    <div class="panehead"><h2>Browser extension</h2></div>
+    <p class="hint">Load <code>extension/</code> in Firefox (<code>about:debugging</code> →
+      This Firefox → Load Temporary Add-on → pick <code>manifest.json</code>) or Chrome
+      (<code>chrome://extensions</code> → Developer mode → Load unpacked). It takes over the
+      browser's own downloads and forwards them here with the page's cookies, referer and
+      user-agent, so login-protected files still work.</p>
     <div class="kv">
       <div><label>Intake endpoint</label><code id="help-endpoint"></code></div>
       <div><label>Ping</label><code id="help-ping"></code></div>

@@ -1,23 +1,18 @@
 # aria2c manager
 
 A background download server built on aria2c, with a web UI to manage the queue
-and an HTTP endpoint that a Tampermonkey userscript posts to. Every aria2
+and a browser extension that hands the browser's own downloads to it. Every aria2
 capability that matters for downloading — queueing, splitting a file into parts,
 parallel downloads, parallel connections per server, speed limits, BitTorrent —
 is exposed in the UI, and a small rules engine can take automatic action on a
 download when it misbehaves (for example: *speed under 50 KiB/s for 3 seconds →
 pause and resume*).
 
-It also queues **file-hosting-site pages** — MediaFire, kenfiles and XFileSharing
-clones — resolving each to a fresh direct link when its turn comes and running
-them one at a time.
-
 ```
-Tampermonkey ──POST /api/userscript/add──┐
+Extension ─────POST /api/intake/add─────┐
                                          ├─→ manager (FastAPI) ──JSON-RPC──→ aria2c
 Browser UI ──REST + SSE─────────────────┘        │
-                                                  ├── rules engine (1 Hz tick)
-                                                  └── hoster queue (page URL → direct link)
+                                                  └── rules engine (1 Hz tick)
 ```
 
 The manager owns the aria2c process: it spawns it, waits for its RPC to answer,
@@ -58,7 +53,7 @@ cp config.example.yaml config.yaml     # optional; defaults work as-is
 ```
 aria2c-manager 1.0.0
   web UI     http://127.0.0.1:6810/
-  userscript POST http://127.0.0.1:6810/api/userscript/add
+  intake     POST http://127.0.0.1:6810/api/intake/add
   config     /home/you/GitHub/Aria2C/config.yaml
 ```
 
@@ -104,40 +99,52 @@ If you would rather downloads *continue* after you close the terminal, set
 `aria2.stop_on_exit: false`. The manager then leaves aria2c running on exit and
 adopts it again next time.
 
-## 3. Tampermonkey
+## 3. Browser extension
 
-Open `userscript/aria2c-catcher.user.js` in Tampermonkey (drag the file into the
-browser, or Dashboard → Utilities → Import) and install it. Then use the
-Tampermonkey tray menu on any page:
+`extension/` is the browser half: it takes over the browser's own downloads and
+hands them here. Firefox is the supported target; the same directory also loads
+in Chromium.
 
-| Menu entry | What it does |
+**Install it** — pick one:
+
+| | How | Survives a browser restart |
+| --- | --- | --- |
+| From AMO | Once published, one click from the add-on's page | yes, and auto-updates |
+| Signed file | `./extension/build.sh sign unlisted` → open the `.xpi` in Firefox (`about:addons` → gear → *Install Add-on From File*) | yes |
+| Unpacked, Firefox | `about:debugging#/runtime/this-firefox` → *Load Temporary Add-on* → `extension/manifest.json` | no — gone on restart |
+| Unpacked, Chromium | `chrome://extensions` → *Developer mode* → *Load unpacked* → `extension/` | yes |
+
+Signing needs a free AMO API key; `extension/store/listing.md` has the
+submission material, and `extension/build.sh` wraps the packaging. Then open the
+extension's Settings and check the server URL matches `server.port` in
+`config.yaml`.
+
+**It takes over the browser's own downloads.** Anything the browser starts to
+download is cancelled, wiped from the download list, and queued in aria2c
+instead, with the page's cookies, referer and user-agent attached — so a
+login-protected file, a `Content-Disposition` attachment or a JavaScript-triggered
+download all end up in the queue with no clicking. Cookies come from the
+browser's cookie store rather than `document.cookie`, so `HttpOnly` session
+cookies travel with the request too. `blob:` and `data:` downloads are left
+alone: aria2 cannot fetch those.
+
+On top of that:
+
+| Surface | What it does |
 | --- | --- |
-| Send this page URL to aria2c | queues the current URL |
-| Send selected links to aria2c | queues every link inside your text selection |
-| Send ALL downloadable links | queues every matching link on the page (asks first) |
-| Send a URL by hand… | prompts for a URL or magnet |
-| Auto-capture download links | intercept left-clicks on links that look like downloads |
-| Alt+click sends any link | send any link with Alt held, even with capture off |
-| Add downloads paused | queue new downloads in a paused state |
-| Server URL / directory / extensions / minimum size | per-browser settings |
-| Skip this site | exclude the current hostname from auto-capture |
-| Test connection | verifies the manager and aria2c are up |
-| **Queue THIS PAGE in the hoster queue** | send the current hoster page to the queue (§5) |
-| **Queue hoster links on this page…** | queue every link to a supported host |
-| **Send this page's generated link to the queue** | after solving a captcha, hand the link back to its job |
-| **Auto-run this hoster page** | drive the wait/submit/hand-back flow now (also armed by the UI's *Open page ▸*) |
-| **Share this site's cookies with the manager** | pass this host's cookies + UA so the manager can reuse a Cloudflare clearance |
-| Auto-run hoster pages when opened from the UI | toggle the auto-flow (on by default; never runs during ordinary browsing) |
-
-Each request carries `document.cookie`, the page URL as `Referer`, and the
-browser's `User-Agent`, so downloads behind a login keep working. Magnet links
-are captured by default. `blob:` and `data:` URLs are ignored — the server
-cannot fetch those.
+| Toolbar popup | live speed, active/queued counts, progress of what is running, a box to paste a URL or magnet, and a per-site *skip auto-capture* switch |
+| Badge | number of active downloads, `!` when the manager is unreachable |
+| Right-click a link / image / video / audio | send just that one |
+| Right-click a page | send the page URL, or every downloadable link on it |
+| Right-click a selection | send every link inside it |
+| Click capture | left-click on a magnet, or on a link the browser would *render* rather than download, sends it here instead |
+| Alt+click | sends any link, even with capture off |
+| Settings page | server URL, save directory, add-paused, minimum size, which extensions count, per-host blocklist, notification style |
 
 Anything else can post to the same endpoint:
 
 ```bash
-curl -X POST http://127.0.0.1:6810/api/userscript/add \
+curl -X POST http://127.0.0.1:6810/api/intake/add \
   -H 'Content-Type: application/json' \
   -d '{"url": "https://example.com/big.iso", "filename": "big.iso"}'
 ```
@@ -243,91 +250,25 @@ rules at once, and each download's row shows a live countdown badge
 (`stall-recovery 2.1/3s`) plus a trigger count, so you can see a rule building up
 before it fires. Every trigger is written to the **Log** tab.
 
-## 5. Hoster queue (MediaFire, kenfiles, …)
+## 5. Web UI
 
-The **Hosters** tab takes *file page* links instead of direct links. Each one is
-resolved to a direct link only when its turn comes — these links expire fast and
-are often session-bound — handed to aria2, and the next job starts once the
-current download finishes.
+The browser UI is **opt-in**: `server.web_ui` defaults to `false`, because the
+DankMaterialShell widget and the browser extension both drive the API directly
+and most sessions never open a browser tab for it. Three ways to turn it on:
 
-```
-paste page URLs ─→ queued ─→ resolving ─→ downloading ─→ complete ─→ next job
-                                 │
-                                 └─ needs you (captcha) ─answer─→ downloading
-```
+* the **Web UI** switch in the widget's Settings tab, then *Restart manager*;
+* `server.web_ui: true` in `config.yaml`;
+* `python3 -m aria2c_manager --web-ui` for one run (`--open` implies it).
 
-Two site shapes are covered, which between them account for most hosts:
+Mounting the UI can only happen at startup, so the switch writes the config and
+asks for a restart — `POST /api/restart` exits cleanly and the service unit
+(`Restart=always`) brings the manager straight back.
 
-| Shape | Example | How it goes |
-| --- | --- | --- |
-| **Direct** — the page holds the link | mediafire.com | Fully automatic. The link is read out of the download button, verified with a HEAD (filename + size), and downloaded. |
-| **Wait + challenge** — XFileSharing script | kenfiles.com | The two-step `op=download1` → `op=download2` flow is followed and the countdown waited out. Challenges: none → automatic; the classic ordered-digits kind (plain text in the HTML) → read off the page; an **image code** → shown to you in the UI, you type it; **Turnstile / reCAPTCHA / hCaptcha** → handed to the browser, see below. |
-
-### Cloudflare Turnstile is one click (often zero)
-
-Turnstile is only a checkbox for a human, but the token it mints
-(`cf-turnstile-response`) is issued by Cloudflare's own JavaScript running in a
-real browser — a server-side scraper cannot produce it however easy the click is.
-So the browser does that one step, and the userscript does everything around it.
-
-Click **Open page ▸** on the job. That opens the page with `#a2m-auto`, which arms
-the userscript to:
-
-1. submit the first form (`op=download1`),
-2. wait out the countdown itself,
-3. wait for the verification box to clear — **you tick it**, or Turnstile's
-   invisible/managed mode clears with no click at all,
-4. submit `op=download2` the moment the token appears,
-5. find the generated link and hand it back to the waiting job.
-
-So the whole job is: click *Open page*, tick a box, done. No captcha is ever
-solved programmatically and no solving service is involved. If you would rather
-not use the auto-flow, turn it off in the userscript menu and either paste the
-link into the job's box or use *“Send this page's generated link to the queue”*.
-
-### When Cloudflare guards the page itself
-
-If a host puts Cloudflare in front of the *page* (a "Just a moment…"
-interstitial), the manager's own request never sees HTML. It detects this, parks
-the job with a clear reason instead of failing it, and there are two ways
-forward:
-
-* **Share the clearance** — the userscript's *“Share this site's cookies with the
-  manager”* (also done automatically during the auto-flow) posts that host's
-  cookies plus the matching user agent. Any job parked on a Cloudflare wall for
-  that host is then re-queued automatically and usually resolves server-side from
-  then on. `cf_clearance` is HttpOnly, so this needs Tampermonkey's `GM_cookie`
-  grant — the script requests it; without it the cookie cannot be read and the
-  hand-back route below is the one that works.
-* **Hand back the finished link** — as with any browser challenge.
-
-Shared cookies live in `hoster-cookies.json` next to the queue state, written
-`0600`. The API reports which hosts have cookies and their *names* only; values
-are never returned in any response.
-
-Adding links: paste into the Hosters tab, or from the browser use the userscript's
-*“Queue THIS PAGE in the hoster queue”* / *“Queue hoster links on this page…”*, or
-POST them:
-
-```bash
-curl -X POST http://127.0.0.1:6810/api/hoster \
-  -H 'Content-Type: application/json' \
-  -d '{"urls": ["https://www.mediafire.com/file/KEY/name.bin/file"]}'
-```
-
-Per-job controls are retry, cancel and remove; the queue itself can be paused,
-reordered and cleared of finished jobs, and it survives a restart via
-`hosters.state_file`. An **XFileSharing clone needs no new code** — add its domain
-to `hosters.xfilesharing_domains`. Anything on an unrecognised host is treated as
-a direct link.
-
-Verified against the live sites: a real MediaFire page resolved and downloaded a
-10 MiB file end to end (`complete`, 10,485,760 bytes on disk). kenfiles.com was
-confirmed to be XFileSharing-based from its markup, but the full flow was
-exercised against `tests/fake_hoster.py`, not a live kenfiles file — see the note
-at the end of §9.
-
-## 6. Web UI
+With it off, `/` returns a short JSON note saying so and everything under `/api`
+is unchanged. What the UI actually costs while idle is one 1 Hz poll of aria2 —
+and that now backs off to `poll_interval_idle` (5 s) whenever nothing is
+downloading *and* no UI is connected to the event stream, so an idle manager
+with no windows open barely ticks. Any command wakes it immediately.
 
 **Downloads** — one row per download with progress, speed, ETA, live connection
 count and seeders. Filter chips by status, plus a name filter. Row actions:
@@ -347,8 +288,6 @@ rest. Edits apply to the running aria2c immediately *and* are written to
 `config.yaml`, so they survive a restart. Also shows the aria2c process state
 (pid, version, uptime, restarts, log path) with a restart button.
 
-**Hosters** — the queue described in §5.
-
 **History** — the last filter chip on the Downloads tab. aria2's session file only
 keeps *unfinished* downloads, so completed ones would vanish on the next restart.
 The manager records every download it sees finish in `history.json`, which
@@ -365,7 +304,23 @@ concurrent downloads, pause all / resume all / purge finished.
 
 Press `n` anywhere to open the add dialog.
 
-## 7. HTTP API
+### The same UI on the DankBar
+
+If you run [DankMaterialShell](https://danklinux.com), `dms-plugin/` is the whole
+web UI as a DMS plugin: a download icon on the bar showing live speed, clicked to
+open a window with the same six tabs. It is a second front-end onto this daemon —
+same `/api` endpoints, same `/api/events` stream — so the browser and the bar can
+be open at once.
+
+```sh
+ln -s "$PWD/dms-plugin" ~/.config/DankMaterialShell/plugins/aria2cManager
+dms ipc call plugins enable aria2cManager      # then add it in Settings -> DankBar
+dms ipc call aria2c toggle                     # bind this to a key if you like
+```
+
+See [dms-plugin/README.md](dms-plugin/README.md) for settings, IPC and hacking notes.
+
+## 6. HTTP API
 
 | Method | Path | Purpose |
 | --- | --- | --- |
@@ -381,27 +336,22 @@ Press `n` anywhere to open the add dialog.
 | `POST` | `/api/global/pause-all\|resume-all\|purge\|save-session` | queue-wide commands |
 | `GET`/`POST` | `/api/global/options` | read/write global aria2 options |
 | `GET`/`POST` | `/api/rules` | read/replace rules; `POST /api/rules/{name}/toggle` |
-| `GET` | `/api/aria2/status`, `POST /api/aria2/restart` | process supervision |
-| `GET` | `/api/hoster` | queue state: jobs, counts, registered resolvers |
-| `POST` | `/api/hoster` | queue page URLs (`{urls, options, position}`) |
-| `POST` | `/api/hoster/{id}/answer` | supply a captcha `code` or a `direct_url` |
-| `POST` | `/api/hoster/{id}/retry\|cancel`, `DELETE /api/hoster/{id}` | per-job control |
-| `POST` | `/api/hoster/pause\|reorder\|clear-finished` | queue-wide control |
-| `GET`/`POST` | `/api/hoster/cookies` | list hosts with shared cookies (names only) / store cookies + UA for a host |
+| `GET` | `/api/aria2/status`, `POST /api/aria2/restart` | aria2c process supervision |
+| `GET`/`POST` | `/api/config` | read the config / change `web_ui`, `poll_interval`, `poll_interval_idle` |
+| `POST` | `/api/restart` | restart the manager itself (needs `Restart=always`) |
 | `GET` | `/api/history` | finished downloads recorded across restarts (`?limit=&status=`) |
 | `POST` | `/api/history/readd` | queue a past download again (`{key}`) |
 | `POST` | `/api/history/remove`, `/api/history-clear` | forget one entry / all of them |
-| `POST` | `/api/userscript/add` | lenient intake used by the userscript (auto-matches a parked hoster job when the referer is its page) |
-| `POST` | `/api/userscript/hoster` | queue a hoster page URL from the browser |
-| `GET` | `/api/userscript/ping` | readiness probe for the userscript |
+| `POST` | `/api/intake/add` | lenient intake used by the extension (alias: `/api/userscript/add`) |
+| `GET` | `/api/intake/ping` | readiness probe for the extension (alias: `/api/userscript/ping`) |
 
 aria2 errors come back as HTTP 502 with the aria2 message; if aria2c is not
 running at all, commands return 503 explaining why rather than a bare 500.
 
-## 8. Security
+## 7. Security
 
 There is **no authentication**, by design — the server binds `127.0.0.1` only,
-and CORS is open because the userscript posts from arbitrary page origins. Do not
+and CORS is open because the extension posts from arbitrary page origins. Do not
 bind it to `0.0.0.0`: anything that can reach the port can queue downloads and
 read your download list. The manager warns on startup if you do.
 
@@ -412,25 +362,18 @@ than regenerated per run for a functional reason: without it, a new manager cann
 authenticate to an aria2c left over from a previous run, so that process could
 neither be adopted nor asked to stop. `/api/config` redacts it.
 
-Cookies shared from the browser for a hoster (§5) are session credentials for
-those sites. They are stored in `hoster-cookies.json` with `0600` permissions,
-kept out of the queue's own state file, and never included in an API response —
-`/api/hoster/cookies` returns cookie *names* and counts only. Delete that file to
-revoke them.
-
-## 9. Tests
+## 8. Tests
 
 The suite runs the whole stack against a fake aria2 RPC server, so **no aria2c
 installation is required** to run it:
 
 ```bash
-python3 tests/test_manager.py     # 282 checks (manager + hoster queue)
-python3 tests/test_hosters.py     # just the hoster queue (119)
+python3 tests/test_manager.py     # the whole manager suite
 ```
 
 It covers config merging and persistence, the aria2c command line, the REST and
 SSE surface, adding/pausing/removing/repositioning, global options, the
-userscript intake (including that a `../../escape.iso` filename is reduced to a
+browser intake (including that a `../../escape.iso` filename is reduced to a
 basename), managed-mode process supervision (spawn → SIGKILL → automatic
 restart → clean shutdown), the orphan cases above (SIGHUP exits with code 0 and
 leaves no aria2c; a SIGKILL'd manager's orphan is adopted by the next run and
@@ -439,57 +382,11 @@ interesting one — that the stall-recovery
 rule really does pause and resume a download whose speed drops, while leaving a
 healthy download untouched.
 
-The hoster suite runs both site shapes against `tests/fake_hoster.py`, whose
-MediaFire page markup is copied from a live page: three page URLs draining
-strictly one at a time and in order, each finishing before the next starts; the
-two-step wait flow with the countdown genuinely waited out; an image captcha
-parking the job, rejecting a wrong code and accepting the right one; a
-reCAPTCHA job parking for the browser and then being completed by a simulated
-userscript hand-back (with no stray duplicate download); a Turnstile job parking
-with checkbox-specific wording; a host behind a Cloudflare wall parking and then
-resolving once the browser shares its `cf_clearance` cookie — including that the
-cookie values never appear in any response and the file is not world-readable;
-dead links, countdowns over the cap, cancel/reorder/delete, and queue
-persistence.
-
-Both hosts are now verified against the **live** sites. MediaFire resolves and
-downloads end to end; kenfiles' two-step flow is followed and parks on its
-Cloudflare Turnstile checkbox, with the real countdown (30 s) and filename read
-off the page. Three live-only bugs that the fake site could not have caught are
-pinned as regression tests from the real markup:
-
-* the literal text `"file not found"` sits in a JavaScript template on a healthy
-  kenfiles page, and whole-page substring matching aborted every job;
-* every Cloudflare-fronted site loads a `challenge-platform` beacon script, which
-  was being read as a challenge interstitial;
-* the page's own canonical URL matched the generic link sweep, so a job "resolved"
-  to the HTML page and would have downloaded that instead of the file.
-
-The rule now is that **real content wins**: if a page yields a form or a plausible
-link, no string heuristic may override it, and a `.html` URL is never accepted as
-a file. To inspect any host yourself:
-
-```bash
-# what the resolver sees, without touching the queue
-python3 -c "
-import asyncio, aiohttp, sys
-sys.path.insert(0, '.')
-from aria2c_manager.hosters import build_registry, pick_resolver
-async def main(url):
-    r = pick_resolver(url, build_registry(None))
-    async with aiohttp.ClientSession() as s:
-        print(r.name, '->', await r.resolve(s, url))
-asyncio.run(main('PASTE_A_KENFILES_URL'))
-"
-```
-
 Other tools:
 
 ```bash
 python3 tests/fake_aria2.py --port 6800     # fake aria2 you can point the manager at
 python3 -m aria2c_manager --no-aria2        # ...then attach to it
-
-python3 tests/fake_hoster.py --port 8770    # fake MediaFire + XFileSharing sites
 
 # Render the UI to a self-contained HTML file (screenshot-able offline)
 python3 tests/render_ui.py --base http://127.0.0.1:6810 --tab downloads --expand \
@@ -500,13 +397,15 @@ python3 tests/render_ui.py --base http://127.0.0.1:6810 --tab downloads --expand
 which is the quickest way to watch a rule fire without waiting for a real server
 to misbehave.
 
-## 10. Troubleshooting
+## 9. Troubleshooting
 
 | Symptom | Cause / fix |
 | --- | --- |
 | `aria2c binary 'aria2c' not found in PATH` | install aria2, or set `aria2.binary` to a full path |
 | `aria2c exited during startup` | usually an invalid option in `aria2.options`; check `~/.local/share/aria2c-manager/aria2.log`, or run `--print-argv` |
-| Userscript says "cannot reach the manager" | manager not running, or the `@connect`/server URL does not match your port |
+| The extension says "cannot reach the manager" | manager not running, or the server URL in its Settings does not match your port |
+| A download still lands in the browser | interception is off in Settings, the host is on the blocklist, or it is a `blob:`/`data:` URL aria2 cannot fetch |
+| The extension vanished after restarting Firefox | temporary add-ons do not survive a restart — see §3 |
 | Unfinished downloads did not come back after a restart | they resume from `aria2.session_file` (written every 30 s and on clean shutdown) plus the `.aria2` file beside the partial download — check both still exist |
 | Completed downloads vanished from the list | aria2 never persists finished downloads; the manager's own History filter keeps them (`history.file`) |
 | An action reports "aria2c is not running" while it clearly is | fixed in this build: aria2 answers ordinary errors with HTTP 400 and a JSON body, which was being read as a dead daemon. Errors now show aria2's real message |
@@ -516,11 +415,6 @@ to misbehave.
 | Speed shown does not match the bytes arriving | aria2's figure is a moving average — see §4. The row shows the measured figure alongside it when they diverge |
 | "Clear history" appears to do nothing | fixed in this build: dismissals are remembered, *and* aria2's own finished results are purged so the rows also leave the Downloads list |
 | A stall fix makes the download swap places with the next one | fixed in this build: the action reclaims its concurrency slot. See §4 |
-| A hoster job says "no download link in the final response" | the site's HTML changed, or the challenge answer was wrong — retry the job; if it persists the resolver's selectors need updating |
-| A hoster job is stuck in "needs you" | it needs a captcha: type the code, or click *Open page ▸* and let the userscript drive it |
-| Hoster job says "Cloudflare challenge page" | open the page once and use *Share this site's cookies*; grant `GM_cookie` in Tampermonkey so the HttpOnly `cf_clearance` can be read |
-| Shared cookies stopped working | `cf_clearance` expires and is tied to the UA that earned it — share again from the same browser |
-| Hoster job fails with "Host wants a 300s wait" | raise `hosters.wait_cap_seconds` |
 
 ## Layout
 
@@ -532,14 +426,10 @@ aria2c_manager/
   supervisor.py   spawn / health-check / restart / shut down aria2c
   state.py        1 Hz poller, snapshot normalisation, SSE fan-out
   rules.py        custom download actions
-  hostqueue.py    sequential hoster queue (page URL -> aria2)
-  hosters/        one module per site shape
-    base.py         resolver contract + HTML helpers
-    mediafire.py    direct-link host
-    xfilesharing.py wait + challenge hosts (kenfiles and clones)
   api.py          FastAPI routes
   static/         web UI (no build step, no dependencies)
-userscript/       Tampermonkey catcher
-tests/            fake aria2, fake hoster sites, suites, UI render harness
+dms-plugin/       DankMaterialShell bar widget (same API, QML front-end)
+extension/        browser extension (Firefox + Chromium, MV3)
+tests/            fake aria2, suites, UI render harness
 systemd/          user service unit
 ```

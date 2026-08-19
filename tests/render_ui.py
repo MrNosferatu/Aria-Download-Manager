@@ -9,7 +9,7 @@ a permanent "loading" state, so headless screenshots never fire).
     python3 tests/render_ui.py --base http://127.0.0.1:6810 --tab downloads \
         --out /tmp/ui.html
 
-Options: --tab downloads|settings|hosters|rules|log|help, --expand to open the first
+Options: --tab downloads|settings|rules|log|help, --expand to open the first
 download's detail panel.
 """
 
@@ -108,7 +108,7 @@ def main() -> int:
     parser.add_argument("--base", default="http://127.0.0.1:6810")
     parser.add_argument("--out", default="/tmp/aria2c-manager-ui.html")
     parser.add_argument("--tab", default="downloads",
-                        choices=["downloads", "settings", "hosters", "rules", "log", "help"])
+                        choices=["downloads", "settings", "rules", "log", "help"])
     parser.add_argument("--expand", action="store_true",
                         help="open the first active download's detail panel")
     args = parser.parse_args()

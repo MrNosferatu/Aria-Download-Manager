@@ -1,0 +1,31 @@
+{
+    "id": "aria2cManager",
+    "name": "aria2c Manager",
+    "description": "Manage aria2c downloads from the bar - queue, rules and live progress, backed by the aria2c-manager daemon",
+    "version": "1.0.0",
+    "license": "MIT",
+    "author": "FHADWA NUR'IZDHAD",
+    "type": "composite",
+    "capabilities": [
+        "dankbar-widget",
+        "control-center",
+        "downloads"
+    ],
+    "components": {
+        "widget": "./Aria2Widget.qml"
+    },
+    "component": "./Aria2Widget.qml",
+    "settings": "./Aria2Settings.qml",
+    "icon": "download",
+    "requires_dms": ">=1.5.0",
+    "dependencies": [
+        "curl",
+        "aria2c-manager"
+    ],
+    "permissions": [
+        "settings_read",
+        "settings_write",
+        "network",
+        "process"
+    ]
+}

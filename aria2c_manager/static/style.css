@@ -158,35 +158,12 @@ main { padding: 16px; max-width: 1400px; margin: 0 auto; }
 .hist-row { display: flex; align-items: baseline; gap: 10px; }
 .hist-row .spacer { flex: 1; }
 
-/* ---------- hoster queue ---------- */
-.addrow { display: flex; gap: 10px; align-items: stretch; margin-bottom: 14px; }
-.addrow textarea { flex: 1; }
-.addrow-side { display: flex; flex-direction: column; gap: 6px; min-width: 210px; }
-
+/* ---------- history rows ---------- */
 .job { background: var(--bg2); border: 1px solid var(--line); border-radius: var(--radius); padding: 10px 12px; }
-.job.state-needs_input { border-color: #5a4520; }
-.job.state-failed { border-color: #4a2029; }
 .job.state-complete { opacity: .72; }
-.job-head { display: flex; align-items: baseline; gap: 8px; }
 .job-name { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.job-head .spacer { flex: 1; }
-.job-url { font-size: 11px; color: var(--fg-dim); word-break: break-all; margin-top: 2px; }
-.job-url a { color: var(--fg-dim); }
-.job-url a:hover { color: var(--accent); }
 .job-meta { font-size: 12px; color: var(--fg-dim); display: flex; gap: 12px; flex-wrap: wrap; margin-top: 4px; font-variant-numeric: tabular-nums; }
-.job-err { font-size: 12px; color: var(--err); margin-top: 4px; word-break: break-word; }
 .job-actions { display: flex; gap: 4px; }
-.tag-queued { color: var(--fg-dim); }
-.tag-resolving { color: var(--accent); border-color: #2b3d5e; }
-.tag-downloading { color: var(--accent); border-color: #2b3d5e; }
-.tag-needs_input { color: var(--warn); border-color: #5a4520; }
-.tag-cancelled { color: var(--fg-dim); }
-
-.captcha { margin-top: 10px; padding: 10px; border: 1px dashed var(--warn); border-radius: 8px; background: #1d1a12; }
-.captcha p { margin: 0 0 8px; font-size: 12px; }
-.captcha img { max-height: 60px; border-radius: 4px; background: #fff; padding: 2px; vertical-align: middle; margin-right: 10px; }
-.captcha-row { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
-.captcha-row input { flex: 1; min-width: 160px; }
 
 .inline-field { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--fg-dim); }
 

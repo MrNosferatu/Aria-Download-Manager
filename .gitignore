@@ -29,12 +29,9 @@ htmlcov/
 /config.yaml
 
 # Runtime state. These normally live in ~/.local/share/aria2c-manager, but they
-# land here if you point the *_file settings at the checkout. Two of them are
-# sensitive: rpc-secret, and hoster-cookies.json (browser session cookies,
-# including Cloudflare clearance).
+# land here if you point the *_file settings at the checkout. rpc-secret is
+# sensitive.
 rpc-secret
-hoster-cookies.json
-hosters.json
 history.json
 *.session
 aria2.log
@@ -57,3 +54,6 @@ Thumbs.db
 # ------------------------------------------------------------- Claude Code
 # Project-level .claude/ config is worth committing; the local overrides are not.
 .claude/settings.local.json
+
+# Extension build output (web-ext build / sign)
+extension/dist/

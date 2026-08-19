@@ -14,8 +14,6 @@ const S = {
   rules: [],
   rulesEnabled: true,
   config: null,
-  hosterSig: null,
-  hosterSitesShown: false,
   history: null,
 };
 
@@ -138,7 +136,6 @@ function applyState(state) {
 
   renderDownloads();
   renderProcInfo();
-  renderHosters();
 }
 
 /* ----------------------------------------------------------- downloads */
@@ -731,171 +728,6 @@ function renderHistory() {
   }
 }
 
-/* ---------------------------------------------------------- hoster queue */
-const JOB_STATE_LABEL = {
-  queued: 'queued', resolving: 'resolving…', needs_input: 'needs you',
-  downloading: 'downloading', complete: 'done', failed: 'failed', cancelled: 'cancelled',
-};
-
-function renderHosters() {
-  const data = S.state?.hosters;
-  if (!data || data.error) return;
-
-  const pending = (data.counts?.queued || 0) + (data.counts?.needs_input || 0)
-    + (data.counts?.downloading || 0) + (data.counts?.resolving || 0);
-  $('#hoster-badge').textContent = pending;
-
-  const pill = $('#hoster-status');
-  const busy = (data.counts?.downloading || 0) + (data.counts?.resolving || 0);
-  pill.textContent = data.paused ? 'paused' : busy ? `working (${busy})` : 'idle';
-  pill.className = `pill ${data.paused ? 'pill-err' : busy ? 'pill-ok' : 'pill-idle'}`;
-  $('#btn-hoster-pause').textContent = data.paused ? 'Resume queue' : 'Pause queue';
-  if (!S.hosterSitesShown) {
-    const domains = [...new Set((data.resolvers || [])
-      .filter((r) => r.name !== 'direct')
-      .flatMap((r) => r.domains))];
-    $('#hoster-sites').textContent = domains.length
-      ? `handled here: ${domains.join(', ')} (anything else is treated as a direct link).`
-      : '';
-    S.hosterSitesShown = true;
-  }
-
-  const jobs = data.jobs || [];
-  $('#hoster-empty').hidden = jobs.length > 0;
-
-  // Re-render only when something structural changed, so a captcha field being
-  // typed into is never yanked out from under the cursor.
-  const signature = JSON.stringify(jobs.map((j) => [
-    j.id, j.state, j.error, j.gid, j.filename, j.attempts, (j.interaction || {}).kind,
-  ])) + data.paused;
-  const host = $('#hoster-list');
-  if (signature !== S.hosterSig) {
-    if (host.contains(document.activeElement) && document.activeElement.tagName === 'INPUT') {
-      return; // finish typing first; the next tick will redraw
-    }
-    S.hosterSig = signature;
-    host.innerHTML = jobs.map(hosterRow).join('');
-    wireHosterRows(host);
-  }
-  updateHosterProgress(jobs);
-}
-
-function hosterRow(job) {
-  const name = job.filename || job.page_url.split('?')[0].split('/').filter(Boolean).pop() || job.page_url;
-  const badges = [`<span class="tag tag-${job.state}">${JOB_STATE_LABEL[job.state] || job.state}</span>`];
-  if (job.resolver) badges.push(`<span class="tag">${escapeHtml(job.resolver)}</span>`);
-  if (job.attempts > 1) badges.push(`<span class="tag">try ${job.attempts}</span>`);
-
-  const meta = [];
-  if (job.size) meta.push(fmtBytes(job.size));
-  if (job.gid) meta.push(`<span data-progress="${job.gid}">–</span>`);
-  if (job.note) meta.push(escapeHtml(job.note));
-
-  const buttons = [];
-  if (job.state !== 'complete') {
-    buttons.push(`<button class="btn btn-icon" data-act="retry" data-id="${job.id}" title="Start over">⟳</button>`);
-  }
-  if (!['complete', 'failed', 'cancelled'].includes(job.state)) {
-    buttons.push(`<button class="btn btn-icon" data-act="cancel" data-id="${job.id}" title="Cancel">⏹</button>`);
-  }
-  buttons.push(`<button class="btn btn-icon btn-danger" data-act="remove" data-id="${job.id}" title="Remove from queue">✕</button>`);
-
-  return `<article class="job state-${job.state}" data-id="${job.id}">
-    <div class="job-head">
-      <span class="job-name">${escapeHtml(name)}</span>
-      <span class="dl-badges">${badges.join('')}</span>
-      <span class="spacer"></span>
-      <span class="job-actions">${buttons.join('')}</span>
-    </div>
-    <div class="job-url"><a href="${escapeHtml(job.page_url)}" target="_blank" rel="noreferrer noopener">${escapeHtml(job.page_url)}</a></div>
-    ${meta.length ? `<div class="job-meta">${meta.map((m) => `<span>${m}</span>`).join('')}</div>` : ''}
-    ${job.error ? `<div class="job-err">${escapeHtml(job.error)}</div>` : ''}
-    ${job.state === 'needs_input' ? captchaPanel(job) : ''}
-  </article>`;
-}
-
-function captchaPanel(job) {
-  const interaction = job.interaction || {};
-  const browser = interaction.kind === 'browser';
-  return `<div class="captcha">
-    <p>${escapeHtml(interaction.message || 'This download needs a human step.')}</p>
-    ${interaction.image_url
-      ? `<img src="${escapeHtml(interaction.image_url)}" alt="captcha" onerror="this.remove()">`
-      : ''}
-    <div class="captcha-row">
-      ${browser ? '' : `<input data-field="code" data-id="${job.id}" placeholder="captcha code" size="10">`}
-      <input data-field="direct" data-id="${job.id}" placeholder="…or paste the direct link you got in the browser">
-      <a class="btn btn-small btn-primary" href="${escapeHtml(autoUrl(interaction.page_url || job.page_url))}" target="_blank" rel="noreferrer noopener" title="Opens the page with the userscript's auto-flow armed: it waits out any countdown, submits once the verification box clears, and hands the link back">Open page ▸</a>
-      <button class="btn btn-small btn-primary" data-act="answer" data-id="${job.id}">Submit</button>
-    </div>
-  </div>`;
-}
-
-// #a2m-auto tells the userscript to drive this page for us.
-const autoUrl = (url) => (url && !url.includes('#') ? `${url}#a2m-auto` : url);
-
-function wireHosterRows(host) {
-  for (const btn of $$('[data-act]', host)) {
-    btn.addEventListener('click', async () => {
-      const id = btn.dataset.id;
-      if (btn.dataset.act === 'answer') {
-        const code = ($(`[data-field="code"][data-id="${id}"]`, host) || {}).value || '';
-        const direct = ($(`[data-field="direct"][data-id="${id}"]`, host) || {}).value || '';
-        if (!code.trim() && !direct.trim()) { toast('Enter a code or paste a link', 'error'); return; }
-        S.hosterSig = null;
-        await act(`/api/hoster/${id}/answer`, {
-          method: 'POST',
-          body: { code: code.trim() || null, direct_url: direct.trim() || null },
-        }, 'Submitted');
-        return;
-      }
-      if (btn.dataset.act === 'remove') {
-        S.hosterSig = null;
-        await act(`/api/hoster/${id}`, { method: 'DELETE' });
-        return;
-      }
-      S.hosterSig = null;
-      await act(`/api/hoster/${id}/${btn.dataset.act}`, { method: 'POST' });
-    });
-  }
-  for (const input of $$('[data-field]', host)) {
-    input.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') $(`[data-act="answer"][data-id="${input.dataset.id}"]`, host)?.click();
-    });
-  }
-}
-
-function updateHosterProgress(jobs) {
-  const byGid = new Map((S.state?.downloads || []).map((d) => [d.gid, d]));
-  for (const job of jobs) {
-    if (!job.gid) continue;
-    const cell = $(`[data-progress="${job.gid}"]`);
-    if (!cell) continue;
-    const dl = byGid.get(job.gid);
-    if (!dl) { cell.textContent = job.state === 'complete' ? 'finished' : '—'; continue; }
-    cell.textContent = dl.status === 'active'
-      ? `${dl.progress.toFixed(1)}% · ${fmtSpeed(dl.downloadSpeed)} · ETA ${fmtEta(dl.eta)}`
-      : `${dl.progress.toFixed(1)}% · ${dl.status}`;
-  }
-}
-
-async function addHosterLinks() {
-  const urls = $('#hoster-urls').value.split('\n').map((l) => l.trim()).filter(Boolean);
-  if (!urls.length) { toast('Paste at least one page link', 'error'); return; }
-  const dir = $('#hoster-dir').value.trim();
-  try {
-    const out = await api('/api/hoster', {
-      method: 'POST',
-      body: { urls, options: dir ? { dir } : {} },
-    });
-    toast(`Queued ${out.jobs.length} link(s)`, 'ok');
-    $('#hoster-urls').value = '';
-    S.hosterSig = null;
-  } catch (err) {
-    toast(err.message, 'error');
-  }
-}
-
 /* ----------------------------------------------------------------- rules */
 const RULE_FIELDS = [
   ['when.speed_below', 'Speed below (B/s — 50K ok)', 'size'],
@@ -1118,13 +950,12 @@ function renderLog() {
 /* ------------------------------------------------------------------ help */
 function renderHelp() {
   const base = location.origin;
-  $('#help-endpoint').textContent = `POST ${base}/api/userscript/add`;
-  $('#help-ping').textContent = `GET ${base}/api/userscript/ping`;
-  $('#help-snippet').textContent = `GM_xmlhttpRequest({
+  $('#help-endpoint').textContent = `POST ${base}/api/intake/add`;
+  $('#help-ping').textContent = `GET ${base}/api/intake/ping`;
+  $('#help-snippet').textContent = `fetch('${base}/api/intake/add', {
   method: 'POST',
-  url: '${base}/api/userscript/add',
   headers: { 'Content-Type': 'application/json' },
-  data: JSON.stringify({
+  body: JSON.stringify({
     url: 'https://example.com/big.iso',
     filename: 'big.iso',
     referer: location.href,
@@ -1184,22 +1015,6 @@ function init() {
   $('#btn-restart-aria2').addEventListener('click', async () => {
     if (!confirm('Restart aria2c? Active downloads pause and resume from the session file.')) return;
     await act('/api/aria2/restart', { method: 'POST' }, 'aria2c restarted');
-  });
-
-  $('#btn-hoster-add').addEventListener('click', addHosterLinks);
-  $('#hoster-urls').addEventListener('keydown', (e) => {
-    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) addHosterLinks();
-  });
-  $('#btn-hoster-pause').addEventListener('click', async () => {
-    const paused = !(S.state?.hosters?.paused);
-    S.hosterSig = null;
-    await act('/api/hoster/pause', { method: 'POST', body: { paused } },
-      paused ? 'Hoster queue paused' : 'Hoster queue resumed');
-  });
-  $('#btn-hoster-clear').addEventListener('click', async () => {
-    S.hosterSig = null;
-    const out = await act('/api/hoster/clear-finished', { method: 'POST' });
-    toast(`Removed ${out.removed} finished job(s)`, 'ok');
   });
 
   $('#rules-speed-source').addEventListener('change', async (e) => {
