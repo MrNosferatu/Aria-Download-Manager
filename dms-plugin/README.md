@@ -2,7 +2,7 @@
 
 The web UI, ported to a [DankMaterialShell](https://danklinux.com) bar widget: a
 download icon on the DankBar that opens a panel with three tabs — Downloads,
-Settings and Rules. Left-click for the bar popout, right-click for quick
+Rules and Settings. Left-click for the bar popout, right-click for quick
 actions, and the popout's *open in window* button detaches the whole thing into
 an ordinary window that stays put while you work elsewhere.
 
@@ -54,7 +54,7 @@ looked.
 ```sh
 dms ipc call aria2c toggle              # show/hide the bar popout
 dms ipc call aria2c toggleWindow        # show/hide the standalone window
-dms ipc call aria2c tab rules           # switch tab: downloads settings rules
+dms ipc call aria2c tab rules           # switch tab: downloads rules settings
 dms ipc call aria2c tab log             # settings, with the event log unfolded
 dms ipc call aria2c add <url>           # queue a URL with default options
 dms ipc call aria2c status              # one-line summary
@@ -139,17 +139,19 @@ the pill's status in words.
   the same detail the web UI shows: piece map, paths, per-download options,
   file selection, live connections, URLs and peers. The **History** chip lists
   what the manager recorded, with re-add and forget.
-- **Settings** — a **Manager** section (Web UI switch + *Restart manager*), then the grouped aria2 global options, a filter box, an *All options
-  (advanced)* section built from whatever aria2 reports, and the aria2c process
-  card with a restart button. Edited fields are dot-marked until saved.
 - **Rules** — the rule cards, editable field by field or as raw JSON, plus the
   speed-source selector and recent triggers. The master switch is the toggle in
   the window header.
-The **event log** is no longer a tab. It is diagnostic material rather than
-something to watch, so it folds away at the bottom of *Settings*, under the
-aria2c process card it usually explains — click the header to unfold it, or run
-`dms ipc call aria2c tab log`, which unfolds it and scrolls down to it. It is the same live stream as before: click a line to copy
-it.
+- **Settings** — a **Manager** section (Web UI switch + *Restart manager*), then
+  the grouped aria2 global options, a filter box, an *All options (advanced)*
+  section built from whatever aria2 reports, the aria2c process card with a
+  restart button, and the event log. Edited fields are dot-marked until saved.
+
+The **event log** is no longer a tab of its own. It is diagnostic material
+rather than something to watch, so it folds away at the bottom of *Settings*,
+under the aria2c process card it usually explains — click the header to unfold
+it, or run `dms ipc call aria2c tab log`, which unfolds it and scrolls down to
+it. Same live stream as before: click a line to copy it.
 
 ### What "All" holds
 

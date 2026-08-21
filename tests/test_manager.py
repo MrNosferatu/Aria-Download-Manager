@@ -13,7 +13,9 @@ import asyncio
 import base64
 import contextlib
 import json
+import shutil
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -50,6 +52,43 @@ def test_units() -> None:
     check("piece_map handles a half-done bitfield",
           piece_map("f0", 8, buckets=2) == [100, 0])
     check("piece_map tolerates no bitfield", piece_map("", 0) == [])
+
+    print("\nunit: deleting a download's files")
+    from aria2c_manager import files as filetools
+
+    root = Path(tempfile.mkdtemp())
+    folder = root / "torrent-folder"
+    folder.mkdir()
+    (folder / "a.bin").write_bytes(b"x" * 100)
+    (folder / "b.bin").write_bytes(b"y" * 50)
+    (folder / "a.bin.aria2").write_bytes(b"ctrl")
+    result = filetools.delete([str(folder / "a.bin"), str(folder / "b.bin")], roots=[str(root)])
+    check("deletes the files and their .aria2 control files",
+          sorted(Path(p).name for p in result["deleted"]) == ["a.bin", "a.bin.aria2", "b.bin"],
+          str(result))
+    check("reports a control file that was never written as missing",
+          [Path(p).name for p in result["missing"]] == ["b.bin.aria2"], str(result))
+    check("counts the bytes it freed", result["bytes"] == 154, str(result["bytes"]))
+    check("prunes the folder a multi-file torrent emptied", not folder.exists())
+
+    outside = Path(tempfile.mkdtemp())
+    precious = outside / "precious.txt"
+    precious.write_text("keep me")
+    refused = filetools.delete([str(precious)], roots=[str(root)])
+    check("refuses a path outside the download roots",
+          refused["deleted"] == [] and len(refused["refused"]) == 2, str(refused))
+    check("and leaves that file alone", precious.exists())
+
+    a_dir = root / "a-directory"
+    a_dir.mkdir()
+    dir_result = filetools.delete([str(a_dir)], roots=[str(root)])
+    check("refuses to delete a directory", dir_result["deleted"] == [] and a_dir.is_dir(),
+          str(dir_result))
+
+    check("no roots means nothing is confined away",
+          filetools.delete([], roots=[])["deleted"] == [])
+    shutil.rmtree(root, ignore_errors=True)
+    shutil.rmtree(outside, ignore_errors=True)
 
     print("\nunit: rules validation")
     from aria2c_manager.rules import RuleEngine

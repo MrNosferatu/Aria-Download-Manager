@@ -206,12 +206,12 @@ PopoutComponent {
                 "icon": "download"
             },
             {
-                "text": "Settings",
-                "icon": "tune"
-            },
-            {
                 "text": "Rules",
                 "icon": "bolt"
+            },
+            {
+                "text": "Settings",
+                "icon": "tune"
             }
         ]
 
@@ -241,9 +241,9 @@ PopoutComponent {
                 case 0:
                     return downloadsTab
                 case 1:
-                    return settingsTab
-                default:
                     return rulesTab
+                default:
+                    return settingsTab
                 }
             }
         }

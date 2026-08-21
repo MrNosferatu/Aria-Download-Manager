@@ -11,40 +11,38 @@
 
 <header class="topbar">
   <div class="brand">
-    <span class="logo">⇊</span>
+    <span class="logo" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 3v10.17l3.59-3.58L17 11l-5 5-5-5 1.41-1.41L12 13.17V3h0z"/><path d="M5 19h14v2H5z"/></svg></span>
     <div>
       <h1>aria2c manager</h1>
       <span id="aria2-pill" class="pill pill-idle">connecting…</span>
     </div>
   </div>
 
+  <!-- The live rate is why the page is open, so it leads. -->
+  <div class="throughput">
+    <span class="rate down"><span class="arrow">↓</span><b id="stat-down">–</b></span>
+    <span class="rate up"><span class="arrow">↑</span><b id="stat-up">–</b></span>
+  </div>
+
   <div class="stats">
-    <div class="stat"><label>Down</label><b id="stat-down">–</b></div>
-    <div class="stat"><label>Up</label><b id="stat-up">–</b></div>
     <div class="stat"><label>Active</label><b id="stat-active">0</b></div>
-    <div class="stat"><label>Waiting</label><b id="stat-waiting">0</b></div>
-    <div class="stat"><label>Stopped</label><b id="stat-stopped">0</b></div>
+    <div class="stat"><label>Queued</label><b id="stat-waiting">0</b></div>
+    <div class="stat"><label>Done</label><b id="stat-complete">0</b></div>
+    <div class="stat"><label>Failed</label><b id="stat-error">0</b></div>
   </div>
 
   <div class="topactions">
-    <div class="limitbox" title="Global speed limits — 0 means unlimited. Accepts K/M suffix.">
-      <label>↓ limit</label><input id="limit-down" size="6" placeholder="0">
-      <label>↑ limit</label><input id="limit-up" size="6" placeholder="0">
-      <label>max&nbsp;jobs</label><input id="limit-jobs" size="3" placeholder="5">
-      <button id="btn-limits" class="btn btn-small">Apply</button>
-    </div>
+    <button id="btn-pause-all" class="btn btn-icon btn-ghost" title="Pause every download" aria-label="Pause every download"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg></button>
+    <button id="btn-resume-all" class="btn btn-icon btn-ghost" title="Resume every download" aria-label="Resume every download"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg></button>
+    <button id="btn-purge" class="btn btn-icon btn-ghost" title="Clear finished and failed rows from the list" aria-label="Clear finished rows"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 13h14v-2H5v2zm-2 4h14v-2H3v2zM7 7v2h14V7H7z"/></svg></button>
     <button id="btn-add" class="btn btn-primary">+ Add download</button>
-    <button id="btn-pause-all" class="btn">Pause all</button>
-    <button id="btn-resume-all" class="btn">Resume all</button>
-    <button id="btn-purge" class="btn btn-danger" title="Remove completed/error results from the list">Purge</button>
   </div>
 </header>
 
 <nav class="tabs">
   <button class="tab active" data-tab="downloads">Downloads</button>
-  <button class="tab" data-tab="settings">Settings</button>
   <button class="tab" data-tab="rules">Rules <span id="rules-badge" class="badge">0</span></button>
-  <button class="tab" data-tab="log">Log</button>
+  <button class="tab" data-tab="settings">Settings</button>
   <button class="tab" data-tab="help">Extension</button>
   <div class="spacer"></div>
   <label class="switch" title="Master switch for all custom download-action rules">
@@ -56,43 +54,40 @@
   <!-- ---------------- downloads ---------------- -->
   <section id="tab-downloads" class="tabpane active">
     <div class="filterbar">
-      <button class="chip active" data-filter="all">All</button>
-      <button class="chip" data-filter="active">Active</button>
-      <button class="chip" data-filter="waiting">Queued</button>
-      <button class="chip" data-filter="paused">Paused</button>
-      <button class="chip" data-filter="complete">Complete</button>
-      <button class="chip" data-filter="error">Error</button>
+      <button class="chip active" data-filter="all">All <span class="n" id="count-all"></span></button>
+      <button class="chip" data-filter="active">Active <span class="n" id="count-active"></span></button>
+      <button class="chip" data-filter="waiting">Queued <span class="n" id="count-waiting"></span></button>
+      <button class="chip" data-filter="paused">Paused <span class="n" id="count-paused"></span></button>
+      <button class="chip" data-filter="complete">Complete <span class="n" id="count-complete"></span></button>
+      <button class="chip" data-filter="error">Error <span class="n" id="count-error"></span></button>
       <button class="chip chip-history" data-filter="history" title="Finished downloads the manager has recorded, kept across restarts">History</button>
+      <button id="btn-select" class="btn btn-small" title="Select several downloads to act on at once">Select</button>
       <input id="search" class="search" placeholder="Filter by name…">
     </div>
+
+    <!-- shown only in selection mode -->
+    <div id="bulk-bar" class="bulkbar" hidden>
+      <span class="count" id="bulk-count">0 selected</span>
+      <button id="bulk-all" class="btn btn-small">All</button>
+      <span class="spacer"></span>
+      <button id="bulk-pause" class="btn btn-small" title="Pause the selected downloads"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg><span>Pause</span></button>
+      <button id="bulk-resume" class="btn btn-small" title="Resume the selected downloads"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg><span>Resume</span></button>
+      <button id="bulk-remove" class="btn btn-small btn-danger" title="Remove the selected downloads"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg><span>Remove</span></button>
+    </div>
+    <div id="bulk-confirm" class="bulkbar confirming" hidden>
+      <span class="question" id="bulk-question"></span>
+      <span class="spacer"></span>
+      <button id="bulk-cancel" class="btn btn-small">Cancel</button>
+      <button id="bulk-keep" class="btn btn-small">Keep files</button>
+      <button id="bulk-delete" class="btn btn-small btn-danger">Delete files</button>
+    </div>
+
     <div id="history-bar" class="historybar" hidden>
       <span id="history-summary" class="hint"></span>
       <button id="btn-history-clear" class="btn btn-small btn-danger">Clear history</button>
     </div>
     <div id="downloads" class="downloads"></div>
     <p id="empty" class="empty">No downloads. Hit <b>+ Add download</b> or send one from the browser extension.</p>
-  </section>
-
-  <!-- ---------------- settings ---------------- -->
-  <section id="tab-settings" class="tabpane">
-    <div class="panehead">
-      <h2>Global aria2 options</h2>
-      <div>
-        <input id="opt-search" class="search" placeholder="Filter options…">
-        <button id="btn-opt-reload" class="btn btn-small">Reload</button>
-        <button id="btn-opt-save" class="btn btn-primary btn-small">Save changed</button>
-      </div>
-    </div>
-    <p class="hint">Changes apply to the running aria2c immediately and are written to
-      <code id="cfg-path">config.yaml</code> so they survive a restart. Edited fields are highlighted.</p>
-    <div id="options-groups"></div>
-    <details id="options-advanced-wrap">
-      <summary>All options (advanced)</summary>
-      <div id="options-advanced" class="optgrid"></div>
-    </details>
-    <div class="panehead"><h2>aria2c process</h2></div>
-    <div id="proc-info" class="kv"></div>
-    <button id="btn-restart-aria2" class="btn btn-danger btn-small">Restart aria2c</button>
   </section>
 
   <!-- ---------------- rules ---------------- -->
@@ -120,8 +115,44 @@
     <div id="rule-triggers" class="loglist"></div>
   </section>
 
-  <!-- ---------------- log ---------------- -->
-  <section id="tab-log" class="tabpane">
+  <!-- ---------------- settings ---------------- -->
+  <section id="tab-settings" class="tabpane">
+    <div class="panehead">
+      <h2>Speed limits</h2>
+    </div>
+    <p class="hint">Applied to the running aria2c straight away. 0 means unlimited; K and M suffixes work.</p>
+    <div class="optgroup">
+      <div class="optgrid">
+        <div class="optfield"><label>Overall download limit <small>max-overall-download-limit</small></label><input id="limit-down" placeholder="0"></div>
+        <div class="optfield"><label>Overall upload limit <small>max-overall-upload-limit</small></label><input id="limit-up" placeholder="0"></div>
+        <div class="optfield"><label>Concurrent downloads <small>max-concurrent-downloads</small></label><input id="limit-jobs" placeholder="5"></div>
+      </div>
+      <div class="panehead"><span></span><button id="btn-limits" class="btn btn-small btn-primary">Apply limits</button></div>
+    </div>
+
+    <div class="panehead">
+      <h2>Global aria2 options</h2>
+      <div>
+        <input id="opt-search" class="search" placeholder="Filter options…">
+        <button id="btn-opt-reload" class="btn btn-small">Reload</button>
+        <button id="btn-opt-save" class="btn btn-primary btn-small">Save changed</button>
+      </div>
+    </div>
+    <p class="hint">Changes apply to the running aria2c immediately and are written to
+      <code id="cfg-path">config.yaml</code> so they survive a restart. Edited fields are highlighted.</p>
+    <div id="options-groups"></div>
+    <details id="options-advanced-wrap">
+      <summary>All options (advanced)</summary>
+      <div id="options-advanced" class="optgrid"></div>
+    </details>
+
+    <div class="panehead"><h2>aria2c process</h2></div>
+    <div id="proc-info" class="kv"></div>
+    <p></p>
+    <button id="btn-restart-aria2" class="btn btn-danger btn-small">Restart aria2c</button>
+
+    <!-- The log is diagnostic material, not a view to watch, so it folds away
+         here rather than holding a tab of its own. -->
     <div class="panehead">
       <h2>Event log</h2>
       <div><button id="btn-log-clear" class="btn btn-small">Clear view</button></div>
@@ -137,6 +168,9 @@
       (<code>chrome://extensions</code> → Developer mode → Load unpacked). It takes over the
       browser's own downloads and forwards them here with the page's cookies, referer and
       user-agent, so login-protected files still work.</p>
+    <p class="hint">To keep it installed permanently in release Firefox the add-on has to be
+      signed by Mozilla — <code>extension/build.sh sign unlisted</code> does that and hands
+      back an <code>.xpi</code> you install from <code>about:addons</code>.</p>
     <div class="kv">
       <div><label>Intake endpoint</label><code id="help-endpoint"></code></div>
       <div><label>Ping</label><code id="help-ping"></code></div>
@@ -196,18 +230,20 @@
 <template id="row-template">
   <article class="dl">
     <div class="dl-main">
-      <button class="chev" title="Details">▸</button>
+      <input type="checkbox" class="dl-pick" hidden>
+      <button class="chev" title="Details" aria-label="Details"></button>
       <div class="dl-body">
         <div class="dl-title">
           <span class="dl-name"></span>
           <span class="dl-badges"></span>
         </div>
-        <div class="bar"><div class="bar-fill"></div></div>
         <div class="dl-meta"></div>
       </div>
       <div class="dl-actions"></div>
     </div>
+    <div class="dl-confirm" hidden></div>
     <div class="dl-detail" hidden></div>
+    <div class="bar"><div class="bar-fill"></div></div>
   </article>
 </template>
 

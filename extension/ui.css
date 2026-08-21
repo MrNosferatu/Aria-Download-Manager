@@ -38,7 +38,13 @@ button {
 }
 button:hover { border-color: var(--accent); }
 button.primary { background: var(--accent); border-color: var(--accent); color: #08101f; font-weight: 600; }
-button.icon { padding: 4px 9px; }
+button.icon {
+  padding: 0; width: 28px; height: 28px;
+  display: inline-grid; place-items: center;
+}
+/* Inline SVG rather than a glyph: it inherits the button's colour and never
+ * turns into someone else's colour emoji on a different platform. */
+button.icon svg { width: 15px; height: 15px; fill: currentColor; display: block; }
 button.link { background: none; border: none; color: var(--accent); padding: 0; }
 
 input, textarea {

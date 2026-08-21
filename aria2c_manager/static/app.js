@@ -15,6 +15,9 @@ const S = {
   rulesEnabled: true,
   config: null,
   history: null,
+  // gid -> true, for the bulk selection mode.
+  selection: new Set(),
+  selecting: false,
 };
 
 const $ = (sel, root = document) => root.querySelector(sel);
@@ -126,9 +129,21 @@ function applyState(state) {
   $('#stat-down').textContent = fmtSpeed(g.downloadSpeed);
   $('#stat-up').textContent = fmtSpeed(g.uploadSpeed);
   const counts = state.counts || {};
-  $('#stat-active').textContent = counts.active ?? 0;
-  $('#stat-waiting').textContent = (counts.waiting ?? 0) + (counts.paused ?? 0);
-  $('#stat-stopped').textContent = counts.stopped ?? 0;
+  const queued = (counts.waiting ?? 0) + (counts.paused ?? 0);
+  setStat('#stat-active', counts.active ?? 0);
+  setStat('#stat-waiting', queued);
+  setStat('#stat-complete', counts.complete ?? 0);
+  setStat('#stat-error', counts.error ?? 0);
+
+  // Every chip carries its own count — "All" and "Complete" included, which is
+  // the pair that used to leave you guessing whether the filter was empty or
+  // the list was.
+  setCount('all', counts.total ?? (state.downloads || []).length);
+  setCount('active', counts.active ?? 0);
+  setCount('waiting', counts.waiting ?? 0);
+  setCount('paused', counts.paused ?? 0);
+  setCount('complete', counts.complete ?? 0);
+  setCount('error', counts.error ?? 0);
 
   const rules = state.rules || {};
   $('#rules-master').checked = !!rules.enabled;
@@ -136,6 +151,42 @@ function applyState(state) {
 
   renderDownloads();
   renderProcInfo();
+}
+
+function setStat(sel, value) {
+  const node = $(sel);
+  if (!node) return;
+  node.textContent = value;
+  node.parentElement.classList.toggle('is-zero', !value);
+}
+
+function setCount(filter, value) {
+  const node = $(`#count-${filter}`);
+  if (node) node.textContent = value ? String(value) : '';
+}
+
+/* -------------------------------------------------------------- icons */
+/* Inline SVG rather than emoji or glyphs: emoji render as someone else's
+ * artwork at someone else's colour and size, and vary by platform. These
+ * inherit currentColor and the button's font-size like any other icon set,
+ * with nothing to download. Paths are 24x24. */
+const ICONS = {
+  pause: 'M6 19h4V5H6v14zm8-14v14h4V5h-4z',
+  play: 'M8 5v14l11-7z',
+  trash: 'M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z',
+  close: 'M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z',
+  retry: 'M17.65 6.35A7.96 7.96 0 0 0 12 4a8 8 0 1 0 7.73 10h-2.08A6 6 0 1 1 12 6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z',
+  top: 'M8 11h3v10h2V11h3l-4-4-4 4zM4 3v2h16V3H4z',
+  up: 'M4 12l1.41 1.41L11 7.83V20h2V7.83l5.58 5.59L20 12l-8-8-8 8z',
+  down: 'M20 12l-1.41-1.41L13 16.17V4h-2v12.17l-5.58-5.59L4 12l8 8 8-8z',
+  broom: 'M5 13h14v-2H5v2zm-2 4h14v-2H3v2zM7 7v2h14V7H7z',
+  select: 'M22 7l-1.41-1.41-6.34 6.34 1.41 1.41L22 7zM3 5v2h11V5H3zm0 6v2h8v-2H3zm0 6v2h8v-2H3z',
+  open: 'M19 19H5V5h7V3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14c1.1 0 2-.9 2-2v-7h-2v7zM14 3v2h3.59l-9.83 9.83 1.41 1.41L19 6.41V10h2V3h-7z',
+  chevron: 'M10 6 8.59 7.41 13.17 12l-4.58 4.59L10 18l6-6z',
+};
+
+function icon(name) {
+  return `<svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="${ICONS[name]}"/></svg>`;
 }
 
 /* ----------------------------------------------------------- downloads */
@@ -203,8 +254,17 @@ function buildRow(gid) {
     meta: $('.dl-meta', row),
     actions: $('.dl-actions', row),
     detail: $('.dl-detail', row),
+    confirm: $('.dl-confirm', row),
     chev: $('.chev', row),
+    pick: $('.dl-pick', row),
   };
+  row._refs.pick.addEventListener('change', () => {
+    if (row._refs.pick.checked) S.selection.add(gid);
+    else S.selection.delete(gid);
+    renderBulkBar();
+    row.classList.toggle('is-selected', row._refs.pick.checked);
+  });
+  row._refs.chev.innerHTML = icon('chevron');
   row._refs.chev.addEventListener('click', () => toggleDetail(gid));
   row._refs.name.addEventListener('click', () => toggleDetail(gid));
   row._actionKey = '';
@@ -220,6 +280,8 @@ function updateRow(row, dl) {
   }
 
   const tags = [`<span class="tag ${STATUS_TAG[dl.status] || ''}">${dl.status}</span>`];
+  // Explicit false only: undefined means the manager had no reason to look.
+  if (dl.fileExists === false) tags.push('<span class="tag tag-missing">file missing</span>');
   if (dl.isTorrent) tags.push('<span class="tag">torrent</span>');
   if (dl.seeder) tags.push('<span class="tag tag-complete">seeding</span>');
   const ruleState = S.state?.rules?.downloads?.[dl.gid] || {};
@@ -231,9 +293,15 @@ function updateRow(row, dl) {
   if (r.badges._html !== tagHtml) { r.badges.innerHTML = tagHtml; r.badges._html = tagHtml; }
 
   r.fill.style.width = `${dl.progress}%`;
+  // Drives the wash across the card — see the note at the top of style.css.
+  row.style.setProperty('--p', `${dl.progress}%`);
+  r.pick.hidden = !S.selecting;
+  r.pick.checked = S.selection.has(dl.gid);
+  row.classList.toggle('is-selected', S.selecting && r.pick.checked);
 
   const bits = [
-    `${fmtBytes(dl.completed)} / ${dl.total ? fmtBytes(dl.total) : '?'} · ${dl.progress.toFixed(1)}%`,
+    `<span class="primary">${fmtBytes(dl.completed)} / ${dl.total ? fmtBytes(dl.total) : '?'}`
+    + ` · ${dl.progress.toFixed(1)}%</span>`,
   ];
   if (dl.status === 'active') {
     // aria2's figure is a moving average; the measured one is bytes actually
@@ -251,7 +319,10 @@ function updateRow(row, dl) {
     if (dl.isTorrent) bits.push(`${dl.numSeeders} seeders`);
   }
   if (dl.status === 'waiting' && dl.queuePosition != null) bits.push(`queue #${dl.queuePosition + 1}`);
-  if (dl.errorMessage) bits.push(`<span style="color:var(--err)">${escapeHtml(dl.errorMessage)}</span>`);
+  if (dl.fileExists === false && dl.path) {
+    bits.push(`<span class="err">file is no longer at ${escapeHtml(dl.path)}</span>`);
+  }
+  if (dl.errorMessage) bits.push(`<span class="err">${escapeHtml(dl.errorMessage)}</span>`);
   for (const [name, info] of Object.entries(ruleState)) {
     if (info.elapsed > 0 && info.threshold) {
       bits.push(`<span class="rulehint">${name} ${info.elapsed.toFixed(1)}/${info.threshold}s</span>`);
@@ -268,11 +339,45 @@ function updateRow(row, dl) {
   }
 }
 
-function mkBtn(label, title, handler, cls = 'btn btn-icon') {
+async function removeDownload(gid, deleteFiles, okMessage) {
+  const query = `?force=true&purge=true${deleteFiles ? '&delete_files=true' : ''}`;
+  await act(`/api/download/${gid}${query}`, { method: 'DELETE' }, okMessage);
+}
+
+/* A finished download is the only case worth a question: its file is the point,
+ * so removing the row and deleting the file are two different intentions. */
+function askRemove(dl) {
+  const row = S.rows.get(dl.gid);
+  if (!row) return;
+  const host = $('.dl-confirm', row);
+  const gone = dl.fileExists === false;
+  host.innerHTML = `<span class="question">${gone
+    ? 'The file is already gone — remove the row?'
+    : 'Remove this download — and the file?'}</span>`;
+  const cancel = mkBtn2('Cancel', 'btn btn-small', () => { host.hidden = true; });
+  const keep = mkBtn2('Keep file', 'btn btn-small',
+    () => { host.hidden = true; removeDownload(dl.gid, false, 'Removed, file kept'); });
+  const del = mkBtn2('Delete file', 'btn btn-small btn-danger',
+    () => { host.hidden = true; removeDownload(dl.gid, true, 'Removed and deleted the file'); });
+  del.disabled = gone;
+  host.append(cancel, keep, del);
+  host.hidden = false;
+}
+
+function mkBtn2(label, cls, handler) {
   const btn = document.createElement('button');
   btn.className = cls;
   btn.textContent = label;
+  btn.addEventListener('click', handler);
+  return btn;
+}
+
+function mkBtn(iconName, title, handler, cls = 'btn btn-icon') {
+  const btn = document.createElement('button');
+  btn.className = cls;
+  btn.innerHTML = icon(iconName);
   btn.title = title;
+  btn.setAttribute('aria-label', title);
   btn.addEventListener('click', handler);
   return btn;
 }
@@ -281,27 +386,37 @@ function actionsFor(dl) {
   const gid = dl.gid;
   const out = [];
   if (dl.status === 'active' || dl.status === 'waiting') {
-    out.push(mkBtn('⏸', 'Pause', () => act(`/api/download/${gid}/pause`, { method: 'POST' })));
+    out.push(mkBtn('pause', 'Pause', () => act(`/api/download/${gid}/pause`, { method: 'POST' })));
   }
   if (dl.status === 'paused') {
-    out.push(mkBtn('▶', 'Resume', () => act(`/api/download/${gid}/resume`, { method: 'POST' })));
+    out.push(mkBtn('play', 'Resume', () => act(`/api/download/${gid}/resume`, { method: 'POST' })));
   }
   if (dl.status === 'waiting' || dl.status === 'paused') {
-    out.push(mkBtn('⤒', 'Move to top of queue',
+    out.push(mkBtn('top', 'Move to top of queue',
       () => act(`/api/download/${gid}/position`, { method: 'POST', body: { pos: 0, how: 'POS_SET' } })));
-    out.push(mkBtn('↑', 'Move up',
+    out.push(mkBtn('up', 'Move up',
       () => act(`/api/download/${gid}/position`, { method: 'POST', body: { pos: -1, how: 'POS_CUR' } })));
-    out.push(mkBtn('↓', 'Move down',
+    out.push(mkBtn('down', 'Move down',
       () => act(`/api/download/${gid}/position`, { method: 'POST', body: { pos: 1, how: 'POS_CUR' } })));
   }
+  if (dl.status === 'complete' && dl.path && dl.fileExists !== false) {
+    out.push(mkBtn('open', 'Open the file', () => window.open(`file://${dl.path}`, '_blank')));
+  }
   if (dl.status === 'error' || dl.status === 'complete' || dl.status === 'removed') {
-    out.push(mkBtn('⟳', 'Retry (re-add with the same URLs and options)',
+    out.push(mkBtn('retry', 'Retry (re-add with the same URLs and options)',
       () => act(`/api/download/${gid}/retry`, { method: 'POST' }, 'Re-added')));
   }
-  out.push(mkBtn('✕', dl.status === 'active' ? 'Stop and remove' : 'Remove from list', async () => {
-    if (dl.status === 'active' && !confirm(`Stop and remove “${dl.name}”?`)) return;
-    await act(`/api/download/${gid}?force=true&purge=true`, { method: 'DELETE' });
-  }, 'btn btn-icon btn-danger'));
+  // A download still in flight is being cancelled — that is what a cross means.
+  // One that has already stopped is being thrown away, which is the bin. And a
+  // half-written part file is never worth keeping, so cancelling takes it with
+  // it; only a finished download raises a question worth asking.
+  const live = dl.status === 'active' || dl.status === 'waiting' || dl.status === 'paused';
+  out.push(mkBtn(live ? 'close' : 'trash',
+    live ? 'Cancel and remove' : 'Remove…',
+    () => (live
+      ? removeDownload(gid, true, 'Cancelled and cleaned up')
+      : askRemove(dl)),
+    'btn btn-icon btn-danger'));
   return out;
 }
 
@@ -702,8 +817,8 @@ function renderHistory() {
         <span class="tag ${tag}">${escapeHtml(e.status)}</span>
         <span class="spacer"></span>
         <span class="job-actions">
-          ${e.url ? `<button class="btn btn-icon" data-hist="readd" data-key="${escapeHtml(e.key)}" title="Download this again">⟳</button>` : ''}
-          <button class="btn btn-icon btn-danger" data-hist="remove" data-key="${escapeHtml(e.key)}" title="Forget this entry">✕</button>
+          ${e.url ? `<button class="btn btn-icon" data-hist="readd" data-key="${escapeHtml(e.key)}" title="Download this again" aria-label="Download this again">${icon('retry')}</button>` : ''}
+          <button class="btn btn-icon btn-danger" data-hist="remove" data-key="${escapeHtml(e.key)}" title="Forget this entry" aria-label="Forget this entry">${icon('trash')}</button>
         </span>
       </div>
       <div class="job-meta">
@@ -809,7 +924,7 @@ function renderRules() {
     action.title = 'What to do when the conditions hold';
     action.addEventListener('change', () => { rule.action = action.value; renderRules(); });
 
-    const del = mkBtn('✕', 'Delete rule', () => {
+    const del = mkBtn('trash', 'Delete rule', () => {
       S.rules.splice(index, 1);
       renderRules();
     }, 'btn btn-icon btn-danger');
@@ -967,6 +1082,66 @@ function renderHelp() {
 });`;
 }
 
+/* ------------------------------------------------------------- bulk mode */
+function setSelecting(on) {
+  S.selecting = on;
+  if (!on) S.selection.clear();
+  $('#btn-select').classList.toggle('btn-primary', on);
+  $('#btn-select').textContent = on ? 'Done' : 'Select';
+  $('#bulk-confirm').hidden = true;
+  renderBulkBar();
+  renderDownloads();
+}
+
+function selectedRows() {
+  const known = new Map((S.state?.downloads || []).map((d) => [d.gid, d]));
+  return [...S.selection].map((gid) => known.get(gid)).filter(Boolean);
+}
+
+function renderBulkBar() {
+  const bar = $('#bulk-bar');
+  bar.hidden = !S.selecting || S.filter === 'history';
+  const n = S.selection.size;
+  $('#bulk-count').textContent = n === 1 ? '1 selected' : `${n} selected`;
+  for (const id of ['#bulk-pause', '#bulk-resume', '#bulk-remove']) $(id).disabled = !n;
+  const visible = visibleDownloads();
+  $('#bulk-all').textContent = n && n >= visible.length ? 'None' : 'All';
+}
+
+async function bulk(action, gids, deleteFiles) {
+  if (!gids.length) return null;
+  return act('/api/downloads/bulk', {
+    method: 'POST',
+    body: { action, gids, delete_files: !!deleteFiles, force: true },
+  });
+}
+
+/* Unfinished downloads are cleaned up without asking — a part file is never
+ * worth keeping. Only the finished ones in the selection raise the question. */
+function askBulkRemove() {
+  const rows = selectedRows();
+  const finished = rows.filter((d) => d.status === 'complete');
+  if (!finished.length) { runBulkRemove(false); return; }
+  const rest = rows.length - finished.length;
+  $('#bulk-question').textContent =
+    `${finished.length} finished — keep the files?`
+    + (rest ? `  (${rest} unfinished will be cleaned up)` : '');
+  $('#bulk-confirm').hidden = false;
+}
+
+async function runBulkRemove(keepFinishedFiles) {
+  const rows = selectedRows();
+  const finished = rows.filter((d) => d.status === 'complete').map((d) => d.gid);
+  const unfinished = rows.filter((d) => d.status !== 'complete').map((d) => d.gid);
+  $('#bulk-confirm').hidden = true;
+  let out = null;
+  if (unfinished.length) out = await bulk('remove', unfinished, true);
+  if (finished.length) out = await bulk('remove', finished, !keepFinishedFiles);
+  if (out && out.message) toast(out.message, 'ok');
+  S.selection.clear();
+  renderBulkBar();
+}
+
 /* ------------------------------------------------------------------ wire */
 function switchTab(name) {
   $$('.tab').forEach((t) => t.classList.toggle('active', t.dataset.tab === name));
@@ -983,6 +1158,8 @@ function init() {
     for (const [, row] of S.rows) row.remove();
     S.rows.clear();
     $('#downloads').innerHTML = '';
+    S.selection.clear();
+    renderBulkBar();
     if (S.filter === 'history') loadHistory();
     else { $('#history-bar').hidden = true; renderDownloads(); }
   }));
@@ -996,6 +1173,27 @@ function init() {
     if (out) loadHistory();
   });
   $('#search').addEventListener('input', (e) => { S.search = e.target.value; renderDownloads(); });
+
+  $('#btn-select').addEventListener('click', () => setSelecting(!S.selecting));
+  $('#bulk-all').addEventListener('click', () => {
+    const visible = visibleDownloads();
+    if (S.selection.size >= visible.length) S.selection.clear();
+    else for (const d of visible) S.selection.add(d.gid);
+    renderBulkBar();
+    renderDownloads();
+  });
+  $('#bulk-pause').addEventListener('click', async () => {
+    const out = await bulk('pause', [...S.selection], false);
+    if (out?.message) toast(out.message, 'ok');
+  });
+  $('#bulk-resume').addEventListener('click', async () => {
+    const out = await bulk('resume', [...S.selection], false);
+    if (out?.message) toast(out.message, 'ok');
+  });
+  $('#bulk-remove').addEventListener('click', askBulkRemove);
+  $('#bulk-cancel').addEventListener('click', () => { $('#bulk-confirm').hidden = true; });
+  $('#bulk-keep').addEventListener('click', () => runBulkRemove(true));
+  $('#bulk-delete').addEventListener('click', () => runBulkRemove(false));
 
   $('#btn-add').addEventListener('click', openAdd);
   $('#add-cancel').addEventListener('click', () => $('#add-dialog').close());

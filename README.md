@@ -299,17 +299,39 @@ recorded URL or forgotten. Files on disk are never touched by clearing history.
 > Verified: a download interrupted at 13% came back at 31% after a restart and
 > finished to 100% as one clean file.
 
-**Header** — global download/upload speed, counts, global speed limits and max
-concurrent downloads, pause all / resume all / purge finished.
+**Header** — the live throughput as the headline figure, then active/queued/done/
+failed counts, and pause all / resume all / purge finished. Global speed limits
+live under *Settings* with the rest of the aria2 options, where they belong.
+
+**Downloads** — filter chips carry their own counts (*All* and *Complete*
+included), each row shows its progress as both a wash across the card and a rail
+along its bottom edge, and a finished download whose file has since been moved or
+deleted is marked **file missing**. *Select* turns on bulk mode for pausing,
+resuming or removing several at once.
 
 Press `n` anywhere to open the add dialog.
+
+### Removing a download, and its bytes
+
+aria2 never deletes anything itself, so a removed download used to leave its part
+file and `.aria2` control file on disk forever. Now:
+
+- **An unfinished download** — cancelling it takes the part file with it. There is
+  nothing to ask: a half-written file is only ever rubbish.
+- **A finished download** — you are asked once, because its file is the point:
+  *keep file* removes only the row, *delete file* removes both.
+
+Deletion is confined to the download's own directory and the configured download
+directory, only ever touches the paths aria2 reported for that download plus
+their `.aria2` control files, and refuses anything that is not a regular file.
+Emptied folders left by a multi-file torrent are pruned.
 
 ### The same UI on the DankBar
 
 If you run [DankMaterialShell](https://danklinux.com), `dms-plugin/` is the whole
 web UI as a DMS plugin: a download icon on the bar showing live speed, clicked to
-open a panel with Downloads, Settings and Rules (the event log folds away under
-Settings). It is a second front-end onto this daemon —
+open a panel with Downloads, Rules and Settings (the event log folds away at the
+bottom of Settings). It is a second front-end onto this daemon —
 same `/api` endpoints, same `/api/events` stream — so the browser and the bar can
 be open at once. Right-clicking the icon gives quick actions (pause/resume all,
 purge, add from clipboard), and the panel can be detached into an ordinary
@@ -336,7 +358,8 @@ See [dms-plugin/README.md](dms-plugin/README.md) for settings, IPC and hacking n
 | `GET` | `/api/download/{gid}` | detail: status, files, uris, options, servers, peers, piece map |
 | `POST` | `/api/download/{gid}/pause\|resume\|retry` | per-download commands |
 | `POST` | `/api/download/{gid}/options\|position\|select` | change options, queue position, selected files |
-| `DELETE` | `/api/download/{gid}` | remove (`?force=&purge=`) |
+| `DELETE` | `/api/download/{gid}` | remove (`?force=&purge=&delete_files=`) — `delete_files` also deletes what it wrote |
+| `POST` | `/api/downloads/bulk` | one action across a chosen set (`{action, gids, delete_files, force}`) |
 | `POST` | `/api/global/pause-all\|resume-all\|purge\|save-session` | queue-wide commands |
 | `GET`/`POST` | `/api/global/options` | read/write global aria2 options |
 | `GET`/`POST` | `/api/rules` | read/replace rules; `POST /api/rules/{name}/toggle` |

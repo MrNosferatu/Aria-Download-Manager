@@ -100,11 +100,12 @@ Singleton {
     //: Which tab the popout shows. Changing it switches an open popout, and
     //: preselects the tab for the next one.
     property int requestedTab: 0
-    readonly property var tabNames: ["downloads", "settings", "rules"]
+    //: Order matches the tab bar, which is what requestedTab indexes into.
+    readonly property var tabNames: ["downloads", "rules", "settings"]
 
     //: The log moved into Settings — it is diagnostic material, not a main
     //: view — but `tab log` was documented, so it still lands somewhere useful.
-    readonly property int settingsTabIndex: 1
+    readonly property int settingsTabIndex: tabNames.indexOf("settings")
 
     //: Set alongside requestedTab to open the Settings tab with its event log
     //: section already expanded.
@@ -392,6 +393,37 @@ Singleton {
 
     function del(path, okMessage, callback) {
         act("DELETE", path, null, okMessage, callback)
+    }
+
+    //: Remove one download. aria2 never touches the bytes itself, so a removed
+    //: download leaves its part file and .aria2 control file behind unless
+    //: deleteFiles says otherwise — which is what the caller has just asked the
+    //: user about.
+    function removeDownload(gid, deleteFiles, okMessage) {
+        const query = "?force=true&purge=true" + (deleteFiles ? "&delete_files=true" : "")
+        root.del("/api/download/" + gid + query,
+                 okMessage !== undefined ? okMessage
+                                         : (deleteFiles ? "Removed and deleted the file" : "Removed"))
+    }
+
+    //: One action across a chosen set. The server reports per-gid failures
+    //: rather than giving up on the first one, and hands back a summary line.
+    function bulk(action, gids, deleteFiles, callback) {
+        if (!gids || !gids.length)
+            return
+        root.post("/api/downloads/bulk", {
+                      "action": action,
+                      "gids": gids,
+                      "delete_files": deleteFiles === true,
+                      "force": true
+                  }, "", data => {
+                      // act() only calls back on success and toasts failures
+                      // itself, so the server's summary is the whole story here.
+                      if (data && data.message)
+                          ToastService.showInfo("aria2c", data.message)
+                      if (callback)
+                          callback(data)
+                  })
     }
 
     // ---- section loaders -------------------------------------------------

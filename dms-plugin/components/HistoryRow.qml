@@ -155,7 +155,7 @@ Rectangle {
         DankActionButton {
             buttonSize: 28
             iconSize: Theme.iconSizeSmall
-            iconName: "close"
+            iconName: "delete"
             iconColor: Theme.error
             tooltipText: "Forget this entry"
             onClicked: row.service.post("/api/history/remove", {

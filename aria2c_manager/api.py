@@ -18,6 +18,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response, StreamingRes
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+from . import files as filetools
 from .config import STATIC_DIR, Config, stringify
 from .history import History
 from .rpc import DETAIL_KEYS, Aria2Error, Aria2RPC
@@ -92,6 +93,20 @@ class RulesRequest(BaseModel):
 
 class SelectFilesRequest(BaseModel):
     indices: list[int]
+
+
+class BulkRequest(BaseModel):
+    """One action applied to a chosen set of downloads.
+
+    Distinct from the /api/global/* endpoints, which always mean *everything*.
+    """
+
+    gids: list[str] = Field(default_factory=list)
+    #: pause | resume | remove
+    action: str
+    #: remove only: also delete what the downloads left on disk.
+    delete_files: bool = False
+    force: bool = False
 
 
 class HistoryKeyRequest(BaseModel):
@@ -471,8 +486,46 @@ def create_app(cfg: Config) -> FastAPI:
         poller.poke()
         return {"ok": True}
 
-    @app.delete("/api/download/{gid}")
-    async def remove(gid: str, force: bool = False, purge: bool = True):
+    async def _owned_paths(gid: str) -> tuple[list[str], list[str]]:
+        """A download's file paths and the roots they may be deleted within.
+
+        Read *before* the download is removed: once aria2 has dropped it, there
+        is nothing left to ask about the files it wrote.
+        """
+        paths: list[str] = []
+        roots: list[str] = []
+        try:
+            for entry in await rpc.get_files(gid):
+                if path := entry.get("path"):
+                    paths.append(path)
+        except Aria2Error:
+            pass
+        try:
+            status = await rpc.tell_status(gid, ["dir"])
+            if own_dir := (status or {}).get("dir"):
+                roots.append(own_dir)
+        except Aria2Error:
+            pass
+        if global_dir := stringify(cfg.get("aria2.options.dir", "")):
+            roots.append(global_dir)
+        return paths, roots
+
+    EMPTY_REMOVAL = {"deleted": [], "missing": [], "refused": [], "bytes": 0}
+
+    async def _stop_and_delete(gid: str, force: bool, purge: bool) -> dict:
+        """Stop a download, then delete what it wrote — strictly in that order.
+
+        The paths have to be read before the download goes (aria2 forgets them),
+        but the bytes can only be deleted after it has stopped: a still-running
+        download simply rewrites its `.aria2` control file into the gap.
+        """
+        paths, roots = await _owned_paths(gid)
+        await _remove_from_aria2(gid, force=force, purge=purge)
+        if not paths:
+            return dict(EMPTY_REMOVAL)
+        return await asyncio.to_thread(filetools.delete, paths, roots)
+
+    async def _remove_from_aria2(gid: str, force: bool, purge: bool) -> None:
         try:
             await rpc.remove(gid, force=force)
         except Aria2Error:
@@ -483,8 +536,90 @@ def create_app(cfg: Config) -> FastAPI:
                 await rpc.remove_result(gid)
             except Aria2Error:
                 pass
+
+    @app.delete("/api/download/{gid}")
+    async def remove(
+        gid: str,
+        force: bool = False,
+        purge: bool = True,
+        delete_files: bool = False,
+    ):
+        """Remove a download, optionally taking its bytes with it.
+
+        aria2 never deletes anything itself, so without `delete_files` a removed
+        download leaves its part file and `.aria2` control file on disk forever.
+        """
+        if delete_files:
+            removal = await _stop_and_delete(gid, force=force, purge=purge)
+        else:
+            removal = None
+            await _remove_from_aria2(gid, force=force, purge=purge)
         poller.poke()
-        return {"ok": True}
+        if removal is None:
+            return {"ok": True}
+        if removal["deleted"]:
+            store.add_event(
+                "info",
+                f"Removed and deleted {len(removal['deleted'])} file(s), "
+                f"freeing {removal['bytes']} bytes",
+            )
+        for refusal in removal["refused"]:
+            store.add_event(
+                "warn", f"Could not delete {refusal['path']}: {refusal['reason']}"
+            )
+        return {"ok": True, "files": removal}
+
+    @app.post("/api/downloads/bulk")
+    async def bulk(req: BulkRequest):
+        """Apply one action to a chosen set of downloads.
+
+        Best-effort per gid: one failure does not abandon the rest, and the
+        response says exactly which ones did not take.
+        """
+        if req.action not in ("pause", "resume", "remove"):
+            raise HTTPException(400, "action must be pause, resume or remove")
+        if not req.gids:
+            raise HTTPException(400, "no gids given")
+
+        done: list[str] = []
+        failed: list[dict] = []
+        removal_total = {"deleted": [], "missing": [], "refused": [], "bytes": 0}
+
+        for gid in req.gids:
+            try:
+                if req.action == "pause":
+                    await rpc.pause(gid, force=req.force)
+                elif req.action == "resume":
+                    await rpc.unpause(gid)
+                elif req.delete_files:
+                    one = await _stop_and_delete(gid, force=req.force, purge=True)
+                    for key in ("deleted", "missing", "refused"):
+                        removal_total[key].extend(one[key])
+                    removal_total["bytes"] += one["bytes"]
+                else:
+                    await _remove_from_aria2(gid, force=req.force, purge=True)
+                done.append(gid)
+            except Aria2Error as exc:
+                failed.append({"gid": gid, "error": str(exc)})
+
+        poller.poke()
+        verb = {"pause": "Paused", "resume": "Resumed", "remove": "Removed"}[req.action]
+        message = f"{verb} {len(done)} download(s)"
+        if req.delete_files and removal_total["deleted"]:
+            message += (
+                f", deleting {len(removal_total['deleted'])} file(s) "
+                f"({removal_total['bytes']} bytes)"
+            )
+        if failed:
+            message += f", {len(failed)} failed"
+        store.add_event("info" if not failed else "warn", message)
+        return {
+            "ok": True,
+            "done": done,
+            "failed": failed,
+            "files": removal_total if req.delete_files else None,
+            "message": message,
+        }
 
     @app.post("/api/download/{gid}/options")
     async def set_download_options(gid: str, req: OptionsRequest):

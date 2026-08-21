@@ -16,6 +16,84 @@ Item {
 
     readonly property int scrollbarGutter: Layout.SCROLLBAR_GUTTER
 
+    // ---- bulk selection --------------------------------------------------
+    //: gid -> true. A plain object rather than a list so a row can test its own
+    //: membership without scanning, and so reassigning it is one signal.
+    property var selection: ({})
+    property bool selecting: false
+    property bool confirmingBulkRemove: false
+
+    //: A selection can mix the two cases, so they are counted separately: the
+    //: unfinished ones are cleaned up without asking, and only the finished
+    //: ones raise the question of whether to keep what was downloaded.
+    readonly property var selectedFinished: selectedGids.filter(g => (byGid[g] || {}).status === "complete")
+    readonly property var selectedUnfinished: selectedGids.filter(g => (byGid[g] || {}).status !== "complete")
+
+    readonly property var selectedGids: Object.keys(selection).filter(g => selection[g])
+    readonly property int selectedCount: selectedGids.length
+
+    function isSelected(gid) {
+        return selection[gid] === true
+    }
+
+    function toggleSelection(gid) {
+        const next = Object.assign({}, selection)
+        if (next[gid])
+            delete next[gid]
+        else
+            next[gid] = true
+        selection = next
+    }
+
+    function clearSelection() {
+        selection = ({})
+        confirmingBulkRemove = false
+    }
+
+    function selectAllVisible() {
+        const next = ({})
+        for (const gid of gids)
+            next[gid] = true
+        selection = next
+    }
+
+    //: Selection only means anything against rows that are on screen; changing
+    //: the filter or leaving selection mode drops it rather than acting later
+    //: on downloads the user can no longer see.
+    onFilterChanged: clearSelection()
+    onSelectingChanged: {
+        if (!selecting)
+            clearSelection()
+    }
+
+    function runBulk(action) {
+        if (!selectedCount)
+            return
+        service.bulk(action, selectedGids, false, () => tab.clearSelection())
+    }
+
+    //: `keepFinishedFiles` only governs the finished downloads; a part file is
+    //: never worth keeping, so those always go with their rows.
+    function runBulkRemove(keepFinishedFiles) {
+        const unfinished = selectedUnfinished
+        const finished = selectedFinished
+        if (unfinished.length)
+            service.bulk("remove", unfinished, true)
+        if (finished.length)
+            service.bulk("remove", finished, !keepFinishedFiles)
+        tab.confirmingBulkRemove = false
+        tab.clearSelection()
+    }
+
+    //: Nothing finished in the selection means nothing to ask about.
+    function askBulkRemove() {
+        if (!selectedFinished.length) {
+            runBulkRemove(false)
+            return
+        }
+        confirmingBulkRemove = true
+    }
+
     readonly property bool historyMode: filter === "history"
 
     // gid -> row, so a delegate can bind to live values without the list model
@@ -154,6 +232,7 @@ Item {
             anchors.left: parent.left
             anchors.verticalCenter: parent.verticalCenter
             width: Math.max(0, parent.width - addButton.width - Theme.spacingS
+                                - (selectButton.visible ? selectButton.width + Theme.spacingS : 0)
                                 - (clearHistoryButton.visible ? clearHistoryButton.width + Theme.spacingS : 0))
             height: 40
             leftIconName: "search"
@@ -175,6 +254,21 @@ Item {
             backgroundColor: Theme.errorHover
             textColor: Theme.error
             onClicked: tab.service.post("/api/history-clear", null, "History cleared", () => tab.service.loadHistory())
+        }
+
+        DankButton {
+            id: selectButton
+
+            anchors.right: addButton.left
+            anchors.rightMargin: Theme.spacingS
+            anchors.verticalCenter: parent.verticalCenter
+            visible: !tab.historyMode
+            text: tab.selecting ? "Done" : "Select"
+            iconName: tab.selecting ? "check" : "checklist"
+            buttonHeight: 40
+            backgroundColor: tab.selecting ? Theme.primary : Theme.surfaceContainerHigh
+            textColor: tab.selecting ? Theme.onPrimary : Theme.surfaceText
+            onClicked: tab.selecting = !tab.selecting
         }
 
         DankButton {
@@ -204,11 +298,159 @@ Item {
         onSubmitted: tab.adding = false
     }
 
+    // ---- bulk action bar -------------------------------------------------
+    Rectangle {
+        id: bulkBar
+
+        anchors.top: addPanel.bottom
+        anchors.topMargin: visible ? Theme.spacingS : 0
+        width: parent.width - tab.scrollbarGutter
+        visible: tab.selecting && !tab.historyMode
+        height: visible ? (tab.confirmingBulkRemove ? 76 : 40) : 0
+        radius: Theme.cornerRadius
+        color: tab.confirmingBulkRemove ? Theme.withAlpha(Theme.error, 0.10) : Theme.surfaceContainerHigh
+        border.width: 1
+        border.color: tab.confirmingBulkRemove ? Theme.withAlpha(Theme.error, 0.35)
+                                               : Theme.withAlpha(Theme.outline, 0.12)
+
+        Item {
+            id: bulkRow
+
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.top: parent.top
+            height: 40
+
+            StyledText {
+                anchors.left: parent.left
+                anchors.leftMargin: Theme.spacingS
+                anchors.verticalCenter: parent.verticalCenter
+                text: tab.selectedCount > 0 ? tab.selectedCount + " selected" : "Select downloads"
+                font.pixelSize: Theme.fontSizeSmall
+                font.weight: Font.Medium
+                color: Theme.surfaceText
+            }
+
+            Row {
+                anchors.right: parent.right
+                anchors.rightMargin: Theme.spacingXS
+                anchors.verticalCenter: parent.verticalCenter
+                spacing: Theme.spacingXS
+
+                DankButton {
+                    text: tab.selectedCount === tab.gids.length && tab.gids.length > 0 ? "None" : "All"
+                    buttonHeight: 28
+                    backgroundColor: Theme.surfaceContainer
+                    textColor: Theme.surfaceText
+                    onClicked: {
+                        if (tab.selectedCount === tab.gids.length && tab.gids.length > 0)
+                            tab.clearSelection()
+                        else
+                            tab.selectAllVisible()
+                    }
+                }
+
+                DankActionButton {
+                    buttonSize: 28
+                    iconSize: Theme.iconSizeSmall
+                    iconName: "pause"
+                    tooltipText: "Pause the selected downloads"
+                    enabled: tab.selectedCount > 0
+                    opacity: enabled ? 1 : 0.4
+                    onClicked: tab.runBulk("pause")
+                }
+
+                DankActionButton {
+                    buttonSize: 28
+                    iconSize: Theme.iconSizeSmall
+                    iconName: "play_arrow"
+                    tooltipText: "Resume the selected downloads"
+                    enabled: tab.selectedCount > 0
+                    opacity: enabled ? 1 : 0.4
+                    onClicked: tab.runBulk("resume")
+                }
+
+                DankActionButton {
+                    buttonSize: 28
+                    iconSize: Theme.iconSizeSmall
+                    iconName: "delete"
+                    iconColor: Theme.error
+                    tooltipText: "Remove the selected downloads"
+                    enabled: tab.selectedCount > 0
+                    opacity: enabled ? 1 : 0.4
+                    onClicked: tab.askBulkRemove()
+                }
+            }
+        }
+
+        // The same question the single row asks, asked once for the batch —
+        // and only about the finished downloads in it.
+        Item {
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.top: bulkRow.bottom
+            height: 36
+            visible: tab.confirmingBulkRemove
+
+            StyledText {
+                anchors.left: parent.left
+                anchors.leftMargin: Theme.spacingS
+                anchors.right: bulkConfirmButtons.left
+                anchors.rightMargin: Theme.spacingS
+                anchors.verticalCenter: parent.verticalCenter
+                text: {
+                    const done = tab.selectedFinished.length
+                    const rest = tab.selectedUnfinished.length
+                    let line = done + " finished — keep the files?"
+                    if (rest > 0)
+                        line += "  (" + rest + " unfinished will be cleaned up)"
+                    return line
+                }
+                font.pixelSize: Theme.fontSizeSmall
+                color: Theme.surfaceText
+                elide: Text.ElideRight
+            }
+
+            Row {
+                id: bulkConfirmButtons
+
+                anchors.right: parent.right
+                anchors.rightMargin: Theme.spacingXS
+                anchors.verticalCenter: parent.verticalCenter
+                spacing: Theme.spacingXS
+
+                DankButton {
+                    text: "Cancel"
+                    buttonHeight: 28
+                    backgroundColor: Theme.surfaceContainer
+                    textColor: Theme.surfaceText
+                    onClicked: tab.confirmingBulkRemove = false
+                }
+
+                DankButton {
+                    text: "Keep files"
+                    buttonHeight: 28
+                    backgroundColor: Theme.surfaceContainer
+                    textColor: Theme.surfaceText
+                    onClicked: tab.runBulkRemove(true)
+                }
+
+                DankButton {
+                    text: "Delete files"
+                    buttonHeight: 28
+                    backgroundColor: Theme.error
+                    textColor: Theme.onPrimary
+                    onClicked: tab.runBulkRemove(false)
+                }
+            }
+        }
+    }
+
     // ---- summary line for history ---------------------------------------
     StyledText {
         id: historySummary
 
-        anchors.top: addPanel.bottom
+        anchors.top: bulkBar.bottom
         anchors.topMargin: Theme.spacingS
         width: parent.width
         visible: tab.historyMode
@@ -245,6 +487,9 @@ Item {
             gid: modelData
             dl: tab.byGid[modelData] || ({})
             expanded: tab.expandedGid === modelData
+            selectable: tab.selecting
+            selected: tab.isSelected(modelData)
+            onToggleSelected: tab.toggleSelection(modelData)
             onToggleExpand: tab.expandedGid = (tab.expandedGid === modelData ? "" : modelData)
         }
     }

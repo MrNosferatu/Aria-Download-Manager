@@ -47,5 +47,5 @@ def summary() -> int:
     print(f"\n{'=' * 62}")
     print(f"{len(PASSED)} passed, {len(FAILED)} failed")
     for failure in FAILED:
-        print(f"  \033[31m✗\033[0m {failure}")
+        print(f"  \033[31mFAIL\033[0m {failure}")
     return 1 if FAILED else 0

@@ -57,3 +57,5 @@ Thumbs.db
 
 # Extension build output (web-ext build / sign)
 extension/dist/
+# web-ext's record of the last AMO upload — local build state, not source.
+extension/.amo-upload-uuid

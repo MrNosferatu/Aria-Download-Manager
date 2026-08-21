@@ -24,6 +24,32 @@ Rectangle {
     //: deleted.
     readonly property bool fileMissing: dl.fileExists === false
 
+    //: Only a *finished* download poses a question worth asking: its file is
+    //: the whole point, so removing the row and deleting the file are two
+    //: different intentions. A download that never finished leaves nothing but
+    //: a half-written part file, so cancelling it just takes that with it.
+    property bool confirmingRemove: false
+
+    readonly property bool finished: status === "complete"
+
+    //: Still in flight — cancelling it is a different act from deleting a
+    //: download that has already stopped, and the icons say so.
+    readonly property bool live: status === "active" || status === "waiting" || status === "paused"
+
+    //: Selection is driven by the tab; the row just renders it.
+    property bool selectable: false
+    property bool selected: false
+
+    signal toggleSelected
+
+    function askRemove() {
+        if (!finished) {
+            service.removeDownload(gid, true, "Cancelled and cleaned up")
+            return
+        }
+        confirmingRemove = true
+    }
+
     readonly property color statusColor: {
         switch (status) {
         case "active":
@@ -109,7 +135,9 @@ Rectangle {
         return bits.join("  ·  ")
     }
 
-    height: body.implicitHeight + Theme.spacingS * 2 + (expanded ? detailLoader.height + Theme.spacingS : 0)
+    height: body.implicitHeight + Theme.spacingS * 2
+            + (confirmingRemove ? confirmStrip.height + Theme.spacingS : 0)
+            + (expanded ? detailLoader.height + Theme.spacingS : 0)
     radius: Theme.cornerRadius
     color: expanded ? Theme.surfaceContainerHigh : Theme.surfaceContainer
     border.width: 1
@@ -125,9 +153,25 @@ Rectangle {
         implicitHeight: Math.max(38, bodyColumn.implicitHeight)
 
         DankActionButton {
-            id: chevron
+            id: picker
 
             anchors.left: parent.left
+            anchors.top: parent.top
+            visible: row.selectable
+            width: visible ? 26 : 0
+            buttonSize: 26
+            iconSize: Theme.iconSizeSmall
+            iconName: row.selected ? "check_box" : "check_box_outline_blank"
+            iconColor: row.selected ? Theme.primary : Theme.surfaceVariantText
+            tooltipText: row.selected ? "Deselect" : "Select"
+            onClicked: row.toggleSelected()
+        }
+
+        DankActionButton {
+            id: chevron
+
+            anchors.left: picker.right
+            anchors.leftMargin: row.selectable ? Theme.spacingXXS : 0
             anchors.top: parent.top
             buttonSize: 26
             iconSize: Theme.iconSizeSmall
@@ -233,10 +277,13 @@ Rectangle {
             DankActionButton {
                 buttonSize: 28
                 iconSize: Theme.iconSizeSmall
-                iconName: "close"
+                // A download still in flight is being *cancelled*, which is what
+                // a cross means; one that has already finished or failed is
+                // being thrown away, which is what the bin means.
+                iconName: row.live ? "close" : "delete"
                 iconColor: Theme.error
-                tooltipText: row.status === "active" ? "Stop and remove" : "Remove from list"
-                onClicked: row.service.del("/api/download/" + row.gid + "?force=true&purge=true", "")
+                tooltipText: row.live ? "Cancel and remove…" : "Delete…"
+                onClicked: row.askRemove()
             }
         }
 
@@ -337,12 +384,83 @@ Rectangle {
         }
     }
 
+    // ---- remove confirmation --------------------------------------------
+    // Only ever shown for a finished download — see askRemove().
+    Rectangle {
+        id: confirmStrip
+
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.top: body.bottom
+        anchors.margins: Theme.spacingS
+        visible: row.confirmingRemove
+        height: visible ? 40 : 0
+        radius: Theme.cornerRadius
+        color: Theme.withAlpha(Theme.error, 0.10)
+        border.width: 1
+        border.color: Theme.withAlpha(Theme.error, 0.35)
+
+        StyledText {
+            anchors.left: parent.left
+            anchors.leftMargin: Theme.spacingS
+            anchors.right: confirmButtons.left
+            anchors.rightMargin: Theme.spacingS
+            anchors.verticalCenter: parent.verticalCenter
+            text: row.fileMissing ? "The file is already gone — remove the row?"
+                                  : "Remove this download — and the file?"
+            font.pixelSize: Theme.fontSizeSmall
+            color: Theme.surfaceText
+            elide: Text.ElideRight
+        }
+
+        Row {
+            id: confirmButtons
+
+            anchors.right: parent.right
+            anchors.rightMargin: Theme.spacingXS
+            anchors.verticalCenter: parent.verticalCenter
+            spacing: Theme.spacingXS
+
+            DankButton {
+                text: "Cancel"
+                buttonHeight: 28
+                backgroundColor: Theme.surfaceContainerHigh
+                textColor: Theme.surfaceText
+                onClicked: row.confirmingRemove = false
+            }
+
+            DankButton {
+                text: "Keep file"
+                buttonHeight: 28
+                backgroundColor: Theme.surfaceContainerHigh
+                textColor: Theme.surfaceText
+                onClicked: {
+                    row.confirmingRemove = false
+                    row.service.removeDownload(row.gid, false, "Removed, file kept")
+                }
+            }
+
+            DankButton {
+                text: "Delete file"
+                buttonHeight: 28
+                enabled: !row.fileMissing
+                opacity: enabled ? 1 : 0.4
+                backgroundColor: Theme.error
+                textColor: Theme.onPrimary
+                onClicked: {
+                    row.confirmingRemove = false
+                    row.service.removeDownload(row.gid, true, "Removed and deleted the file")
+                }
+            }
+        }
+    }
+
     Loader {
         id: detailLoader
 
         anchors.left: parent.left
         anchors.right: parent.right
-        anchors.top: body.bottom
+        anchors.top: confirmStrip.visible ? confirmStrip.bottom : body.bottom
         anchors.topMargin: Theme.spacingS
         anchors.leftMargin: Theme.spacingS
         anchors.rightMargin: Theme.spacingS
