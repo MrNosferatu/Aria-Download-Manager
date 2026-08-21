@@ -14,6 +14,25 @@ PopoutComponent {
     readonly property int inset: Theme.spacingS
     property int tabIndex: service ? service.requestedTab : 0
 
+    //: Set when this instance lives in the detached window instead of the bar
+    //: popout. The window owns the title bar and the header actions, so the
+    //: popout's own header steps aside and only the status line stays.
+    property bool inWindow: false
+
+    //: The popout learns whether it is on screen from its parent popout; the
+    //: window has no parentPopout and drives this from its own visibility.
+    property bool hostVisible: true
+
+    signal detachRequested
+
+    //: Everything above the tab content, so a host that owns its height (the
+    //: window) can work out how much is left for the tabs. Spelled out term by
+    //: term rather than derived from implicitHeight, which would bind back
+    //: through contentHeight.
+    readonly property int chromeHeight: headerHeight + detailsHeight + statStrip.height
+                                        + Theme.spacingS + tabBar.height
+                                        + Theme.spacingL + Theme.spacingXS
+
     Connections {
         target: popout.service
         function onRequestedTabChanged() {
@@ -25,7 +44,7 @@ PopoutComponent {
 
     // While this popout is on screen it pings the service, which streams for as
     // long as the pings keep coming. Closing simply stops the pings.
-    readonly property bool showing: parentPopout ? parentPopout.shouldBeVisible : true
+    readonly property bool showing: parentPopout ? parentPopout.shouldBeVisible : hostVisible
 
     onShowingChanged: {
         if (showing && service)
@@ -48,7 +67,7 @@ PopoutComponent {
         }
     }
 
-    headerText: "aria2c manager"
+    headerText: inWindow ? "" : "aria2c manager"
     detailsText: {
         if (!service)
             return ""
@@ -59,48 +78,23 @@ PopoutComponent {
             return "aria2c not running — " + (aria2.last_error || "see the Log tab")
         return "aria2c " + (aria2.version || "") + " · pid " + (aria2.pid !== undefined && aria2.pid !== null ? aria2.pid : "ext")
     }
-    showCloseButton: true
+    showCloseButton: !inWindow
 
     headerActions: Component {
-        Row {
-            spacing: Theme.spacingXS
-
-            DankActionButton {
-                iconName: "pause"
-                tooltipText: "Pause all"
-                buttonSize: 30
-                onClicked: popout.service.post("/api/global/pause-all", null, "Paused all")
-            }
-
-            DankActionButton {
-                iconName: "play_arrow"
-                tooltipText: "Resume all"
-                buttonSize: 30
-                onClicked: popout.service.post("/api/global/resume-all", null, "Resumed all")
-            }
-
-            DankActionButton {
-                iconName: "cleaning_services"
-                tooltipText: "Purge finished results from the list"
-                buttonSize: 30
-                onClicked: popout.service.post("/api/global/purge", null, "Purged finished results")
-            }
-
-            DankActionButton {
-                iconName: "open_in_browser"
-                tooltipText: "Open the web UI"
-                buttonSize: 30
-                onClicked: {
-                    Quickshell.execDetached(["xdg-open", popout.service.baseUrl + "/"])
-                    if (popout.closePopout)
-                        popout.closePopout()
-                }
+        ManagerActions {
+            service: popout.service
+            onDetachRequested: popout.detachRequested()
+            onDismissRequested: {
+                if (popout.closePopout)
+                    popout.closePopout()
             }
         }
     }
 
     // ---- live stat strip -------------------------------------------------
     Rectangle {
+        id: statStrip
+
         x: popout.inset
         width: parent.width - popout.inset * 2
         height: 46

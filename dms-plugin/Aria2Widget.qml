@@ -19,6 +19,19 @@ PluginComponent {
     readonly property bool showWhenIdle: pluginData.showWhenIdle !== false
     readonly property int popoutHeightSetting: parseInt(pluginData.popoutHeight || "540") || 540
 
+    //: "popout" keeps the bar-anchored panel on left click; "window" makes the
+    //: standalone window the default and leaves the popout to hover.
+    readonly property bool clickOpensWindow: pluginData.clickOpens === "window"
+
+    //: Only a bar-hosted instance may own the window, and only one of them —
+    //: see Aria2Service.claimWindow.
+    property bool ownsWindow: false
+
+    //: Lifted for the length of one openPopout() call. Without it, docking the
+    //: window back into the bar would run through pillClickAction and reopen
+    //: the very window we just closed.
+    property bool _forcePopout: false
+
     readonly property bool busy: svc.activeCount > 0
     readonly property bool attention: svc.connected && !svc.aria2Running
 
@@ -54,6 +67,24 @@ PluginComponent {
 
     popoutWidth: parseInt(pluginData.popoutWidth || "640") || 640
 
+    //: Claiming from Component.onCompleted would risk shadowing the base
+    //: PluginComponent's own handler, so the claim runs a tick later — and
+    //: again if this instance is handed an axis after the fact.
+    function tryClaimWindow() {
+        if (!root.ownsWindow && root.axis)
+            root.ownsWindow = root.svc.claimWindow(root)
+    }
+
+    onAxisChanged: tryClaimWindow()
+
+    Timer {
+        interval: 0
+        running: true
+        onTriggered: root.tryClaimWindow()
+    }
+
+    Component.onDestruction: root.svc.releaseWindow(root)
+
     Connections {
         target: root.svc
         function onPopoutToggleRequested() {
@@ -63,6 +94,71 @@ PluginComponent {
             if (root.axis)
                 root.triggerPopout()
         }
+        function onWindowToggleRequested(forceShow) {
+            if (!root.ownsWindow)
+                return
+            if (forceShow)
+                root.showWindow()
+            else
+                root.toggleWindow()
+        }
+    }
+
+    // ---- standalone window ----------------------------------------------
+    //: Built on first use, so a bar that never detaches never pays for one.
+    function showWindow() {
+        if (!root.ownsWindow) {
+            // Another bar holds the window — ask whoever that is.
+            root.svc.windowToggleRequested(true)
+            return
+        }
+        windowLoader.active = true
+        windowLoader.item.show()
+    }
+
+    function toggleWindow() {
+        if (!root.ownsWindow) {
+            root.svc.windowToggleRequested(false)
+            return
+        }
+        windowLoader.active = true
+        windowLoader.item.toggle()
+    }
+
+    LazyLoader {
+        id: windowLoader
+
+        active: false
+
+        Aria2Window {
+            service: root.svc
+            onDockRequested: root.openPopout()
+        }
+    }
+
+    // ---- right-click quick actions ---------------------------------------
+    QuickMenu {
+        id: quickMenu
+
+        service: root.svc
+        onWindowRequested: root.showWindow()
+    }
+
+    pillRightClickAction: (x, y, width, section, screen) => {
+        const barPosition = root.axis?.edge === "left" ? 2 : (root.axis?.edge === "right" ? 3 : (root.axis?.edge === "top" ? 0 : 1))
+        quickMenu.setTriggerPosition(x, y, width, section, screen, barPosition, root.barThickness, root.barSpacing, root.barConfig)
+        quickMenu.toggle()
+    }
+
+    //: With "window" picked, the pill opens the real window instead of the
+    //: bar-anchored popout. A bar that lost the window claim keeps the popout.
+    pillClickAction: (root.clickOpensWindow && root.ownsWindow && !root._forcePopout) ? (() => root.toggleWindow()) : null
+
+    //: The bar popout, whatever the pill is currently wired to do.
+    function openPopout() {
+        root._forcePopout = true
+        root.triggerPopout()
+        root._forcePopout = false
     }
 
     // ---- control center --------------------------------------------------
@@ -135,6 +231,7 @@ PluginComponent {
             width: root.popoutWidth - Theme.spacingS * 2
             service: root.svc
             contentHeight: root.popoutHeightSetting
+            onDetachRequested: root.showWindow()
         }
     }
 }

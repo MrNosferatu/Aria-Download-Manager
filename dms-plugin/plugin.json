@@ -2,7 +2,7 @@
     "id": "aria2cManager",
     "name": "aria2c Manager",
     "description": "Manage aria2c downloads from the bar - queue, rules and live progress, backed by the aria2c-manager daemon",
-    "version": "1.0.0",
+    "version": "1.1.0",
     "license": "MIT",
     "author": "FHADWA NUR'IZDHAD",
     "type": "composite",

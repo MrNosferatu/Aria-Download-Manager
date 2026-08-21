@@ -308,14 +308,17 @@ Press `n` anywhere to open the add dialog.
 
 If you run [DankMaterialShell](https://danklinux.com), `dms-plugin/` is the whole
 web UI as a DMS plugin: a download icon on the bar showing live speed, clicked to
-open a window with the same six tabs. It is a second front-end onto this daemon —
+open a panel with the same six tabs. It is a second front-end onto this daemon —
 same `/api` endpoints, same `/api/events` stream — so the browser and the bar can
-be open at once.
+be open at once. Right-clicking the icon gives quick actions (pause/resume all,
+purge, add from clipboard), and the panel can be detached into an ordinary
+window that survives a click elsewhere.
 
 ```sh
 ln -s "$PWD/dms-plugin" ~/.config/DankMaterialShell/plugins/aria2cManager
 dms ipc call plugins enable aria2cManager      # then add it in Settings -> DankBar
 dms ipc call aria2c toggle                     # bind this to a key if you like
+dms ipc call aria2c toggleWindow               # ...or this, for the standalone window
 ```
 
 See [dms-plugin/README.md](dms-plugin/README.md) for settings, IPC and hacking notes.

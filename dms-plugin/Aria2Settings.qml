@@ -53,6 +53,23 @@ PluginSettings {
         defaultValue: "speed"
     }
 
+    SelectionSetting {
+        settingKey: "clickOpens"
+        label: "Clicking the bar icon"
+        description: "The popout is anchored to the bar and closes on the next click elsewhere; the window is an ordinary movable, resizable window. Either way, right-click gives quick actions, and the popout header can detach into the window."
+        options: [
+            {
+                "label": "Bar popout",
+                "value": "popout"
+            },
+            {
+                "label": "Standalone window",
+                "value": "window"
+            }
+        ]
+        defaultValue: "popout"
+    }
+
     StringSetting {
         settingKey: "popoutWidth"
         label: "Popout width"

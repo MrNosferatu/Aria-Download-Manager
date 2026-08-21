@@ -72,6 +72,27 @@ Singleton {
     //: compositor keybind) opens the manager window without a click.
     signal popoutToggleRequested
 
+    //: Same, for the detached window. Only the widget that holds the window
+    //: claim answers it; forceShow lets a non-owning bar open the window
+    //: rather than flip it shut.
+    signal windowToggleRequested(bool forceShow)
+
+    //: One bar instance hosts the detached window, or a multi-monitor setup
+    //: would open one window per bar. First bar-hosted widget to ask wins, and
+    //: hands the claim back when it goes away.
+    property var windowOwner: null
+
+    function claimWindow(who) {
+        if (!windowOwner)
+            windowOwner = who
+        return windowOwner === who
+    }
+
+    function releaseWindow(who) {
+        if (windowOwner === who)
+            windowOwner = null
+    }
+
     //: Which tab the popout shows. Changing it switches an open popout, and
     //: preselects the tab for the next one.
     property int requestedTab: 0
@@ -484,6 +505,13 @@ Singleton {
         function toggle(): string {
             root.popoutToggleRequested()
             return "toggled"
+        }
+
+        function toggleWindow(): string {
+            if (!root.windowOwner)
+                return "no bar is hosting the widget"
+            root.windowToggleRequested(false)
+            return "toggled window"
         }
 
         function streamInfo(): string {
