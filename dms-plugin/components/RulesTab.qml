@@ -3,6 +3,7 @@ import qs.Common
 import qs.Services
 import qs.Widgets
 import "../lib/Fmt.js" as Fmt
+import "../lib/Layout.js" as Layout
 
 Item {
     id: tab
@@ -10,6 +11,8 @@ Item {
     property var service: null
     property var rules: []
     property bool dirty: false
+
+    readonly property int scrollbarGutter: Layout.SCROLLBAR_GUTTER
 
     readonly property var speedValues: ["hybrid", "measured", "aria2"]
     readonly property var speedLabels: ["measured, else aria2 (default)", "measured write speed only", "aria2's reported speed"]
@@ -135,7 +138,9 @@ Item {
         Column {
             id: content
 
-            width: parent.width
+            // Leave the flickable's scrollbar its own strip; it is painted over
+            // the right edge and otherwise lands on the cards.
+            width: parent.width - tab.scrollbarGutter
             spacing: Theme.spacingS
 
             StyledText {

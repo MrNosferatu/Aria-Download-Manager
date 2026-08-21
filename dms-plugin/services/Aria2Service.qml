@@ -22,7 +22,11 @@ Singleton {
     //: nothing is pinging, nothing is watching.
     property double lastViewerPing: 0
     property bool viewerActive: false
-    readonly property int idlePollSeconds: parseInt(cfg.idlePollSeconds || "10") || 10
+    //: How stale the pill may get while nothing is watching the panel. Ten
+    //: seconds meant a download could be running for most of that before the
+    //: bar admitted it; three keeps the pill roughly in step with the desktop's
+    //: other monitors for one cheap request every three seconds.
+    readonly property int idlePollSeconds: parseInt(cfg.idlePollSeconds || "3") || 3
     readonly property bool alwaysStream: cfg.alwaysStream === true
 
     readonly property string host: cfg.host || "127.0.0.1"
@@ -96,7 +100,15 @@ Singleton {
     //: Which tab the popout shows. Changing it switches an open popout, and
     //: preselects the tab for the next one.
     property int requestedTab: 0
-    readonly property var tabNames: ["downloads", "settings", "rules", "log"]
+    readonly property var tabNames: ["downloads", "settings", "rules"]
+
+    //: The log moved into Settings — it is diagnostic material, not a main
+    //: view — but `tab log` was documented, so it still lands somewhere useful.
+    readonly property int settingsTabIndex: 1
+
+    //: Set alongside requestedTab to open the Settings tab with its event log
+    //: section already expanded.
+    property bool requestedLog: false
 
     // ---- event stream ----------------------------------------------------
     property string _pendingEvent: ""
@@ -527,9 +539,16 @@ Singleton {
         }
 
         function tab(name: string): string {
-            const at = root.tabNames.indexOf((name || "").toLowerCase())
+            const wanted = (name || "").toLowerCase()
+            if (wanted === "log") {
+                root.requestedLog = true
+                root.requestedTab = root.settingsTabIndex
+                return "showing the event log under settings"
+            }
+            const at = root.tabNames.indexOf(wanted)
             if (at < 0)
-                return "unknown tab, try: " + root.tabNames.join(", ")
+                return "unknown tab, try: " + root.tabNames.concat(["log"]).join(", ")
+            root.requestedLog = false
             root.requestedTab = at
             return "showing " + root.tabNames[at]
         }

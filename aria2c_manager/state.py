@@ -309,6 +309,14 @@ class Poller:
         live = {d["gid"] for d in downloads if d["gid"]}
         for gone in [gid for gid in self._progress if gid not in live]:
             del self._progress[gone]
+        # A finished download's file can be moved or deleted behind our back, and
+        # a row that still offers "open file" for something that is gone is worse
+        # than no row at all. Only final states are checked: an active download's
+        # file obviously exists, and this runs every tick.
+        for row in downloads:
+            path = row.get("path") or ""
+            if path and row.get("status") in ("complete", "error"):
+                row["fileExists"] = os.path.exists(path)
         stat = stat or {}
         counts = {
             "active": len(active or []),
@@ -316,6 +324,11 @@ class Poller:
             "paused": len([d for d in (waiting or []) if d.get("status") == "paused"]),
             "stopped": len(stopped or []),
             "error": len([d for d in (stopped or []) if d.get("status") == "error"]),
+            "complete": len([d for d in (stopped or []) if d.get("status") == "complete"]),
+            #: Everything aria2 is still holding, which is what an "All" view
+            #: shows. Note aria2 forgets stopped downloads when it restarts or
+            #: is purged; the history is the durable record.
+            "total": len(downloads),
         }
         return {
             "ts": time.time(),

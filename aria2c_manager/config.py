@@ -34,7 +34,7 @@ DEFAULTS: dict[str, Any] = {
     },
     "poll_interval": 1.0,
     # Used when nothing is downloading and no UI is connected to the stream.
-    "poll_interval_idle": 5.0,
+    "poll_interval_idle": 2.0,
     "aria2": {
         "managed": True,
         "binary": "aria2c",

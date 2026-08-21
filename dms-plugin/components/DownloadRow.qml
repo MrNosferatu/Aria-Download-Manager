@@ -18,6 +18,12 @@ Rectangle {
     readonly property string status: dl.status || "unknown"
     readonly property var ruleInfo: service ? service.rulesFor(gid) : ({})
 
+    //: The manager stats a finished download's file every tick. Undefined means
+    //: it had no reason to look (still running, or no path), which is not the
+    //: same as "gone" — only an explicit false means the file moved or was
+    //: deleted.
+    readonly property bool fileMissing: dl.fileExists === false
+
     readonly property color statusColor: {
         switch (status) {
         case "active":
@@ -40,6 +46,11 @@ Rectangle {
                 "color": statusColor
             }
         ]
+        if (fileMissing)
+            out.push({
+                         "text": "File missing",
+                         "color": Theme.warning
+                     })
         if (dl.isTorrent)
             out.push({
                          "text": "Torrent",
@@ -86,6 +97,8 @@ Rectangle {
         }
         if (status === "waiting" && dl.queuePosition !== undefined && dl.queuePosition !== null)
             bits.push("queue #" + (dl.queuePosition + 1))
+        if (fileMissing)
+            bits.push("file is no longer at " + dl.path)
         if (dl.errorMessage)
             bits.push(dl.errorMessage)
         for (const name in ruleInfo) {
@@ -187,7 +200,8 @@ Rectangle {
             DankActionButton {
                 // Only meaningful once bytes exist on disk; aria2 reports the
                 // final path for finished items and the .part path while running.
-                visible: !!row.dl.path && (row.status === "complete" || row.status === "active" || row.status === "paused")
+                visible: !!row.dl.path && !row.fileMissing
+                         && (row.status === "complete" || row.status === "active" || row.status === "paused")
                 buttonSize: 28
                 iconSize: Theme.iconSizeSmall
                 iconName: "open_in_new"

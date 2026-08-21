@@ -40,9 +40,11 @@ PluginComponent {
             return "cloud_off"
         if (attention)
             return "error"
+        // Both states keep the download glyph: the widget has to read as a
+        // downloader at a glance, and a tick mark reads as a checklist.
         if (busy)
-            return "download"
-        return "download_done"
+            return "downloading"
+        return "download"
     }
 
     readonly property color barColor: {

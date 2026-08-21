@@ -14,6 +14,11 @@ Rectangle {
     readonly property color statusColor: entry.status === "complete" ? Theme.success
                                        : (entry.status === "error" ? Theme.error : Theme.surfaceVariantText)
 
+    //: The manager stats each recorded path when it serves the history. Only an
+    //: explicit false means the file has since been moved or deleted; undefined
+    //: means the row never had a path to check.
+    readonly property bool fileMissing: entry.file_exists === false
+
     height: 54
     radius: Theme.cornerRadius
     color: Theme.surfaceContainer
@@ -33,7 +38,9 @@ Rectangle {
             spacing: Theme.spacingXS
 
             StyledText {
-                width: Math.max(0, Math.min(implicitWidth, parent.width - statusBadge.width - Theme.spacingXS))
+                width: Math.max(0, Math.min(implicitWidth, parent.width - statusBadge.width
+                                            - (missingBadge.visible ? missingBadge.width + Theme.spacingXS : 0)
+                                            - Theme.spacingXS))
                 text: row.entry.name || row.entry.key || ""
                 font.pixelSize: Theme.fontSizeMedium
                 color: Theme.surfaceText
@@ -59,6 +66,27 @@ Rectangle {
                     color: row.statusColor
                 }
             }
+
+            Rectangle {
+                id: missingBadge
+
+                anchors.verticalCenter: parent.verticalCenter
+                visible: row.fileMissing
+                width: visible ? missingLabel.implicitWidth + Theme.spacingS : 0
+                height: 18
+                radius: 5
+                color: Theme.withAlpha(Theme.warning, 0.18)
+
+                StyledText {
+                    id: missingLabel
+
+                    anchors.centerIn: parent
+                    text: "File missing"
+                    font.pixelSize: Theme.fontSizeSmall
+                    font.weight: Font.Medium
+                    color: Theme.warning
+                }
+            }
         }
 
         StyledText {
@@ -71,6 +99,8 @@ Rectangle {
                     bits.push(Fmt.dateTime(row.entry.finished_at))
                 if (row.entry.dir)
                     bits.push(row.entry.dir)
+                if (row.fileMissing)
+                    bits.push("file is no longer there")
                 if (row.entry.error)
                     bits.push(row.entry.error)
                 return bits.join("  ·  ")
@@ -91,7 +121,7 @@ Rectangle {
         spacing: 0
 
         DankActionButton {
-            visible: !!row.entry.path
+            visible: !!row.entry.path && !row.fileMissing
             buttonSize: 28
             iconSize: Theme.iconSizeSmall
             iconName: "open_in_new"

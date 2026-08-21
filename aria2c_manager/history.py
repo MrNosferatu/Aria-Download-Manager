@@ -13,6 +13,7 @@ to queue something again.
 from __future__ import annotations
 
 import json
+import os
 import time
 from pathlib import Path
 from typing import Any
@@ -146,7 +147,22 @@ class History:
         )
         if status:
             rows = [row for row in rows if row.get("status") == status]
-        return rows[: max(1, limit)]
+        rows = rows[: max(1, limit)]
+        # Checked on read rather than stored: a recorded file can be moved or
+        # deleted long after it was written, and the stored row would go stale.
+        # Only the page being returned is stat-ed.
+        return [dict(row, file_exists=self._file_exists(row)) for row in rows]
+
+    @staticmethod
+    def _file_exists(row: dict) -> bool | None:
+        """True/False for a row with a path, None when there is nothing to check."""
+        path = row.get("path") or ""
+        if not path:
+            return None
+        try:
+            return os.path.exists(path)
+        except OSError:
+            return False
 
     def get(self, key: str) -> dict | None:
         if entry := self.entries.get(key):

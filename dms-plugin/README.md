@@ -1,8 +1,8 @@
 # aria2c manager — DankMaterialShell plugin
 
 The web UI, ported to a [DankMaterialShell](https://danklinux.com) bar widget: a
-download icon on the DankBar that opens a panel with four tabs — Downloads,
-Settings, Rules and Log. Left-click for the bar popout, right-click for quick
+download icon on the DankBar that opens a panel with three tabs — Downloads,
+Settings and Rules. Left-click for the bar popout, right-click for quick
 actions, and the popout's *open in window* button detaches the whole thing into
 an ordinary window that stays put while you work elsewhere.
 
@@ -45,6 +45,8 @@ looked.
 | Bar label | Download speed | Speed, active count, or icon only |
 | Clicking the bar icon | Bar popout | Whether left click opens the bar popout or goes straight to the standalone window |
 | Popout width / content height | 640 / 540 | Size of the bar popout (the window is resized by dragging it) |
+| Bar refresh interval | 3 s | How far behind the pill may lag a download that starts while the panel is closed |
+| Always stream | off | Keep one long-lived event connection open so the pill is never behind at all |
 | Toast on events | off | Toast when a download finishes or the manager logs an error |
 
 ## IPC
@@ -52,7 +54,8 @@ looked.
 ```sh
 dms ipc call aria2c toggle              # show/hide the bar popout
 dms ipc call aria2c toggleWindow        # show/hide the standalone window
-dms ipc call aria2c tab rules           # switch tab: downloads settings rules log
+dms ipc call aria2c tab rules           # switch tab: downloads settings rules
+dms ipc call aria2c tab log             # settings, with the event log unfolded
 dms ipc call aria2c add <url>           # queue a URL with default options
 dms ipc call aria2c status              # one-line summary
 dms ipc call aria2c streamInfo          # event-stream health (silence, restarts)
@@ -89,6 +92,25 @@ binds {
 One window is shared by the whole shell — on a multi-monitor setup the first
 bar to load claims it, and the others route their requests there.
 
+**On tiling compositors** the window is an ordinary `xdg_toplevel` under DMS's
+own app-id, `com.danklinux.dms`, so whatever rule you have for DMS windows
+applies to it. In niri, this floats it and tiles the folder picker — which is
+backwards if you would rather have the manager in the layout and the dialog
+floating over it:
+
+```kdl
+window-rule {
+    match app-id=r#"^com\.danklinux\.dms$"# title=r#"^aria2c manager$"#
+    open-floating false
+}
+window-rule {
+    // Note the suffix: the portal's real app-id is xdg-desktop-portal-gtk,
+    // so a rule anchored at ^xdg-desktop-portal$ never matches it.
+    match app-id=r#"^xdg-desktop-portal"#
+    open-floating true
+}
+```
+
 ## Quick actions
 
 Right-clicking the bar icon opens a menu that does the common things without
@@ -110,7 +132,8 @@ the pill's status in words.
 
 ## What each tab does
 
-- **Downloads** — filter chips with live counts, name filter, and an inline Add
+- **Downloads** — filter chips with live counts (including *All* and
+  *Complete*), name filter, and an inline Add
   panel (URLs, directory, rename, plus connections/split/referer/cookie/headers
   and a `.torrent`/`.metalink` path under *More options*). Each row expands into
   the same detail the web UI shows: piece map, paths, per-download options,
@@ -122,7 +145,27 @@ the pill's status in words.
 - **Rules** — the rule cards, editable field by field or as raw JSON, plus the
   speed-source selector and recent triggers. The master switch is the toggle in
   the window header.
-- **Log** — the live event stream, click a line to copy it.
+The **event log** is no longer a tab. It is diagnostic material rather than
+something to watch, so it folds away at the bottom of *Settings*, under the
+aria2c process card it usually explains — click the header to unfold it, or run
+`dms ipc call aria2c tab log`, which unfolds it and scrolls down to it. It is the same live stream as before: click a line to copy
+it.
+
+### What "All" holds
+
+The chips count what aria2 is currently holding, and **All** is now labelled
+with that total. Worth knowing: aria2 forgets stopped downloads when it is
+purged or restarted, so a file you finished yesterday will not be under *All*
+or *Complete* today — the **History** chip is the durable record, and it
+survives restarts because the manager keeps it itself.
+
+### Moved or deleted files
+
+A finished download whose file is no longer on disk is marked **File missing**,
+in both the download list and History, and its *open file* button goes away so
+it cannot launch something that is not there. The manager checks the path when
+it reports a finished download, so moving or deleting a file is reflected within
+a tick — there is nothing to refresh.
 
 Setup material — how to load the extension, the intake endpoints — lives in the
 web UI's Extension tab instead, since it is read once. The header's
@@ -157,6 +200,7 @@ dms-plugin/
 ├── services/Aria2Service.qml   SSE stream, REST calls, shared state, IPC
 ├── lib/Fmt.js               byte/speed/ETA formatting shared with the web UI
 ├── lib/Actions.js           the global actions, described once for every surface
+├── lib/Layout.js            layout constants more than one surface has to agree on
 └── components/
     ├── Aria2Popout.qml      the manager itself — hosted by both the popout and the window
     ├── Aria2Window.qml      standalone window: title bar, window controls, the popout inside

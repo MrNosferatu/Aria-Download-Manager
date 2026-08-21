@@ -10,6 +10,10 @@ Item {
 
     property var service: null
 
+    //: Embedded under a section header that already names the log and counts
+    //: its entries, so the tab's own title would just say it twice.
+    property bool compact: false
+
     function levelColor(level) {
         switch (level) {
         case "error":
@@ -28,11 +32,12 @@ Item {
         id: header
 
         width: parent.width
-        height: 40
+        height: tab.compact ? 36 : 40
 
         StyledText {
             anchors.left: parent.left
             anchors.verticalCenter: parent.verticalCenter
+            visible: !tab.compact
             text: "Event log — " + (tab.service ? tab.service.events.length : 0) + " entries"
             font.pixelSize: Theme.fontSizeMedium
             font.weight: Font.Medium

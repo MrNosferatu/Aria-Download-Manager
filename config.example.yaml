@@ -20,8 +20,10 @@ server:
 poll_interval: 1.0
 # Tick used when nothing is downloading *and* nothing is connected to the event
 # stream. Rules only ever act on live downloads, so backing off here costs
-# nothing; any command wakes the poller immediately.
-poll_interval_idle: 5.0
+# nothing; any command through this manager wakes the poller immediately. It is
+# only a download started straight against aria2's own RPC that has to wait for
+# this tick to be noticed, which is why it is kept short.
+poll_interval_idle: 2.0
 
 aria2:
   # true  -> the manager spawns and supervises its own aria2c

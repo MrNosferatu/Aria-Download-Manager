@@ -212,10 +212,6 @@ PopoutComponent {
             {
                 "text": "Rules",
                 "icon": "bolt"
-            },
-            {
-                "text": "Log",
-                "icon": "article"
             }
         ]
 
@@ -246,10 +242,8 @@ PopoutComponent {
                     return downloadsTab
                 case 1:
                     return settingsTab
-                case 2:
-                    return rulesTab
                 default:
-                    return logTab
+                    return rulesTab
                 }
             }
         }
@@ -276,10 +270,4 @@ PopoutComponent {
         }
     }
 
-    Component {
-        id: logTab
-        LogTab {
-            service: popout.service
-        }
-    }
 }

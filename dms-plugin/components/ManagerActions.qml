@@ -43,7 +43,7 @@ Row {
 
     DankActionButton {
         iconName: actions.inWindow ? "picture_in_picture" : "open_in_new"
-        tooltipText: actions.inWindow ? "Dock back into the bar" : "Open in a standalone window"
+        tooltipText: actions.inWindow ? "Dock back into the bar" : "Open in window"
         buttonSize: 30
         onClicked: {
             if (actions.inWindow) {

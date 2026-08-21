@@ -89,15 +89,15 @@ PluginSettings {
     StringSetting {
         settingKey: "idlePollSeconds"
         label: "Bar refresh interval"
-        description: "Seconds between pill updates while the manager window is closed. The live stream only runs while it is open."
-        placeholder: "10"
-        defaultValue: "10"
+        description: "Seconds between pill updates while the panel is closed — this is how far behind the bar can lag a download that starts elsewhere. The live stream only runs while the panel is open; turn on Always stream below for an instant pill."
+        placeholder: "3"
+        defaultValue: "3"
     }
 
     ToggleSetting {
         settingKey: "alwaysStream"
         label: "Always stream"
-        description: "Keep the event stream open even with the window closed — a live pill, at the cost of a request every second"
+        description: "Keep the event stream open even with the panel closed — one long-lived connection, and the pill tracks every download in real time"
         defaultValue: false
     }
 

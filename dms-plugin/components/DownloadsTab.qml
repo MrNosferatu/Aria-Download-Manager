@@ -3,6 +3,7 @@ import qs.Common
 import qs.Services
 import qs.Widgets
 import "../lib/Fmt.js" as Fmt
+import "../lib/Layout.js" as Layout
 
 Item {
     id: tab
@@ -12,6 +13,8 @@ Item {
     property string search: ""
     property string expandedGid: ""
     property bool adding: false
+
+    readonly property int scrollbarGutter: Layout.SCROLLBAR_GUTTER
 
     readonly property bool historyMode: filter === "history"
 
@@ -97,7 +100,8 @@ Item {
             return [
                 {
                     "label": "All",
-                    "value": "all"
+                    "value": "all",
+                    "count": c.total || 0
                 },
                 {
                     "label": "Active",
@@ -116,7 +120,8 @@ Item {
                 },
                 {
                     "label": "Complete",
-                    "value": "complete"
+                    "value": "complete",
+                    "count": c.complete || 0
                 },
                 {
                     "label": "Error",
@@ -235,7 +240,7 @@ Item {
         delegate: DownloadRow {
             required property var modelData
 
-            width: list.width
+            width: list.width - tab.scrollbarGutter
             service: tab.service
             gid: modelData
             dl: tab.byGid[modelData] || ({})
@@ -259,7 +264,7 @@ Item {
         delegate: HistoryRow {
             required property var modelData
 
-            width: historyList.width
+            width: historyList.width - tab.scrollbarGutter
             service: tab.service
             entry: modelData
         }

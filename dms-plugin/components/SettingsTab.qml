@@ -3,6 +3,7 @@ import qs.Common
 import qs.Services
 import qs.Widgets
 import "../lib/Fmt.js" as Fmt
+import "../lib/Layout.js" as Layout
 
 Item {
     id: tab
@@ -11,6 +12,14 @@ Item {
     property var edits: ({})
     property string search: ""
     property bool showAdvanced: false
+
+    //: The log lives at the bottom of this page. `dms ipc call aria2c tab log`
+    //: opens this tab with the section unfolded and scrolls down to it. Kept a
+    //: plain property, not a binding on requestedLog: the reveal is a one-shot
+    //: request, and clicking the header afterwards has to stick.
+    property bool logExpanded: false
+
+    readonly property int scrollbarGutter: Layout.SCROLLBAR_GUTTER
 
     // Same grouping the web UI uses, so both front-ends teach the same map of
     // aria2's option surface.
@@ -86,9 +95,43 @@ Item {
         edits = ({})
     }
 
-    Component.onCompleted: {
+    //: Unfold the log and go to it. The section is the last thing on a long
+    //: page, so unfolding alone would leave the user staring at the top of the
+    //: aria2 options with nothing apparently changed.
+    function revealLog() {
+        logExpanded = true
+        scrollToLog.restart()
         if (service)
-            service.loadOptions()
+            service.requestedLog = false
+    }
+
+    Timer {
+        id: scrollToLog
+
+        //: Not callLater: the flickable's contentHeight only grows once the
+        //: unfolded log has been laid out, and scrolling before that lands
+        //: short of the bottom.
+        interval: 60
+        repeat: false
+        onTriggered: flick.contentY = Math.max(0, flick.contentHeight - flick.height)
+    }
+
+    Component.onCompleted: {
+        if (!service)
+            return
+        service.loadOptions()
+        // `tab log` sets the request before this page exists, so the signal has
+        // already been and gone by the time the Connections below is listening.
+        if (service.requestedLog)
+            revealLog()
+    }
+
+    Connections {
+        target: tab.service
+        function onRequestedLogChanged() {
+            if (tab.service.requestedLog)
+                tab.revealLog()
+        }
     }
 
     Row {
@@ -136,6 +179,8 @@ Item {
     }
 
     DankFlickable {
+        id: flick
+
         anchors.top: header.bottom
         anchors.topMargin: Theme.spacingS
         anchors.bottom: parent.bottom
@@ -147,7 +192,10 @@ Item {
         Column {
             id: content
 
-            width: parent.width
+            // The scrollbar is drawn over the flickable's right edge, so the
+            // content has to stop short of it or it lands on top of the
+            // right-hand column of fields.
+            width: parent.width - tab.scrollbarGutter
             spacing: Theme.spacingM
 
             StyledText {
@@ -432,6 +480,54 @@ Item {
                 backgroundColor: Theme.errorHover
                 textColor: Theme.error
                 onClicked: tab.service.post("/api/aria2/restart", null, "aria2c restarted")
+            }
+
+            // ---- event log ----------------------------------------------
+            // Diagnostic material rather than a main view, so it holds no tab
+            // of its own: it sits folded away at the very bottom, under the
+            // process card it usually explains. `tab log` scrolls down to it.
+            Rectangle {
+                width: parent.width
+                height: 1
+                color: Theme.withAlpha(Theme.outline, 0.15)
+            }
+
+            Item {
+                width: parent.width
+                height: 28
+
+                StyledText {
+                    anchors.left: parent.left
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: "Event log — " + (tab.service ? tab.service.events.length : 0) + " entries"
+                    font.pixelSize: Theme.fontSizeMedium
+                    font.weight: Font.Bold
+                    color: Theme.surfaceText
+                }
+
+                DankIcon {
+                    anchors.right: parent.right
+                    anchors.verticalCenter: parent.verticalCenter
+                    name: tab.logExpanded ? "expand_less" : "expand_more"
+                    size: Theme.iconSize - 4
+                    color: Theme.surfaceVariantText
+                }
+
+                MouseArea {
+                    anchors.fill: parent
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: tab.logExpanded = !tab.logExpanded
+                }
+            }
+
+            LogTab {
+                // Inset again: this list carries its own scrollbar, and without
+                // the gap it would sit right on top of the page's.
+                width: parent.width - tab.scrollbarGutter
+                visible: tab.logExpanded
+                height: visible ? 320 : 0
+                service: tab.service
+                compact: true
             }
         }
     }
