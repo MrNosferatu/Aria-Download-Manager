@@ -75,13 +75,64 @@ textarea { resize: vertical; }
 .pill.ok { color: var(--ok); border-color: #24503a; }
 .pill.err { color: var(--err); border-color: #5a2029; }
 
-.check { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
-.check input { width: auto; }
+/* ---------- the control system ----------------------------------------
+   One control per job, used the same way on both surfaces:
+
+     .switch   every boolean setting, without exception. It was a checkbox in
+               one place and a toggle in another for the same setting, which is
+               how you end up with two controls that mean the same thing.
+     .setting  every settings row: text on the left, control on the right.
+     .field    a text input, stacked because a value needs the full width.
+
+   A switch is still <input type="checkbox"> underneath, so the scripts that
+   read and write these by id do not care that it changed shape.
+   Named .setting rather than .row on purpose: .row is the download list item
+   in popup.js, and reusing it here would restyle the list.                */
+
+.switch { display: inline-flex; align-items: center; cursor: pointer; flex-shrink: 0; }
+.switch input { position: absolute; opacity: 0; width: 0; height: 0; }
+.switch .track {
+  width: 34px; height: 20px; border-radius: 999px;
+  background: var(--bg3); border: 1px solid var(--line);
+  display: inline-flex; align-items: center; padding: 2px;
+  transition: background .15s ease, border-color .15s ease;
+}
+.switch .knob {
+  width: 14px; height: 14px; border-radius: 50%;
+  background: var(--fg-dim);
+  transition: transform .15s ease, background .15s ease;
+}
+.switch input:checked + .track { background: var(--accent); border-color: var(--accent); }
+.switch input:checked + .track .knob { transform: translateX(14px); background: #08101f; }
+.switch input:focus-visible + .track { box-shadow: 0 0 0 3px rgba(76, 141, 255, .3); }
+.switch input:disabled + .track { opacity: .4; }
+
+.setting {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 14px; padding: 9px 0; cursor: pointer;
+}
+.setting + .setting { border-top: 1px solid var(--line); }
+/* min-width:0 or a long hint refuses to wrap and pushes the control off. */
+.setting .text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.setting .label { font-size: 13px; color: var(--fg); }
+.setting .hint { font-size: 11.5px; line-height: 1.4; }
+.setting.sub { padding-left: 16px; }
+.setting.sub .label { font-size: 12px; color: var(--fg-dim); }
+.setting[aria-disabled="true"] { opacity: .45; cursor: default; }
+
+/* Capture off stops the extension intervening in the browser. It does not make
+   the daemon's stats or the download list any less real, and Add still works —
+   so only the per-site exception goes quiet, because an exception to a rule
+   that is not running is the one thing that genuinely means nothing. */
+.popup.off .setting.sub { opacity: .45; cursor: default; }
 
 /* ---------- popup ---------- */
 .popup { width: 340px; padding: 12px; }
 .popup header { display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; }
-.popup header > div { display: flex; flex-direction: column; gap: 3px; }
+.popup header > div:first-child { display: flex; flex-direction: column; gap: 3px; }
+/* Navigation lives in the header as icons; the footer is left to the capture
+   controls alone, so neither group has to explain the other. */
+.popup header .chrome { display: flex; gap: 2px; flex-shrink: 0; }
 
 .stats { display: flex; gap: 14px; margin: 12px 0; }
 .stats div { display: flex; flex-direction: column; }
@@ -101,11 +152,14 @@ textarea { resize: vertical; }
 
 .empty { color: var(--fg-dim); text-align: center; padding: 16px 0; margin: 0; }
 
+/* The footer is a settings group: the switch, the per-site exception under it,
+   and navigation on its own line. A column because those are three different
+   kinds of thing, not three peers in a row. */
 .popup footer {
-  display: flex; justify-content: space-between; align-items: center;
-  gap: 8px; margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--line);
+  display: flex; flex-direction: column; align-items: stretch;
+  margin-top: 12px; padding-top: 4px; border-top: 1px solid var(--line);
 }
-.popup footer .check { margin: 0; font-size: 12px; color: var(--fg-dim); }
+
 
 /* ---------- options ---------- */
 .options { max-width: 620px; margin: 0 auto; padding: 24px 20px 60px; }

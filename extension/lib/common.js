@@ -8,6 +8,10 @@
 const api = globalThis.browser || globalThis.chrome;
 
 const DEFAULTS = {
+  // Master switch. Off means the extension touches nothing: the browser keeps
+  // its own downloads, no click is captured, no video button appears. It stays
+  // installed and the popup still works, it just stops intervening.
+  enabled: true,
   server: 'http://127.0.0.1:6810',
   // Hand the browser's own downloads to aria2c instead of downloading them here.
   intercept: true,
@@ -24,6 +28,11 @@ const DEFAULTS = {
   pageToasts: true,
   // Skip files smaller than this (MiB). 0 disables the check.
   minSizeMB: 0,
+  // Watch tab traffic for video manifests and offer a download button over the
+  // player. This is the only feature that looks at requests rather than clicks.
+  videoSniffer: true,
+  // Don't offer a button over a thumbnail-sized or decorative player.
+  videoMinPx: 200,
   extensions: [
     '7z', 'apk', 'appimage', 'avi', 'bin', 'bz2', 'deb', 'dmg', 'epub', 'exe',
     'flac', 'flv', 'gz', 'img', 'iso', 'm4a', 'm4v', 'mkv', 'mobi', 'mov',
@@ -91,17 +100,28 @@ function hostOf(url) {
   }
 }
 
-function isBlocked(settings, url) {
-  const host = hostOf(url);
-  return !!host && settings.blockedHosts.some((h) => host === h || host.endsWith('.' + h));
+function hostMatches(list, host) {
+  // A rule for example.com covers cdn.example.com too — an exclusion the user
+  // has to restate for every subdomain is not much of an exclusion.
+  return !!host && (list || []).some((h) => host === h || host.endsWith('.' + h));
+}
+
+/* A download has two hosts worth checking: where the file comes from, and the
+   page that asked for it. Files are routinely served from a CDN on an unrelated
+   domain, so excluding "the site I am on" has to match the page as well or it
+   quietly does nothing. Either one matching is enough to leave it alone. */
+function isBlocked(settings, url, pageUrl) {
+  const list = settings.blockedHosts || [];
+  if (!list.length) return false;
+  return hostMatches(list, hostOf(url)) || hostMatches(list, hostOf(pageUrl || ''));
 }
 
 // Does this link look like a file rather than a page? Used for click capture;
 // browser-initiated downloads skip this, since the browser already decided.
-function looksDownloadable(settings, url, hasDownloadAttr) {
+function looksDownloadable(settings, url, hasDownloadAttr, pageUrl) {
   if (/^magnet:/i.test(url)) return settings.captureMagnets;
   if (!/^https?:\/\//i.test(url)) return false;
-  if (isBlocked(settings, url)) return false;
+  if (isBlocked(settings, url, pageUrl)) return false;
   if (hasDownloadAttr) return true;
   try {
     const ext = (new URL(url).pathname.split('.').pop() || '').toLowerCase();

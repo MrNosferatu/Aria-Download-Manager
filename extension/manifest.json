@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
-  "name": "aria2c manager \u2014 download catcher",
-  "version": "1.0.0",
+  "name": "aria2c manager — download catcher",
+  "version": "1.2.0",
   "description": "Hand the browser's downloads to your local aria2c-manager, with the page's cookies, referer and user-agent.",
   "browser_specific_settings": {
     "gecko": {
@@ -16,6 +16,7 @@
   },
   "permissions": [
     "downloads",
+    "webRequest",
     "cookies",
     "contextMenus",
     "storage",

@@ -73,6 +73,30 @@ async function refresh() {
 async function init() {
   settings = await loadSettings();
 
+  // ---- master switch ----
+  function paintEnabled(on) {
+    document.body.classList.toggle('off', !on);
+    $('enabled').checked = on;
+    $('enabled').title = on
+      ? "Capture is on. Turn it off to leave every download to the browser."
+      : "Capture is off. The browser is handling downloads itself.";
+    if (!on) setStatus('off', '');
+    const site = $('site-block');
+    if (site) site.disabled = !on || !currentHost;
+  }
+
+  paintEnabled(settings.enabled !== false);
+  $('enabled').addEventListener('change', async (event) => {
+    const on = event.target.checked;
+    settings.enabled = on;
+    await saveSettings({ enabled: on });
+    paintEnabled(on);
+    // The badge and the context menus follow the switch; the worker rebuilds
+    // both when it sees the setting change, this just refreshes it promptly.
+    api.runtime.sendMessage({ type: 'refreshBadge' }).catch(() => {});
+    if (on) refresh();
+  });
+
   const [tab] = await api.tabs.query({ active: true, currentWindow: true });
   // Only web pages can be blocklisted; an about:/moz-extension: tab has no
   // host worth showing.
@@ -80,7 +104,7 @@ async function init() {
   currentHost = /^https?:/i.test(url) ? hostOf(url) : '';
   $('host').textContent = currentHost || 'this site';
   $('site-block').checked = !!currentHost && settings.blockedHosts.includes(currentHost);
-  $('site-block').disabled = !currentHost;
+  $('site-block').disabled = !currentHost || settings.enabled === false;
 
   $('site-block').addEventListener('change', async (event) => {
     const hosts = new Set(settings.blockedHosts);

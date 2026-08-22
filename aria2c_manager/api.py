@@ -9,6 +9,7 @@ import json
 import os
 import signal
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any
 
 import aiohttp
@@ -19,7 +20,9 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from . import files as filetools
+from . import media as mediatools
 from .config import STATIC_DIR, Config, stringify
+from .mediajobs import MediaJobs
 from .history import History
 from .rpc import DETAIL_KEYS, Aria2Error, Aria2RPC
 from .rules import ACTIONS, SPEED_SOURCES, RuleEngine
@@ -93,6 +96,38 @@ class RulesRequest(BaseModel):
 
 class SelectFilesRequest(BaseModel):
     indices: list[int]
+
+
+class MediaProbeRequest(BaseModel):
+    """Ask what a media URL can be downloaded as.
+
+    The extension sends the manifest URL it saw go past on the network, plus the
+    request headers that fetched it — a manifest behind a login needs the same
+    cookie the player used, or the probe gets an error page instead.
+    """
+
+    url: str
+    referer: str | None = None
+    cookie: str | None = None
+    user_agent: str | None = None
+    #: What the response claimed to be, when the sniffer saw it.
+    content_type: str | None = None
+    title: str | None = None
+
+
+class MediaDownloadRequest(BaseModel):
+    url: str
+    #: One of the ids from a probe. Omitted means "the best one".
+    variant_id: str | None = None
+    #: A probe result may be passed straight back so the server need not refetch.
+    variant: dict[str, Any] | None = None
+    filename: str | None = None
+    dir: str | None = None
+    referer: str | None = None
+    cookie: str | None = None
+    user_agent: str | None = None
+    content_type: str | None = None
+    title: str | None = None
 
 
 class BulkRequest(BaseModel):
@@ -230,6 +265,14 @@ def create_app(cfg: Config) -> FastAPI:
     )
     history = History(cfg)
     poller.observers.append(history.observe)
+    media_jobs = MediaJobs(
+        on_event=lambda level, message, **kw: store.add_event(level, message, **kw),
+        max_parallel=int(cfg.get("media.max_parallel", 2) or 2),
+    )
+    # The poller already carries a hook for extra snapshot sections and nothing
+    # had used it: media jobs ride along with every state frame, so both
+    # front-ends see them without polling anything new.
+    poller.extras["media"] = media_jobs.public_state
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -245,6 +288,7 @@ def create_app(cfg: Config) -> FastAPI:
             yield
         finally:
             store.publish({"type": "shutdown", "data": {"ok": True}})
+            await media_jobs.shutdown()
             history.save(force=True)
             await poller.stop()
             await supervisor.stop()
@@ -267,6 +311,7 @@ def create_app(cfg: Config) -> FastAPI:
     app.state.engine = engine
     app.state.poller = poller
     app.state.history = history
+    app.state.media_jobs = media_jobs
 
     @app.exception_handler(Aria2Error)
     async def aria2_error_handler(request: Request, exc: Aria2Error):
@@ -442,6 +487,143 @@ def create_app(cfg: Config) -> FastAPI:
         poller.poke()
         store.add_event("info", f"Added {req.kind} {req.filename or ''}".strip(), gids=gids)
         return {"ok": True, "gids": gids}
+
+    # ---- media streams ---------------------------------------------------
+    #: A manifest is a text file listing streams; anything much larger than this
+    #: is not a manifest, and slurping it would mean downloading the video into
+    #: memory to find out.
+    MANIFEST_LIMIT = 4 * 1024 * 1024
+
+    def _media_headers(req) -> dict[str, str]:
+        """The headers that made the browser's own request work.
+
+        A stream behind a login is fetched with the page's cookie; without it a
+        probe gets an error page and reports no variants at all.
+        """
+        headers: dict[str, str] = {}
+        if getattr(req, "cookie", None):
+            headers["Cookie"] = req.cookie
+        if getattr(req, "referer", None):
+            headers["Referer"] = req.referer
+        if getattr(req, "user_agent", None):
+            headers["User-Agent"] = req.user_agent
+        return headers
+
+    async def _probe_media(req) -> mediatools.Probe:
+        kind = mediatools.kind_for(req.url, req.content_type or "")
+        headers = _media_headers(req)
+
+        if kind == "direct":
+            # Nothing to parse: the URL is the file. A HEAD is enough to confirm
+            # it is reachable and learn its type.
+            content_type = req.content_type or ""
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.head(req.url, headers=headers,
+                                            allow_redirects=True,
+                                            timeout=aiohttp.ClientTimeout(total=15)) as res:
+                        content_type = res.headers.get("Content-Type", content_type)
+            except (aiohttp.ClientError, asyncio.TimeoutError):
+                pass
+            probe = mediatools.parse_direct(req.url, content_type)
+            probe.title = req.title or ""
+            return probe
+
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(req.url, headers=headers,
+                                       allow_redirects=True,
+                                       timeout=aiohttp.ClientTimeout(total=25)) as res:
+                    if res.status >= 400:
+                        raise HTTPException(
+                            502, f"the stream host answered {res.status} for that manifest")
+                    content_type = res.headers.get("Content-Type", req.content_type or "")
+                    body = await res.content.read(MANIFEST_LIMIT)
+        except aiohttp.ClientError as exc:
+            raise HTTPException(502, f"could not fetch the manifest: {exc}") from exc
+        except asyncio.TimeoutError as exc:
+            raise HTTPException(504, "timed out fetching the manifest") from exc
+
+        probe = mediatools.parse(body.decode("utf-8", "replace"), str(res.url), content_type)
+        probe.title = req.title or ""
+        return probe
+
+    @app.post("/api/media/probe")
+    async def media_probe(req: MediaProbeRequest):
+        """What can be downloaded from this stream, and in what qualities."""
+        probe = await _probe_media(req)
+        return {"ok": True, **probe.as_dict(),
+                "ffmpeg": bool(media_jobs.ffmpeg_path())}
+
+    @app.post("/api/media/download")
+    async def media_download(req: MediaDownloadRequest):
+        """Queue a chosen variant.
+
+        A progressive file is an ordinary download and goes to aria2 with
+        everything else. A segmented stream cannot: it is a manifest, so it goes
+        to ffmpeg, which fetches the segments and muxes them into one file.
+        """
+        variant = req.variant
+        probe_title = req.title or ""
+        if not variant:
+            probe = await _probe_media(req)
+            if not probe.variants:
+                raise HTTPException(
+                    422, probe.unsupported or "nothing downloadable in that stream")
+            chosen = None
+            if req.variant_id:
+                chosen = next((v for v in probe.variants if v.id == req.variant_id), None)
+                if chosen is None:
+                    raise HTTPException(404, f"no variant {req.variant_id} in that stream")
+            variant = (chosen or probe.variants[0]).as_dict()
+            probe_title = probe_title or probe.title
+
+        directory = req.dir or stringify(cfg.get("aria2.options.dir", "")) or str(Path.home() / "Downloads")
+
+        if variant.get("kind") == "direct":
+            options = {"dir": directory}
+            if req.filename:
+                options["out"] = req.filename
+            headers = _media_headers(req)
+            if headers.get("Referer"):
+                options["referer"] = headers["Referer"]
+            if headers.get("Cookie"):
+                options["header"] = [f"Cookie: {headers['Cookie']}"]
+            if headers.get("User-Agent"):
+                options["user-agent"] = headers["User-Agent"]
+            gid = await rpc.add_uri([variant["url"]], clean_options(options), None)
+            poller.poke()
+            store.add_event("info", f"Queued {req.filename or variant['url']}", gids=[gid])
+            return {"ok": True, "kind": "direct", "gids": [gid]}
+
+        if not media_jobs.ffmpeg_path():
+            raise HTTPException(
+                503,
+                "ffmpeg is not installed. A segmented stream is a list of parts, "
+                "and ffmpeg is what fetches them and muxes them into one file.")
+
+        name = req.filename or mediatools.suggested_name(
+            req.url, probe_title, variant.get("height"))
+        if not name.lower().endswith((".mp4", ".mkv", ".webm", ".m4a")):
+            name += ".mp4"
+        job = media_jobs.start(variant, name, directory, _media_headers(req))
+        return {"ok": True, "kind": "stream", "job": job.as_dict()}
+
+    @app.get("/api/media/jobs")
+    async def media_job_list():
+        return {"ok": True, **media_jobs.public_state()}
+
+    @app.delete("/api/media/job/{job_id}")
+    async def media_job_remove(job_id: str, delete_file: bool = False):
+        """Cancel a running job, or drop a finished one from the list."""
+        job = media_jobs.jobs.get(job_id)
+        if not job:
+            raise HTTPException(404, "no such media job")
+        if job.status in ("running", "queued"):
+            media_jobs.cancel(job_id, delete_file=True)
+        else:
+            media_jobs.remove(job_id, delete_file=delete_file)
+        return {"ok": True}
 
     # ---- per-download ----------------------------------------------------
     @app.get("/api/download/{gid}")

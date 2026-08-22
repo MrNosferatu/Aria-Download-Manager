@@ -3,6 +3,25 @@
 Hands the browser's downloads to the local `aria2c-manager` daemon. MV3, and the
 same unpacked directory loads in both Firefox and Chromium.
 
+## Video downloads
+
+The extension watches each tab's traffic for HLS/DASH manifests and media files
+(`webRequest`, observation only — MV3 has no blocking form and none is needed).
+When it sees one, a small **Download** button appears over the player; clicking
+it asks the manager to read the manifest and lists the qualities the site
+offers.
+
+It deliberately does not read `video.src`: a player using Media Source
+Extensions puts a `blob:` handle there, pointing at a buffer in memory that
+cannot be fetched. The manifest on the network is the real thing.
+
+Cookies come from the `cookies` API rather than `document.cookie`, so HttpOnly
+session cookies travel with the probe — without them a members-only stream
+probes as an error page with no qualities in it.
+
+Segmented streams need ffmpeg installed where the manager runs; a progressive
+`.mp4` does not. DRM-protected video (Widevine) cannot be downloaded by anything.
+
 ## Load it
 
 * **Firefox** — `about:debugging#/runtime/this-firefox` → *Load Temporary Add-on*

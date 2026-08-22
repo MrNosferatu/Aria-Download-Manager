@@ -346,6 +346,43 @@ dms ipc call aria2c toggleWindow               # ...or this, for the standalone 
 
 See [dms-plugin/README.md](dms-plugin/README.md) for settings, IPC and hacking notes.
 
+## 5b. Downloading video from a page
+
+A modern player never puts a downloadable URL in the page. It fetches an HLS or
+DASH manifest and feeds segments to the `<video>` element through Media Source
+Extensions, so `video.src` is a `blob:` handle to a buffer in memory — nothing a
+download manager can fetch.
+
+What is still visible is the manifest going past on the network, and a manifest
+is a published list of exactly the qualities the site will serve. So the
+extension watches requests rather than the DOM: when it sees a manifest or a
+media file for a tab, it puts a small **Download** button over the player. The
+button asks the manager to read that manifest, and offers what it found.
+
+```
+page fetches manifest ──► extension sniffs it (webRequest, observation only)
+                            │
+                            └─► POST /api/media/probe   → 1080p60 / 720p / 360p
+                                     │  (with the page's cookies, so a
+                                     │   members-only stream probes correctly)
+                                     └─► POST /api/media/download
+                                            ├─ progressive file → aria2, as usual
+                                            └─ HLS/DASH → ffmpeg fetches the
+                                               segments and muxes them into one
+                                               .mp4, reported as a media job
+```
+
+Stream jobs appear in every `/api/state` frame under `media`, so both front-ends
+see them alongside ordinary downloads.
+
+**Requires ffmpeg** for segmented streams — it is what fetches the parts and
+joins them. A progressive `.mp4` needs nothing extra and goes to aria2 like any
+other download.
+
+**DRM is out of reach.** Netflix, Prime and friends encrypt segments with
+Widevine, and the keys live in a module the browser will not hand over. That is
+a hard boundary, not a missing feature.
+
 ## 6. HTTP API
 
 | Method | Path | Purpose |
@@ -360,6 +397,10 @@ See [dms-plugin/README.md](dms-plugin/README.md) for settings, IPC and hacking n
 | `POST` | `/api/download/{gid}/options\|position\|select` | change options, queue position, selected files |
 | `DELETE` | `/api/download/{gid}` | remove (`?force=&purge=&delete_files=`) — `delete_files` also deletes what it wrote |
 | `POST` | `/api/downloads/bulk` | one action across a chosen set (`{action, gids, delete_files, force}`) |
+| `POST` | `/api/media/probe` | read a stream manifest and list its qualities (`{url, cookie, referer, user_agent}`) |
+| `POST` | `/api/media/download` | queue a chosen quality — aria2 for a file, ffmpeg for a stream |
+| `GET` | `/api/media/jobs` | the running stream jobs; also in every `/api/state` frame under `media` |
+| `DELETE` | `/api/media/job/{id}` | cancel a running job, or drop a finished one (`?delete_file=`) |
 | `POST` | `/api/global/pause-all\|resume-all\|purge\|save-session` | queue-wide commands |
 | `GET`/`POST` | `/api/global/options` | read/write global aria2 options |
 | `GET`/`POST` | `/api/rules` | read/replace rules; `POST /api/rules/{name}/toggle` |

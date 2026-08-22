@@ -90,6 +90,85 @@ def test_units() -> None:
     shutil.rmtree(root, ignore_errors=True)
     shutil.rmtree(outside, ignore_errors=True)
 
+    print("\nunit: reading a stream manifest")
+    from aria2c_manager import media as mediatools
+
+    hls_master = "\n".join([
+        "#EXTM3U",
+        '#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="aud",NAME="English",LANGUAGE="en",DEFAULT=YES,URI="audio/en.m3u8"',
+        '#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="aud",NAME="Japanese",LANGUAGE="ja",DEFAULT=NO,URI="audio/ja.m3u8"',
+        '#EXT-X-STREAM-INF:BANDWIDTH=1400000,RESOLUTION=1280x720,FRAME-RATE=30.000,AUDIO="aud"',
+        "v/720.m3u8",
+        '#EXT-X-STREAM-INF:BANDWIDTH=5200000,RESOLUTION=1920x1080,FRAME-RATE=59.940,AUDIO="aud"',
+        "v/1080.m3u8",
+    ])
+    probe = mediatools.parse(hls_master, "https://cdn.test/media/master.m3u8",
+                             "application/vnd.apple.mpegurl")
+    check("HLS master yields one variant per stream", len(probe.variants) == 2, str(probe.as_dict()))
+    check("variants come back best-first",
+          [v.quality() for v in probe.variants] == ["1080p60", "720p"],
+          str([v.quality() for v in probe.variants]))
+    check("a high frame rate is part of the quality name",
+          probe.variants[0].quality() == "1080p60")
+    check("relative stream URLs resolve against the manifest",
+          probe.variants[1].url == "https://cdn.test/media/v/720.m3u8", probe.variants[1].url)
+    check("the DEFAULT audio rendition is the one paired",
+          probe.variants[0].audio_url == "https://cdn.test/media/audio/en.m3u8",
+          probe.variants[0].audio_url)
+    check("a variant naming an audio group is marked for muxing",
+          probe.variants[0].needs_audio is True)
+
+    absolute = "\n".join(["#EXTM3U",
+                          "#EXT-X-STREAM-INF:BANDWIDTH=800000,RESOLUTION=854x480",
+                          "https://other.cdn/abs/480.m3u8"])
+    check("an absolute stream URL is left alone",
+          mediatools.parse(absolute, "https://cdn.test/a/master.m3u8").variants[0].url
+          == "https://other.cdn/abs/480.m3u8")
+
+    segments = "\n".join(["#EXTM3U", "#EXT-X-TARGETDURATION:10", "#EXTINF:9.0,", "s1.ts",
+                          "#EXT-X-ENDLIST"])
+    media_only = mediatools.parse(segments, "https://cdn.test/v/720.m3u8")
+    check("a media playlist is itself one variant",
+          len(media_only.variants) == 1 and media_only.variants[0].url.endswith("720.m3u8"))
+
+    mpd = (
+        '<?xml version="1.0"?>'
+        '<MPD xmlns="urn:mpeg:dash:schema:mpd:2011" type="static">'
+        '<Period><AdaptationSet contentType="video" mimeType="video/mp4" frameRate="30000/1001">'
+        '<Representation id="v1" bandwidth="800000" width="854" height="480">'
+        "<BaseURL>video/480.mp4</BaseURL></Representation>"
+        '<Representation id="v2" bandwidth="3000000" width="1920" height="1080">'
+        "<BaseURL>video/1080.mp4</BaseURL></Representation></AdaptationSet>"
+        '<AdaptationSet contentType="audio" mimeType="audio/mp4" lang="en">'
+        '<Representation id="a1" bandwidth="128000"><BaseURL>audio/lo.m4a</BaseURL></Representation>'
+        '<Representation id="a2" bandwidth="256000"><BaseURL>audio/hi.m4a</BaseURL></Representation>'
+        "</AdaptationSet></Period></MPD>"
+    )
+    dash = mediatools.parse(mpd, "https://cdn.test/dash/manifest.mpd", "application/dash+xml")
+    check("MPD yields the video representations", len(dash.variants) == 2, str(dash.as_dict()))
+    check("DASH video is always paired with audio to mux",
+          all(v.needs_audio for v in dash.variants))
+    check("the best audio representation wins",
+          dash.variants[0].audio_url == "https://cdn.test/dash/audio/hi.m4a",
+          dash.variants[0].audio_url)
+    check("a fractional frame rate is read",
+          round(dash.variants[0].frame_rate or 0, 2) == 29.97)
+    check("a live MPD says so rather than pretending",
+          mediatools.parse(mpd.replace('type="static"', 'type="dynamic"'),
+                           "https://cdn.test/m.mpd", "application/dash+xml").unsupported == "live stream")
+
+    check("content type beats the URL when they disagree",
+          mediatools.kind_for("https://x/stream?id=9", "application/vnd.apple.mpegurl") == "hls")
+    check("a URL alone is enough when the type is missing",
+          mediatools.kind_for("https://x/a.mpd") == "dash")
+    check("a web page is not media", mediatools.kind_for("https://x/p.html", "text/html") == "unknown")
+    check("a manifest is recognised from its body when the type lies",
+          mediatools.parse("#EXTM3U\n#EXTINF:1,\ns.ts", "https://x/weird", "text/plain").kind == "hls")
+    check("filenames are built from the title and height",
+          mediatools.suggested_name("https://x/master.m3u8", "My Video", 1080) == "My Video_1080p.mp4")
+    check("filenames drop characters a filesystem would refuse",
+          "/" not in mediatools.suggested_name("https://x/m.m3u8", "a/b:c", None))
+
     print("\nunit: rules validation")
     from aria2c_manager.rules import RuleEngine
 

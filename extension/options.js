@@ -1,7 +1,8 @@
 'use strict';
 
 const $ = (id) => document.getElementById(id);
-const CHECKBOXES = ['intercept', 'capture', 'captureMagnets', 'altClick', 'paused', 'notify', 'pageToasts'];
+const CHECKBOXES = ['enabled', 'intercept', 'capture', 'captureMagnets', 'altClick',
+  'paused', 'notify', 'pageToasts', 'videoSniffer'];
 const TEXTS = ['server', 'dir'];
 
 function fill(settings) {
