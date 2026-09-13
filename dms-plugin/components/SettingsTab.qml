@@ -3,6 +3,7 @@ import qs.Common
 import qs.Services
 import qs.Widgets
 import "../lib/Fmt.js" as Fmt
+import "../lib/OptionHelp.js" as OptionHelp
 import "../lib/Layout.js" as Layout
 
 Item {
@@ -11,7 +12,10 @@ Item {
     property var service: null
     property var edits: ({})
     property string search: ""
-    property bool showAdvanced: false
+    //: Open. This is every option aria2 reports, and the person running a
+    //: download manager from their bar is the person who wants them. Folding it
+    //: away is what made this panel look less capable than the web UI.
+    property bool showAdvanced: true
 
     //: The log lives at the bottom of this page. `dms ipc call aria2c tab log`
     //: opens this tab with the section unfolded and scrolls down to it. Kept a
@@ -63,6 +67,49 @@ Item {
         const keys = Object.keys(opts).filter(k => coveredKeys.indexOf(k) === -1)
         keys.sort()
         return keys
+    }
+
+    //: aria2's option names carry their topic as a prefix, which is the only
+    //: structure on offer for the options beyond the curated set. Same rules and
+    //: same order as the web UI, so both surfaces group them identically.
+    readonly property var advancedRules: [
+        ["BitTorrent", /^(bt-|dht|peer-|seed-|follow-torrent|listen-port|enable-peer-exchange|max-open-files)/],
+        ["Metalink", /^(metalink|follow-metalink)/],
+        ["HTTP", /^(http|header|user-agent|referer|content-disposition|use-head|enable-http)/],
+        ["FTP", /^ftp/],
+        ["Proxy", /proxy/],
+        ["RPC", /^rpc/],
+        ["Logging", /^(log|console-|quiet|summary-interval|show-|truncate-)/],
+        ["Disk & files", /^(dir|disk-|file-|save-|no-file-|allow-|auto-file|conf-path|netrc|ca-cert|check-|piece-|hash-|realtime-|remove-control|force-save|auto-save)/],
+        ["Transfer", /^(max-|min-|split|timeout|connect-timeout|retry|lowest-|stream-|uri-selector|server-stat|async-dns|conditional-get|always-resume|continue|deferred|reuse-uri|remote-time|parameterized|stop|pause|daemon|human-readable|no-conf|no-netrc|help)/]
+    ]
+
+    readonly property var advancedGroups: {
+        const buckets = ({})
+        const order = []
+        for (const key of advancedKeys) {
+            let title = "Other"
+            for (var i = 0; i < advancedRules.length; i++) {
+                if (advancedRules[i][1].test(key)) {
+                    title = advancedRules[i][0]
+                    break
+                }
+            }
+            if (buckets[title] === undefined) {
+                buckets[title] = []
+                order.push(title)
+            }
+            buckets[title].push(key)
+        }
+        const out = []
+        for (var j = 0; j < advancedRules.length; j++) {
+            const t = advancedRules[j][0]
+            if (buckets[t])
+                out.push({ "title": t, "keys": buckets[t] })
+        }
+        if (buckets["Other"])
+            out.push({ "title": "Other", "keys": buckets["Other"] })
+        return out
     }
 
     function matches(key, label) {
@@ -255,13 +302,12 @@ Item {
                         }
                     }
 
-                    DankToggle {
+                    BoolSwitch {
                         id: webUiToggle
 
                         anchors.right: parent.right
                         anchors.verticalCenter: parent.verticalCenter
                         checked: tab.service ? tab.service.webUiEnabled : false
-                        hideText: true
                         onToggled: checked => tab.service.setManagerConfig({
                                                                                "web_ui": checked
                                                                            }, checked ? "Web UI on after a restart" : "Web UI off after a restart")
@@ -396,34 +442,64 @@ Item {
                 }
             }
 
-            Grid {
-                width: parent.width
-                visible: tab.showAdvanced
-                columns: 2
-                columnSpacing: Theme.spacingM
-                rowSpacing: Theme.spacingXS
+            Repeater {
+                model: tab.showAdvanced ? tab.advancedGroups : []
 
-                Repeater {
-                    model: tab.showAdvanced ? tab.advancedKeys : []
+                Column {
+                    id: advGroup
 
-                    OptionField {
-                        id: advancedOption
+                    required property var modelData
 
-                        required property var modelData
-
-                        width: (parent.width - Theme.spacingM) / 2
-                        optionKey: advancedOption.modelData
-                        label: advancedOption.modelData
-                        kind: "text"
-                        original: {
-                            const opts = tab.service ? tab.service.globalOptions : ({})
-                            const raw = opts[advancedOption.modelData]
-                            return raw === undefined || raw === null ? "" : String(raw)
+                    width: content.width
+                    spacing: Theme.spacingXS
+                    visible: {
+                        if (!tab.search)
+                            return true
+                        const keys = advGroup.modelData.keys
+                        for (var i = 0; i < keys.length; i++) {
+                            if (tab.matches(keys[i], keys[i]))
+                                return true
                         }
-                        value: original
-                        visible: tab.matches(advancedOption.modelData, advancedOption.modelData)
-                        height: visible ? implicitHeight : 0
-                        onEdited: (key, newValue) => tab.record(key, newValue)
+                        return false
+                    }
+
+                    StyledText {
+                        text: advGroup.modelData.title
+                        font.pixelSize: Theme.fontSizeSmall
+                        font.weight: Font.Bold
+                        color: Theme.surfaceVariantText
+                        topPadding: Theme.spacingS
+                    }
+
+                    Grid {
+                        width: parent.width
+                        columns: 2
+                        columnSpacing: Theme.spacingM
+                        rowSpacing: Theme.spacingXS
+
+                        Repeater {
+                            model: advGroup.modelData.keys
+
+                            OptionField {
+                                id: advancedOption
+
+                                required property var modelData
+
+                                width: (parent.width - Theme.spacingM) / 2
+                                optionKey: advancedOption.modelData
+                                label: advancedOption.modelData
+                                kind: (original === "true" || original === "false") ? "bool" : "text"
+                                description: OptionHelp.forKey(advancedOption.modelData)
+                                original: {
+                                    const opts = tab.service ? tab.service.globalOptions : ({})
+                                    const raw = opts[advancedOption.modelData]
+                                    return raw === undefined || raw === null ? "" : String(raw)
+                                }
+                                value: original
+                                visible: tab.matches(advancedOption.modelData, advancedOption.modelData)
+                                onEdited: (key, newValue) => tab.record(key, newValue)
+                            }
+                        }
                     }
                 }
             }

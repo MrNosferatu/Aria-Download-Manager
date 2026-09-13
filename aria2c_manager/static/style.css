@@ -40,9 +40,24 @@
 
   --shadow: 0 10px 30px rgba(0, 0, 0, .45);
   --mono: ui-monospace, "JetBrains Mono", Menlo, Consolas, monospace;
+
+  /* One gutter for the header, the tab bar and the content, so all three sit on
+   * the same grid. Constraining only `main` to a max width left the tabs flush
+   * against the window while the chips below them started 180px further in —
+   * two rows that look like they should line up, and did not. */
+  /* Width of the value column in the options grid — see .optfield. */
+  --optval: 210px;
+  --page: 1500px;
+  --gutter: max(20px, calc((100% - var(--page)) / 2));
 }
 
 * { box-sizing: border-box; }
+
+/* Reserve the scrollbar's width whether or not it is showing. Without this the
+   page has no gutter at the top and gains one as soon as content overflows, so
+   the whole centred column jumps sideways at that threshold — and the sticky
+   header re-lays-out at the new width as you scroll past it. */
+html { scrollbar-gutter: stable; }
 
 /* The UA's [hidden] rule is display:none at the lowest specificity, so any
  * class here that sets display: flex silently un-hides its own element. Several
@@ -81,13 +96,17 @@ pre {
 ::selection { background: #2a4778; }
 
 /* ---------- header ---------------------------------------------------- */
+/* Header and tab bar stick together as one unit. Only this wrapper is sticky,
+   so nothing has to know how tall the header is — which is not a constant: it
+   depends on the pill text, and it wraps to two rows under 860px. */
+.masthead { position: sticky; top: 0; z-index: 20; }
+
 .topbar {
   display: flex; align-items: center; gap: 24px;
-  padding: 12px 20px;
+  padding: 12px var(--gutter);
   background: rgba(20, 23, 29, .88);
   backdrop-filter: blur(12px);
   border-bottom: 1px solid var(--line);
-  position: sticky; top: 0; z-index: 20;
 }
 .brand { display: flex; align-items: center; gap: 11px; min-width: 0; }
 .logo {
@@ -179,14 +198,51 @@ input:focus, textarea:focus, select:focus {
   box-shadow: 0 0 0 3px rgba(91, 157, 255, .13);
 }
 textarea { resize: vertical; width: 100%; font-family: var(--mono); font-size: 12px; }
-input[type=checkbox] { accent-color: var(--accent); }
+/* ---------- booleans -------------------------------------------------
+ * One control for yes/no, everywhere. This UI previously said it three ways —
+ * a native checkbox, a <select> of true/false, and a text box containing the
+ * word "true" — which is three things to learn for one idea.
+ *
+ * A checkbox survives only where the answer is genuinely a multi-select (which
+ * files in a torrent to fetch), and even there it is styled rather than native.
+ */
+.switch { display: inline-flex; align-items: center; cursor: pointer; flex-shrink: 0; }
+.switch input { position: absolute; opacity: 0; width: 0; height: 0; }
+.switch .track {
+  width: 34px; height: 20px; border-radius: var(--radius-pill);
+  background: var(--bg4); border: 1px solid var(--line);
+  display: inline-flex; align-items: center; padding: 2px;
+  transition: background .15s ease, border-color .15s ease;
+}
+.switch .knob {
+  width: 14px; height: 14px; border-radius: 50%; background: var(--fg-dim);
+  transition: transform .15s ease, background .15s ease;
+}
+.switch input:checked + .track { background: var(--accent); border-color: var(--accent); }
+.switch input:checked + .track .knob { transform: translateX(14px); background: #071527; }
+.switch input:focus-visible + .track { box-shadow: 0 0 0 3px rgba(91, 157, 255, .25); }
+.switch input:disabled + .track { opacity: .4; }
+/* aria2 does not report every option. An unset one must not masquerade as an
+ * explicit "off", so it sits visibly undecided until it is touched. */
+.switch.unset .track { border-style: dashed; opacity: .6; }
+
+input[type=checkbox] {
+  appearance: none; width: 15px; height: 15px; flex-shrink: 0;
+  border: 1px solid var(--line); border-radius: 4px; background: var(--bg);
+  display: inline-grid; place-content: center; cursor: pointer;
+}
+input[type=checkbox]:checked { background: var(--accent); border-color: var(--accent); }
+input[type=checkbox]:checked::after {
+  content: ""; width: 4px; height: 8px; margin-top: -2px;
+  border: solid #071527; border-width: 0 2px 2px 0; transform: rotate(45deg);
+}
+input[type=checkbox]:focus-visible { box-shadow: 0 0 0 3px rgba(91, 157, 255, .25); }
 .search { min-width: 210px; }
 
 /* ---------- tabs ------------------------------------------------------ */
 .tabs {
-  display: flex; align-items: center; gap: 2px; padding: 0 20px;
+  display: flex; align-items: center; gap: 2px; padding: 0 var(--gutter);
   background: var(--bg2); border-bottom: 1px solid var(--line);
-  position: sticky; top: 59px; z-index: 19;
 }
 .tab {
   background: none; border: none; border-bottom: 2px solid transparent;
@@ -197,7 +253,10 @@ input[type=checkbox] { accent-color: var(--accent); }
 .tab:hover { color: var(--fg); }
 .tab.active { color: var(--fg); border-bottom-color: var(--accent); font-weight: 560; }
 .tabs .spacer { flex: 1; }
-.switch {
+/* The tab bar's row is a label plus a switch, not a switch — it carried the
+   .switch class too, so two unrelated rules defined the same name and whichever
+   came last in the file won. */
+.tabtoggle {
   display: flex; align-items: center; gap: 7px; font-size: 12px;
   color: var(--fg-dim); cursor: pointer;
 }
@@ -207,7 +266,7 @@ input[type=checkbox] { accent-color: var(--accent); }
   color: var(--fg-mid); font-variant-numeric: tabular-nums;
 }
 
-main { padding: 20px; max-width: 1500px; margin: 0 auto; }
+main { padding: 20px var(--gutter); }
 .tabpane { display: none; }
 .tabpane.active { display: block; animation: fade .16s ease; }
 @keyframes fade { from { opacity: 0; transform: translateY(3px); } }
@@ -333,6 +392,8 @@ main { padding: 20px; max-width: 1500px; margin: 0 auto; }
 .tag-paused { color: var(--warn); background: var(--warn-soft); }
 .tag-rule { color: var(--rule); background: var(--rule-soft); text-transform: none; }
 .tag-missing { color: var(--warn); background: var(--warn-soft); }
+/* Set in config.yaml, but aria2 will not take it until it restarts. */
+.tag-pending { color: var(--warn); background: var(--warn-soft); text-transform: none; }
 
 /* Precise rail along the bottom edge of the card. */
 .bar {
@@ -414,19 +475,81 @@ main { padding: 20px; max-width: 1500px; margin: 0 auto; }
   border: 1px solid var(--line); border-radius: var(--radius); padding: 14px 16px;
 }
 .optgroup > h3 { margin-top: 0; }
-.optgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 6px 22px; }
-.optfield {
-  display: flex; align-items: center; gap: 10px;
-  border-bottom: 1px solid var(--line-soft); padding: 6px 0;
+/* Three columns, stated rather than inferred. auto-fill derives the count from
+   the container width, and the advanced fold's container is ~32px narrower than
+   a plain group's — enough to land the two sections on different column counts
+   at some widths. The number of columns is a layout decision, so it is written
+   down once here and every options grid on the page obeys it. */
+.optgrid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 2px 28px;
 }
-.optfield label { flex: 1; }
-.optfield label small { display: block; color: var(--fg-dim); font-size: 10px; font-family: var(--mono); }
-.optfield input, .optfield select { width: 140px; flex-shrink: 0; }
+@media (max-width: 1240px) { .optgrid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 820px)  { .optgrid { grid-template-columns: minmax(0, 1fr); } }
+.optfield {
+  display: flex; align-items: flex-start; gap: 14px;
+  border-bottom: 1px solid var(--line-soft); padding: 10px 0;
+}
+.optfield > label { flex: 1; min-width: 0; }
+.optfield input, .optfield select, .optfield .boolcell { margin-top: 1px; }
+.optfield label { flex: 1; display: flex; flex-direction: column; gap: 3px; }
+/* The second line under a label is one slot with one style, whatever it holds —
+   the aria2 flag name in the curated groups, the option's description in the
+   advanced fold. The flag name used to be set in mono at a smaller size, so the
+   same slot looked like two different things depending on which section you
+   were reading. Kebab-case reads as a flag name without the typeface saying so.
+   Block, not inline: an <em> or <small> inside a label otherwise just butts up
+   against the text before it. */
+.optfield label em,
+.optfield label small {
+  display: block; font-style: normal; font-family: inherit;
+  font-size: 12.5px; line-height: 1.45; color: var(--fg-dim); max-width: 46ch;
+}
+/* One value column, the same width for a text box, a dropdown and a switch, so
+   every control in a column starts at the same x. It was 140px, which left a
+   third of each cell as dead space between a short label and its control while
+   the download path was still being truncated — the gap was not doing any work,
+   so the control took it back. */
+.optfield input, .optfield select { width: var(--optval); flex-shrink: 0; }
+/* Left-aligned, not right: every control in a column then starts at the same x,
+   so a 34px switch lines up with the text inputs above and below it instead of
+   floating at the far edge of its cell against the next column. */
+.optfield .boolcell {
+  width: var(--optval); flex-shrink: 0; display: inline-flex;
+  align-items: center; justify-content: flex-start; gap: 10px;
+}
+.optfield .unset-note { font-size: 10.5px; color: var(--fg-dim); }
+.boolopt { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.checkrow .boolopt { flex: 1; }
 .optfield.dirty input, .optfield.dirty select { border-color: var(--warn); background: var(--warn-soft); }
-details#options-advanced-wrap { margin-bottom: 20px; }
+/* Every section's content sits in a card. The advanced fold and the process
+   panel were bare text between carded groups, which read as though they had
+   been bolted on afterwards. */
+details#options-advanced-wrap {
+  margin-bottom: 20px; background: var(--bg2);
+  border: 1px solid var(--line); border-radius: var(--radius); padding: 4px 16px 2px;
+}
+details#options-advanced-wrap[open] { padding-bottom: 14px; }
+details#options-advanced-wrap[open] > summary { margin-bottom: 8px; }
+details#options-advanced-wrap > summary .count {
+  color: var(--fg-dim); font-variant-numeric: tabular-nums;
+}
+#options-advanced .optgroup { background: var(--bg3); }
+#options-advanced .optgroup > h3 {
+  text-transform: none; letter-spacing: 0; font-size: 12px;
+  color: var(--fg-mid); font-weight: 600;
+}
+.group-actions { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line-soft); }
 details#options-advanced-wrap > summary {
   cursor: pointer; color: var(--fg-dim); font-size: 12px; padding: 8px 0;
 }
+/* The advanced fold is the same grid and the same type as the curated groups —
+   it used to shrink both, which made the section that needs the most reading
+   the hardest to read. Only the card tint sets it apart, because it is nested
+   one level deeper. */
+#options-advanced { display: block; }
+#options-advanced .optgroup { margin-bottom: 14px; }
 
 /* ---------- history --------------------------------------------------- */
 .historybar {
@@ -462,8 +585,26 @@ details#options-advanced-wrap > summary {
 .rule-head { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
 .rule-head input.rname { font-weight: 640; flex: 1; }
 .rule-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 9px 16px; }
-.rule-grid .field { display: flex; flex-direction: column; gap: 3px; }
-.rule-grid .field span { font-size: 11px; color: var(--fg-dim); }
+.rule .field { display: flex; flex-direction: column; gap: 4px; }
+.rule > .field { margin-top: 12px; }
+/* Same type as a field label on the settings page: a rule's inputs are labelled
+   fields like any other, and they were being set two sizes smaller and in the
+   dim colour, which read as captions rather than labels. */
+.rule .field > span { font-size: 14px; color: var(--fg); }
+.rule .field > span small { display: block; font-size: 12.5px; line-height: 1.45; color: var(--fg-dim); }
+/* Chips wrap onto as many rows as they need; they are a set, not a line. */
+.chiprow { display: flex; flex-wrap: wrap; gap: 6px; }
+/* A multi-select chip carries a check when it is on. The download filter bar
+   above the list is a single choice and keeps the plain tint — a check there
+   would claim you had picked a set. */
+.chiprow .chip .check {
+  display: inline-flex; width: 0; overflow: hidden;
+  transition: width .12s ease, margin-right .12s ease;
+}
+.chiprow .chip .check svg { width: 13px; height: 13px; fill: currentColor; display: block; }
+.chiprow .chip.active .check { width: 13px; margin-right: 5px; }
+.chiprow .chip { display: inline-flex; align-items: center; }
+.rule-action { max-width: 340px; }
 .rule-json { margin-top: 12px; }
 .rule-json summary { cursor: pointer; color: var(--fg-dim); font-size: 12px; }
 .rule-desc { width: 100%; margin-top: 10px; }
@@ -529,7 +670,10 @@ dialog h2 { margin-bottom: 16px; }
   .topbar { gap: 14px; flex-wrap: wrap; padding: 10px 14px; }
   .throughput { padding-left: 0; border-left: none; margin-left: auto; }
   .topactions { order: 3; width: 100%; }
-  .tabs { position: static; padding: 0 14px; overflow-x: auto; }
+  /* A wrapped two-row header plus the tabs would eat most of a short window,
+     so on narrow screens the masthead scrolls away with the page. */
+  .masthead { position: static; }
+  .tabs { padding: 0 14px; overflow-x: auto; }
   main { padding: 14px; }
   .dl-actions { opacity: 1; }
 }

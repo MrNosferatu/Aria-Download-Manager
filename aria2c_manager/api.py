@@ -873,9 +873,35 @@ def create_app(cfg: Config) -> FastAPI:
         cfg.data["aria2"]["options"].update(persistable)
         cfg._user.setdefault("aria2", {}).setdefault("options", {}).update(persistable)
         cfg.save()
-        store.add_event("info", "Global options updated: " + ", ".join(options))
+
+        # aria2 only accepts a subset of its options through changeGlobalOption.
+        # For the rest it answers OK and changes nothing, so taking that OK at
+        # face value reported success for edits that never happened — the value
+        # reappeared unchanged on the next read. Ask aria2 what it actually
+        # holds now and split the answer honestly: what is live, and what is
+        # only written down and waiting for aria2c to restart.
+        try:
+            live = await rpc.get_global_option()
+        except Exception:  # never fail the write because the read-back failed
+            live = {}
+        applied, pending = {}, {}
+        for key, value in options.items():
+            if isinstance(value, list) or not live:
+                applied[key] = value
+            elif str(live.get(key)) == str(value):
+                applied[key] = value
+            else:
+                pending[key] = value
+
+        note = "Global options updated: " + ", ".join(applied) if applied else ""
+        if pending:
+            note = (note + "; " if note else "") + (
+                "saved for next aria2c start (not changeable while running): "
+                + ", ".join(pending)
+            )
+        store.add_event("info", note)
         poller.poke()
-        return {"ok": True, "applied": options}
+        return {"ok": True, "applied": applied, "pending": pending}
 
     # ---- rules -----------------------------------------------------------
     @app.get("/api/rules")

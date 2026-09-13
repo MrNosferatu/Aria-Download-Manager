@@ -10,7 +10,8 @@ const S = {
   events: [],
   triggers: [],
   globalOptions: {},
-  optInputs: new Map(),   // key -> {input, original, wrap}
+  pendingOptions: {},   // key -> value saved to config.yaml but not live in aria2
+  optInputs: new Map(),   // key -> {read, original, wrap}
   rules: [],
   rulesEnabled: true,
   config: null,
@@ -51,6 +52,19 @@ function parseSize(value) {
   if (!m) return Number(text) || null;
   const mult = { k: 1024, m: 1024 ** 2, g: 1024 ** 3, t: 1024 ** 4 }[(m[2] || '').toLowerCase()] || 1;
   return Math.round(parseFloat(m[1]) * mult);
+}
+
+/* config.yaml keeps sizes the way you wrote them and aria2 reports them in
+   bytes, so `32M` and `33554432` are the same setting spelled two ways. A plain
+   string compare called those a difference and marked untouched options as
+   waiting for a restart. */
+function sameOptionValue(live, saved) {
+  const a = String(live ?? '').trim();
+  const b = String(saved ?? '').trim();
+  if (a === b) return true;
+  const na = parseSize(a);
+  const nb = parseSize(b);
+  return na !== null && nb !== null && na === nb;
 }
 
 function toast(message, kind = '') {
@@ -183,6 +197,7 @@ const ICONS = {
   select: 'M22 7l-1.41-1.41-6.34 6.34 1.41 1.41L22 7zM3 5v2h11V5H3zm0 6v2h8v-2H3zm0 6v2h8v-2H3z',
   open: 'M19 19H5V5h7V3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14c1.1 0 2-.9 2-2v-7h-2v7zM14 3v2h3.59l-9.83 9.83 1.41 1.41L19 6.41V10h2V3h-7z',
   chevron: 'M10 6 8.59 7.41 13.17 12l-4.58 4.59L10 18l6-6z',
+  check: 'M9 16.17 4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z',
 };
 
 function icon(name) {
@@ -420,6 +435,13 @@ function actionsFor(dl) {
   return out;
 }
 
+/* aria2's vocabulary is lower case in the protocol and in config.yaml; it is
+   Capitalised wherever a person reads it, which is what the plugin does too. */
+const capitalise = (text) => {
+  const s = String(text ?? '');
+  return s ? s.charAt(0).toUpperCase() + s.slice(1) : s;
+};
+
 const escapeHtml = (text) => String(text ?? '').replace(/[&<>"']/g,
   (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
 
@@ -474,7 +496,7 @@ function renderDetail(host, gid, data) {
         <h3>Info</h3>
         <div class="kv">
           <div><label>GID</label><code>${gid}</code></div>
-          <div><label>Status</label><span>${st.status || '?'}</span></div>
+          <div><label>Status</label><span class="tag ${STATUS_TAG[st.status] || ''}">${escapeHtml(st.status || '?')}</span></div>
           <div><label>Directory</label><code>${escapeHtml(st.dir || '')}</code></div>
           <div><label>Path</label><code>${escapeHtml(files[0]?.path || '')}</code></div>
           <div><label>Size</label><span>${fmtBytes(st.completedLength)} / ${fmtBytes(st.totalLength)}</span></div>
@@ -601,86 +623,154 @@ async function submitAdd() {
 /* -------------------------------------------------------------- settings */
 const OPTION_GROUPS = [
   ['Queue & parallelism', [
-    ['max-concurrent-downloads', 'Max concurrent downloads', 'number'],
-    ['max-connection-per-server', 'Connections per server (max 16)', 'number'],
-    ['split', 'Split — parts per download', 'number'],
-    ['min-split-size', 'Minimum part size', 'text'],
-    ['optimize-concurrent-downloads', 'Auto-tune concurrency', 'bool'],
+    ["max-concurrent-downloads", "Max concurrent downloads", "number"],
+    ["max-connection-per-server", "Connections per server (max 16)", "number"],
+    ["split", "Split \u2014 parts per download", "number"],
+    ["min-split-size", "Minimum part size", "text"],
+    ["optimize-concurrent-downloads", "Auto-tune concurrency", "bool"],
   ]],
   ['Speed limits', [
-    ['max-overall-download-limit', 'Overall download limit', 'text'],
-    ['max-download-limit', 'Per-download limit', 'text'],
-    ['max-overall-upload-limit', 'Overall upload limit', 'text'],
-    ['max-upload-limit', 'Per-download upload limit', 'text'],
-    ['lowest-speed-limit', 'Abort below this speed', 'text'],
+    ["max-overall-download-limit", "Overall download limit", "text"],
+    ["max-download-limit", "Per-download limit", "text"],
+    ["max-overall-upload-limit", "Overall upload limit", "text"],
+    ["max-upload-limit", "Per-download upload limit", "text"],
+    ["lowest-speed-limit", "Abort below this speed", "text"],
   ]],
   ['Retries & timeouts', [
-    ['max-tries', 'Max tries (0 = unlimited)', 'number'],
-    ['retry-wait', 'Retry wait (s)', 'number'],
-    ['timeout', 'Timeout (s)', 'number'],
-    ['connect-timeout', 'Connect timeout (s)', 'number'],
-    ['max-file-not-found', 'Max 404s before giving up', 'number'],
+    ["max-tries", "Max tries (0 = unlimited)", "number"],
+    ["retry-wait", "Retry wait (s)", "number"],
+    ["timeout", "Timeout (s)", "number"],
+    ["connect-timeout", "Connect timeout (s)", "number"],
+    ["max-file-not-found", "Max 404s before giving up", "number"],
   ]],
   ['Disk & files', [
-    ['dir', 'Download directory', 'text'],
-    ['file-allocation', 'File allocation', 'select:none,prealloc,trunc,falloc'],
-    ['disk-cache', 'Disk cache', 'text'],
-    ['continue', 'Resume partial files', 'bool'],
-    ['allow-overwrite', 'Allow overwrite', 'bool'],
-    ['auto-file-renaming', 'Auto-rename duplicates', 'bool'],
-    ['remote-time', 'Use server timestamps', 'bool'],
+    ["dir", "Download directory", "text"],
+    ["file-allocation", "File allocation", "select:none,prealloc,trunc,falloc"],
+    ["disk-cache", "Disk cache", "text"],
+    ["continue", "Resume partial files", "bool"],
+    ["allow-overwrite", "Allow overwrite", "bool"],
+    ["auto-file-renaming", "Auto-rename duplicates", "bool"],
+    ["remote-time", "Use server timestamps", "bool"],
   ]],
   ['HTTP', [
-    ['user-agent', 'User-Agent', 'text'],
-    ['referer', 'Referer', 'text'],
-    ['http-accept-gzip', 'Accept gzip', 'bool'],
-    ['all-proxy', 'Proxy (all protocols)', 'text'],
-    ['check-certificate', 'Verify TLS certificates', 'bool'],
+    ["user-agent", "User-Agent", "text"],
+    ["referer", "Referer", "text"],
+    ["http-accept-gzip", "Accept gzip", "bool"],
+    ["all-proxy", "Proxy (all protocols)", "text"],
+    ["check-certificate", "Verify TLS certificates", "bool"],
   ]],
   ['BitTorrent', [
-    ['follow-torrent', 'Auto-start downloaded torrents', 'bool'],
-    ['bt-max-peers', 'Max peers', 'number'],
-    ['seed-ratio', 'Seed ratio', 'text'],
-    ['seed-time', 'Seed time (min)', 'text'],
-    ['enable-dht', 'Enable DHT', 'bool'],
-    ['bt-max-open-files', 'Max open files', 'number'],
+    ["follow-torrent", "Auto-start downloaded torrents", "bool"],
+    ["bt-max-peers", "Max peers", "number"],
+    ["seed-ratio", "Seed ratio", "text"],
+    ["seed-time", "Seed time (min)", "text"],
+    ["enable-dht", "Enable DHT", "bool"],
+    ["bt-max-open-files", "Max open files", "number"],
   ]],
 ];
 
-function optionField(key, label, kind, value) {
+/* A <label>, not a <span>. The checkbox inside is visually hidden (0x0,
+   opacity 0) so the track can be styled, which means the only thing that can
+   deliver a click to it is a label wrapping it — as a span, every switch in the
+   options grid was inert: the track took the click and nothing received it. */
+function boolSwitch(checked, unset) {
+  const box = document.createElement('label');
+  box.className = 'switch' + (unset ? ' unset' : '');
+  const input = document.createElement('input');
+  input.type = 'checkbox';
+  input.checked = checked;
+  const track = document.createElement('span');
+  track.className = 'track';
+  const knob = document.createElement('span');
+  knob.className = 'knob';
+  track.append(knob);
+  box.append(input, track);
+  return { box, input };
+}
+
+/* aria2's own option names carry their topic as a prefix, which is the only
+   structure on offer for the ~120 options it reports beyond the curated set.
+   Grouping on it turns one alphabetical wall into the same cards the curated
+   settings use — still unexplained, but at least navigable. Order matters: the
+   first rule that matches wins, so the specific ones come before the general. */
+const ADVANCED_GROUPS = [
+  ['BitTorrent', /^(bt-|dht|peer-|seed-|follow-torrent|listen-port|enable-peer-exchange|max-open-files)/],
+  ['Metalink', /^(metalink|follow-metalink)/],
+  ['HTTP', /^(http|header|user-agent|referer|content-disposition|use-head|enable-http)/],
+  ['FTP', /^ftp/],
+  ['Proxy', /proxy/],
+  ['RPC', /^rpc/],
+  ['Logging', /^(log|console-|quiet|summary-interval|show-|truncate-)/],
+  ['Disk & files', /^(dir|disk-|file-|save-|no-file-|allow-|auto-file|conf-path|netrc|ca-cert|check-|piece-|hash-|realtime-|remove-control|force-save|auto-save)/],
+  ['Transfer', /^(max-|min-|split|timeout|connect-timeout|retry|lowest-|stream-|uri-selector|server-stat|async-dns|conditional-get|always-resume|continue|deferred|reuse-uri|remote-time|parameterized|stop|pause|daemon|human-readable|no-conf|no-netrc|help)/],
+];
+
+function groupAdvanced(keys) {
+  const buckets = new Map(ADVANCED_GROUPS.map(([title]) => [title, []]));
+  buckets.set('Other', []);
+  for (const key of keys) {
+    const hit = ADVANCED_GROUPS.find(([, re]) => re.test(key));
+    buckets.get(hit ? hit[0] : 'Other').push(key);
+  }
+  return [...buckets].filter(([, list]) => list.length);
+}
+
+function optionField(key, label, kind, value, desc) {
   const wrap = document.createElement('div');
   wrap.className = 'optfield';
+  const pending = S.pendingOptions?.[key];
+  if (pending !== undefined) value = pending;
   const lab = document.createElement('label');
-  lab.innerHTML = `${escapeHtml(label)}<small>${key}</small>`;
-  let input;
+  lab.innerHTML = `${escapeHtml(label)}`
+    + (pending !== undefined
+      ? ' <span class="tag tag-pending">restart to apply</span>' : '')
+    + (desc ? `<em>${escapeHtml(desc)}</em>` : '')
+    + (label === key ? '' : `<small>${key}</small>`);
+  const original = value ?? '';
+  let read;
+  let control;
+
   if (kind === 'bool') {
-    input = document.createElement('select');
-    // Keep an "(unset)" entry when aria2 did not report the option, so an
-    // absent value never masquerades as an explicit false.
-    const unset = value == null || value === '';
-    input.innerHTML = (unset ? '<option value="">(unset)</option>' : '')
-      + '<option value="true">true</option><option value="false">false</option>';
-    input.value = unset ? '' : value;
+    // aria2 does not report every option. An unset one stays visibly undecided
+    // rather than being written out as an explicit false the moment it renders.
+    let unset = value == null || value === '';
+    const { box, input } = boolSwitch(value === 'true', unset);
+    const note = document.createElement('span');
+    note.className = 'unset-note';
+    note.textContent = unset ? 'not set' : '';
+    input.addEventListener('change', () => {
+      unset = false;
+      box.classList.remove('unset');
+      note.textContent = '';
+      wrap.classList.toggle('dirty', read() !== original);
+    });
+    read = () => (unset ? '' : (input.checked ? 'true' : 'false'));
+    control = document.createElement('span');
+    control.className = 'boolcell';
+    control.append(note, box);
   } else if (kind && kind.startsWith('select:')) {
-    input = document.createElement('select');
+    const input = document.createElement('select');
     const choices = kind.slice(7).split(',');
     const unset = value == null || value === '' || !choices.includes(value);
     input.innerHTML = (unset ? '<option value="">(unset)</option>' : '')
       + choices.map((v) => `<option value="${v}">${v}</option>`).join('');
     input.value = unset ? '' : value;
+    input.addEventListener('change', () => wrap.classList.toggle('dirty', input.value !== original));
+    read = () => input.value;
+    control = input;
   } else {
-    input = document.createElement('input');
+    const input = document.createElement('input');
     if (kind === 'number') input.type = 'number';
-    input.value = value ?? '';
+    input.value = original;
+    const mark = () => wrap.classList.toggle('dirty', input.value !== original);
+    input.addEventListener('input', mark);
+    input.addEventListener('change', mark);
+    read = () => input.value;
+    control = input;
   }
-  input.addEventListener('input', () => {
-    wrap.classList.toggle('dirty', input.value !== (value ?? ''));
-  });
-  input.addEventListener('change', () => {
-    wrap.classList.toggle('dirty', input.value !== (value ?? ''));
-  });
-  S.optInputs.set(key, { input, original: value ?? '', wrap });
-  wrap.append(lab, input);
+
+  S.optInputs.set(key, { read, original, wrap });
+  wrap.append(lab, control);
   return wrap;
 }
 
@@ -690,6 +780,21 @@ async function loadGlobalOptions() {
   } catch (err) {
     toast(`Could not read aria2 options: ${err.message}`, 'error');
     return;
+  }
+  /* aria2 refuses to change most of its options while it is running: the RPC
+     answers OK and keeps the old value. Those edits are still written to
+     config.yaml, so the option is set — it just is not live yet. Showing only
+     aria2's live value made a saved edit look like it had been thrown away, so
+     a key whose saved value differs from the running one is shown at its saved
+     value and marked as waiting for a restart. */
+  S.pendingOptions = {};
+  // The settings tab can be opened before the startup config fetch lands.
+  if (!S.config) { try { S.config = await api('/api/config'); } catch (err) { /* ignore */ } }
+  const saved = (S.config?.aria2?.options) || {};
+  for (const [key, value] of Object.entries(saved)) {
+    if (key in S.globalOptions && !sameOptionValue(S.globalOptions[key], value)) {
+      S.pendingOptions[key] = String(value);
+    }
   }
   S.optInputs.clear();
   const groupsHost = $('#options-groups');
@@ -701,20 +806,37 @@ async function loadGlobalOptions() {
     group.innerHTML = `<h3>${title}</h3>`;
     const grid = document.createElement('div');
     grid.className = 'optgrid';
-    for (const [key, label, kind] of opts) {
+    for (const [key, label, kind, desc] of opts) {
       covered.add(key);
-      grid.append(optionField(key, label, kind, S.globalOptions[key]));
+      grid.append(optionField(key, label, kind, S.globalOptions[key], desc));
     }
     group.append(grid);
     groupsHost.append(group);
   }
   const advanced = $('#options-advanced');
   advanced.innerHTML = '';
-  for (const key of Object.keys(S.globalOptions).sort()) {
-    if (covered.has(key)) continue;
-    advanced.append(optionField(key, key, 'text', S.globalOptions[key]));
+  const rest = Object.keys(S.globalOptions).sort().filter((k) => !covered.has(k));
+  // The plugin's fold shows its count, so this one does too — a collapsed
+  // section with no number on it reads as though the options are missing.
+  const counter = $('#advanced-count');
+  if (counter) counter.textContent = ` — ${rest.length}`;
+  for (const [title, keys] of groupAdvanced(rest)) {
+    const group = document.createElement('div');
+    group.className = 'optgroup';
+    group.innerHTML = `<h3>${title}</h3>`;
+    const grid = document.createElement('div');
+    grid.className = 'optgrid';
+    for (const key of keys) {
+      // aria2 reports booleans as the strings "true"/"false"; they get a switch
+      // like every other boolean rather than a text box to type a word into.
+      const raw = S.globalOptions[key];
+      const kind = (raw === 'true' || raw === 'false') ? 'bool' : 'text';
+      grid.append(optionField(key, key, kind, raw,
+        (typeof OPTION_HELP === 'object' && OPTION_HELP[key]) || ''));
+    }
+    group.append(grid);
+    advanced.append(group);
   }
-  syncLimitBoxes();
   applyOptionFilter();
 }
 
@@ -728,40 +850,26 @@ function applyOptionFilter() {
 
 async function saveGlobalOptions() {
   const options = {};
-  for (const [key, { input, original }] of S.optInputs) {
-    if (input.value !== original) options[key] = input.value;
+  for (const [key, { read, original }] of S.optInputs) {
+    const value = read();
+    if (value !== original) options[key] = value;
   }
   if (!Object.keys(options).length) { toast('Nothing changed'); return; }
   try {
-    await api('/api/global/options', { method: 'POST', body: { options } });
-    toast(`Applied ${Object.keys(options).length} option(s)`, 'ok');
+    const res = await api('/api/global/options', { method: 'POST', body: { options } });
+    const live = Object.keys(res.applied || {}).length;
+    const later = Object.keys(res.pending || {}).length;
+    if (later) {
+      toast(live
+        ? `${live} applied · ${later} saved, needs an aria2c restart`
+        : `${later} saved — aria2c will not change ${later === 1 ? 'it' : 'them'} while running, restart to apply`,
+      'ok');
+    } else {
+      toast(`Applied ${live} option(s)`, 'ok');
+    }
+    // Re-read the saved config too, or a pending option loses its marker.
+    try { S.config = await api('/api/config'); } catch (err) { /* keep the old copy */ }
     await loadGlobalOptions();
-  } catch (err) {
-    toast(err.message, 'error');
-  }
-}
-
-function syncLimitBoxes() {
-  const set = (sel, value) => {
-    const el = $(sel);
-    if (document.activeElement !== el) el.value = value ?? '';
-  };
-  set('#limit-down', S.globalOptions['max-overall-download-limit']);
-  set('#limit-up', S.globalOptions['max-overall-upload-limit']);
-  set('#limit-jobs', S.globalOptions['max-concurrent-downloads']);
-}
-
-async function applyLimits() {
-  const options = {
-    'max-overall-download-limit': $('#limit-down').value.trim() || '0',
-    'max-overall-upload-limit': $('#limit-up').value.trim() || '0',
-  };
-  const jobs = $('#limit-jobs').value.trim();
-  if (jobs) options['max-concurrent-downloads'] = jobs;
-  try {
-    await api('/api/global/options', { method: 'POST', body: { options } });
-    S.globalOptions = { ...S.globalOptions, ...options };
-    toast('Limits applied', 'ok');
   } catch (err) {
     toast(err.message, 'error');
   }
@@ -844,8 +952,11 @@ function renderHistory() {
 }
 
 /* ----------------------------------------------------------------- rules */
+// aria2's own status vocabulary, in the order the filter bar shows it.
+const KNOWN_STATUSES = ['active', 'waiting', 'paused', 'error', 'complete', 'removed'];
+
 const RULE_FIELDS = [
-  ['when.speed_below', 'Speed below (B/s — 50K ok)', 'size'],
+  ['when.speed_below', 'Speed below (50K ok)', 'size'],
   ['when.for_seconds', 'Hold for (s)', 'number'],
   ['when.min_age_seconds', 'Ignore first (s)', 'number'],
   ['cooldown_seconds', 'Cooldown (s)', 'number'],
@@ -905,10 +1016,8 @@ function renderRules() {
 
     const head = document.createElement('div');
     head.className = 'rule-head';
-    const toggle = document.createElement('input');
-    toggle.type = 'checkbox';
-    toggle.checked = rule.enabled !== false;
-    toggle.title = 'Enable this rule';
+    const { box: toggleBox, input: toggle } = boolSwitch(rule.enabled !== false, false);
+    toggleBox.title = 'Enable this rule';
     toggle.addEventListener('change', () => { rule.enabled = toggle.checked; renderRules(); });
 
     const name = document.createElement('input');
@@ -921,7 +1030,6 @@ function renderRules() {
     action.innerHTML = ACTIONS
       .map((a) => `<option value="${a}">${escapeHtml(actionLabel(a))}</option>`).join('');
     action.value = rule.action || 'pause_resume';
-    action.title = 'What to do when the conditions hold';
     action.addEventListener('change', () => { rule.action = action.value; renderRules(); });
 
     const del = mkBtn('trash', 'Delete rule', () => {
@@ -929,8 +1037,19 @@ function renderRules() {
       renderRules();
     }, 'btn btn-icon btn-danger');
 
-    head.append(toggle, name, action, del);
+    head.append(toggleBox, name, del);
     card.append(head);
+
+    /* The action is the rule's main decision, so it gets a labelled field of
+       its own rather than riding along unlabelled in the title row — which is
+       where the plugin puts it, and it was the only control in the card with no
+       label saying what it sets. */
+    const actionField = document.createElement('label');
+    actionField.className = 'field rule-action';
+    const actionLab = document.createElement('span');
+    actionLab.textContent = 'Action';
+    actionField.append(actionLab, action);
+    card.append(actionField);
 
     const grid = document.createElement('div');
     grid.className = 'rule-grid';
@@ -955,24 +1074,54 @@ function renderRules() {
     }
     card.append(grid);
 
-    const statuses = document.createElement('label');
+    /* aria2's status vocabulary is a fixed, short list, so it is offered as
+       chips you toggle — the same control the filter bar above the download
+       list uses, and the same one the DankBar plugin's rule card uses. It was a
+       text box you typed comma-separated words into, which asked you to know
+       the vocabulary by heart and spell it correctly. Anything already saved in
+       config.yaml is kept in the list even if it is not one of the known names,
+       so a hand-edited rule never silently loses a value it cannot show. */
+    const statuses = document.createElement('div');
     statuses.className = 'field';
-    statuses.innerHTML = '<span>Applies to statuses (comma separated)</span>';
-    const statusInput = document.createElement('input');
-    statusInput.value = ((rule.when || {}).statuses || ['active']).join(',');
-    statusInput.addEventListener('change', () => {
-      const list = statusInput.value.split(',').map((s) => s.trim()).filter(Boolean);
-      setPath(rule, 'when.statuses', list.length ? list : ['active']);
-    });
-    statuses.append(statusInput);
+    statuses.innerHTML = '<span>Applies to statuses</span>';
+    const chosen = ((rule.when || {}).statuses || ['active']).slice();
+    const names = KNOWN_STATUSES.concat(chosen.filter((s) => !KNOWN_STATUSES.includes(s)));
+    const chipRow = document.createElement('div');
+    chipRow.className = 'chiprow';
+    for (const name of names) {
+      const chip = document.createElement('button');
+      chip.type = 'button';
+      chip.className = `chip${chosen.includes(name) ? ' active' : ''}`;
+      // Capitalised, and a check on the ones that are on: these are a
+      // multi-select, so the chosen set has to be readable at a glance rather
+      // than inferred from a background tint alone.
+      chip.innerHTML = `<span class="check" aria-hidden="true">${icon('check')}</span>${escapeHtml(capitalise(name))}`;
+      chip.addEventListener('click', () => {
+        const at = chosen.indexOf(name);
+        if (at >= 0) chosen.splice(at, 1); else chosen.push(name);
+        // aria2 needs at least one status and the daemon falls back to active
+        // anyway, so say so rather than saving nothing.
+        const next = chosen.length ? chosen : ['active'];
+        setPath(rule, 'when.statuses', next.slice());
+        chip.classList.toggle('active', chosen.includes(name));
+        if (!chosen.length) renderRules();
+      });
+      chipRow.append(chip);
+    }
+    statuses.append(chipRow);
     card.append(statuses);
 
+    const descField = document.createElement('label');
+    descField.className = 'field';
+    const descLab = document.createElement('span');
+    descLab.textContent = 'Description';
     const desc = document.createElement('input');
     desc.className = 'rule-desc';
-    desc.placeholder = 'Description (optional)';
+    desc.placeholder = 'What this rule is for (optional)';
     desc.value = rule.description || '';
     desc.addEventListener('change', () => { rule.description = desc.value; });
-    card.append(desc);
+    descField.append(descLab, desc);
+    card.append(descField);
 
     if (rule.action === 'set_option') {
       const hint = document.createElement('p');
@@ -1205,7 +1354,6 @@ function init() {
   $('#btn-pause-all').addEventListener('click', () => act('/api/global/pause-all', { method: 'POST' }, 'Paused all'));
   $('#btn-resume-all').addEventListener('click', () => act('/api/global/resume-all', { method: 'POST' }, 'Resumed all'));
   $('#btn-purge').addEventListener('click', () => act('/api/global/purge', { method: 'POST' }, 'Purged finished results'));
-  $('#btn-limits').addEventListener('click', applyLimits);
 
   $('#btn-opt-reload').addEventListener('click', loadGlobalOptions);
   $('#btn-opt-save').addEventListener('click', saveGlobalOptions);
@@ -1235,8 +1383,8 @@ function init() {
   });
 
   renderHelp();
-  api('/api/config').then((cfg) => { S.config = cfg; $('#cfg-path').textContent = cfg.config_path; }).catch(() => {});
-  api('/api/global/options').then((opts) => { S.globalOptions = opts; syncLimitBoxes(); }).catch(() => {});
+  api('/api/config').then((cfg) => { S.config = cfg; }).catch(() => {});
+  api('/api/global/options').then((opts) => { S.globalOptions = opts; }).catch(() => {});
   api('/api/log').then((data) => { S.triggers = data.triggers || []; pushEvents(data.events || [], true); }).catch(() => {});
   // Load rules up front so the tab badge is right before the tab is opened.
   loadRules().catch(() => {});

@@ -10,17 +10,20 @@ Item {
     property string optionKey: ""
     property string label: ""
     property string kind: "text"
+    //: One plain line saying what the option does. Same text the web UI shows.
+    property string description: ""
     property string original: ""
     property string value: ""
 
     readonly property bool dirty: value !== original
-    readonly property bool isChoice: kind === "bool" || kind.indexOf("select:") === 0
+    readonly property bool isBool: kind === "bool"
+    //: A real choice between named values. A boolean is not one of these — it
+    //: gets a switch, the same as every other yes/no in the product.
+    readonly property bool isChoice: kind.indexOf("select:") === 0
     // aria2's dir is a path, so it gets the folder chooser rather than a bare
     // text box.
     readonly property bool isDirectory: optionKey === "dir"
     readonly property var choices: {
-        if (kind === "bool")
-            return ["true", "false"]
         if (kind.indexOf("select:") === 0)
             return kind.substring(7).split(",")
         return []
@@ -28,7 +31,10 @@ Item {
 
     signal edited(string key, string newValue)
 
-    implicitHeight: 60
+    //: Driven by the content, not guessed at. The Column used to be anchored to
+    //: fill this Item while the Item's height was a hand-written formula, so any
+    //: row whose description wrapped overflowed into the row below it.
+    implicitHeight: layout.implicitHeight
     height: implicitHeight
 
     onValueChanged: field.edited(field.optionKey, field.value)
@@ -36,7 +42,9 @@ Item {
     onOriginalChanged: field.value = field.original
 
     Column {
-        anchors.fill: parent
+        id: layout
+
+        width: parent.width
         spacing: 2
 
         Row {
@@ -61,11 +69,27 @@ Item {
             }
         }
 
+        StyledText {
+            id: descriptionText
+
+            width: parent.width
+            visible: field.description !== ""
+            text: field.description
+            font.pixelSize: Theme.fontSizeSmall - 1
+            color: Theme.surfaceVariantText
+            wrapMode: Text.WordWrap
+        }
+
         Loader {
             width: parent.width
             height: 40
-            sourceComponent: field.isDirectory ? directoryComponent
-                                              : (field.isChoice ? choiceComponent : textComponent)
+            sourceComponent: {
+                if (field.isDirectory)
+                    return directoryComponent
+                if (field.isBool)
+                    return boolComponent
+                return field.isChoice ? choiceComponent : textComponent
+            }
         }
     }
 
@@ -90,6 +114,35 @@ Item {
             placeholderText: field.optionKey
             text: field.value
             onTextChanged: field.value = text
+        }
+    }
+
+    Component {
+        id: boolComponent
+
+        Item {
+            //: aria2 does not report every option, and an unset one must not be
+            //: written out as an explicit false just because it rendered. It
+            //: stays marked "not set" until the switch is actually touched.
+            Row {
+                anchors.left: parent.left
+                anchors.verticalCenter: parent.verticalCenter
+                spacing: Theme.spacingS
+
+                BoolSwitch {
+                    anchors.verticalCenter: parent.verticalCenter
+                    checked: field.value === "true"
+                    onToggled: value => field.value = value ? "true" : "false"
+                }
+
+                StyledText {
+                    anchors.verticalCenter: parent.verticalCenter
+                    visible: field.value === ""
+                    text: "not set"
+                    font.pixelSize: Theme.fontSizeSmall - 1
+                    color: Theme.surfaceVariantText
+                }
+            }
         }
     }
 

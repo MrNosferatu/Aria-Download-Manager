@@ -179,11 +179,10 @@ PopoutComponent {
                 color: Theme.surfaceVariantText
             }
 
-            DankToggle {
+            BoolSwitch {
                 anchors.verticalCenter: parent.verticalCenter
                 checked: popout.service ? popout.service.rulesEnabled : false
-                hideText: true
-                onToggled: checked => popout.service.setRulesEnabled(checked)
+                onToggled: value => popout.service.setRulesEnabled(value)
             }
         }
     }
