@@ -45,8 +45,8 @@ Column {
                             const opts = payload.options || ({})
                             splitField.text = opts["split"] || ""
                             connField.text = opts["max-connection-per-server"] || ""
-                            downField.text = opts["max-download-limit"] || ""
-                            upField.text = opts["max-upload-limit"] || ""
+                            downField.raw = opts["max-download-limit"] || ""
+                            upField.raw = opts["max-upload-limit"] || ""
                             detail.selectedFiles = (payload.files || []).filter(f => f.selected === "true").map(f => Number(f.index))
                             detail.optionsInitialized = true
                         }
@@ -228,11 +228,10 @@ Column {
                 color: Theme.surfaceVariantText
             }
 
-            DankTextField {
+            UnitField {
                 id: downField
                 width: parent.width
-                height: 40
-                font.pixelSize: Theme.fontSizeSmall
+                kind: "speed"
             }
         }
 
@@ -246,11 +245,10 @@ Column {
                 color: Theme.surfaceVariantText
             }
 
-            DankTextField {
+            UnitField {
                 id: upField
                 width: parent.width
-                height: 40
-                font.pixelSize: Theme.fontSizeSmall
+                kind: "speed"
             }
         }
     }
@@ -265,10 +263,10 @@ Column {
                 options["split"] = splitField.text.trim()
             if (connField.text.trim())
                 options["max-connection-per-server"] = connField.text.trim()
-            if (downField.text.trim())
-                options["max-download-limit"] = downField.text.trim()
-            if (upField.text.trim())
-                options["max-upload-limit"] = upField.text.trim()
+            if (downField.value)
+                options["max-download-limit"] = downField.value
+            if (upField.value)
+                options["max-upload-limit"] = upField.value
             detail.service.post("/api/download/" + detail.gid + "/options", {
                                     "options": options
                                 }, "Options applied")

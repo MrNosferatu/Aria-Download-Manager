@@ -24,8 +24,8 @@ Column {
         put("out", outField.text)
         put("max-connection-per-server", connField.text)
         put("split", splitField.text)
-        put("min-split-size", minSplitField.text)
-        put("max-download-limit", limitField.text)
+        put("min-split-size", minSplitField.value)
+        put("max-download-limit", limitField.value)
         put("Referer", refererField.text)
         put("User-Agent", uaField.text)
         put("all-proxy", proxyField.text)
@@ -203,18 +203,18 @@ Column {
             placeholderText: "Split (parts)"
         }
 
-        DankTextField {
+        UnitField {
             id: minSplitField
             width: (parent.width - Theme.spacingS) / 2
-            height: 40
-            placeholderText: "Min part size (1M)"
+            kind: "size"
+            placeholderText: "Min part size"
         }
 
-        DankTextField {
+        UnitField {
             id: limitField
             width: (parent.width - Theme.spacingS) / 2
-            height: 40
-            placeholderText: "Speed limit (0)"
+            kind: "speed"
+            placeholderText: "Speed limit: none"
         }
 
         DankTextField {

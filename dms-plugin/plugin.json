@@ -19,13 +19,11 @@
     "icon": "download",
     "requires_dms": ">=1.5.0",
     "dependencies": [
-        "curl",
         "aria2c-manager"
     ],
     "permissions": [
         "settings_read",
         "settings_write",
-        "network",
         "process"
     ]
 }

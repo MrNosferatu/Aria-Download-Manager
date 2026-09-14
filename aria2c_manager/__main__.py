@@ -3,45 +3,29 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import signal
 import sys
-import webbrowser
 from pathlib import Path
 
-import uvicorn
-
-from .api import VERSION, create_app
-from .config import PROJECT_DIR, Config
+from .api import VERSION, create_app, run
+from .config import DEFAULT_STATE_DIR, PROJECT_DIR, Config
+from .ipc import SocketInUse, socket_path_for
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="aria2c-manager",
-        description="Background aria2c server with a web UI and a browser-extension intake endpoint.",
+        description="Background aria2c server for the browser extension and the "
+        "DankMaterialShell widget, reachable only through its Unix socket.",
     )
     parser.add_argument(
         "-c", "--config", default=None, help="config file (default: ./config.yaml)"
     )
-    parser.add_argument("--host", default=None, help="override server.host")
-    parser.add_argument("--port", type=int, default=None, help="override server.port")
     parser.add_argument(
         "--no-aria2",
         action="store_true",
         help="do not spawn aria2c; attach to an already-running RPC instance",
-    )
-    parser.add_argument("--open", action="store_true", help="open the web UI in a browser")
-    parser.add_argument(
-        "--web-ui",
-        dest="web_ui",
-        action="store_true",
-        default=None,
-        help="serve the browser UI at / for this run (default: server.web_ui)",
-    )
-    parser.add_argument(
-        "--no-web-ui",
-        dest="web_ui",
-        action="store_false",
-        help="do not serve the browser UI, even if server.web_ui is true",
     )
     parser.add_argument(
         "--print-config",
@@ -53,9 +37,34 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="print the aria2c command line that would be used and exit",
     )
-    parser.add_argument("--log-level", default="info", help="uvicorn log level")
+    parser.add_argument(
+        "--install-native-host",
+        action="store_true",
+        help="register the browser extension's native-messaging host (IPC bridge) and exit",
+    )
+    parser.add_argument(
+        "--chrome-extension-id",
+        action="append",
+        default=[],
+        metavar="ID",
+        help="with --install-native-host: allow this Chromium extension id "
+        "(found automatically when the extension is loaded unpacked from this checkout)",
+    )
     parser.add_argument("-V", "--version", action="version", version=VERSION)
     return parser
+
+
+async def serve(cfg: Config) -> None:
+    app = create_app(cfg)
+    stop = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    # SIGHUP is what a closing terminal sends; SIGTERM is systemd and
+    # /api/restart. All of them get the full shutdown, so aria2c is never left
+    # orphaned holding the RPC port.
+    for name in ("SIGINT", "SIGTERM", "SIGHUP", "SIGQUIT"):
+        if sig := getattr(signal, name, None):
+            loop.add_signal_handler(sig, stop.set)
+    await run(app, stop)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -66,22 +75,24 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     cfg = Config(config_path)
-    if args.host:
-        cfg.data["server"]["host"] = args.host
-    if args.port:
-        cfg.data["server"]["port"] = args.port
     if args.no_aria2:
         cfg.data["aria2"]["managed"] = False
-    if args.web_ui is not None:
-        cfg.data["server"]["web_ui"] = args.web_ui
-    # Opening a browser at a UI that is not served would be a dead end.
-    if args.open:
-        cfg.data["server"]["web_ui"] = True
 
     if args.print_config:
         import json
 
         print(json.dumps(cfg.public(), indent=2))
+        return 0
+
+    if args.install_native_host:
+        from .native_host import install
+
+        socket_path = socket_path_for(cfg)
+        for line in install(socket_path, PROJECT_DIR / "extension",
+                            args.chrome_extension_id, DEFAULT_STATE_DIR):
+            print(line)
+        print(f"socket     {socket_path}")
+        print("Restart the browser (or reload the extension) to pick it up.")
         return 0
 
     if args.print_argv:
@@ -97,61 +108,14 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         return 0
 
-    host = str(cfg.get("server.host", "127.0.0.1"))
-    port = int(cfg.get("server.port", 6810))
-    url = f"http://{'127.0.0.1' if host in ('0.0.0.0', '::') else host}:{port}/"
-
-    app = create_app(cfg)
-    web_ui = bool(cfg.get("server.web_ui", False))
     print(f"aria2c-manager {VERSION}")
-    print(f"  web UI     {url if web_ui else 'off (--web-ui, or server.web_ui: true)'}")
-    print(f"  intake     POST {url}api/intake/add")
-    print(f"  config     {cfg.path}")
-    if host not in ("127.0.0.1", "localhost", "::1"):
-        print(
-            f"  WARNING: bound to {host} with no authentication — anyone who can reach\n"
-            "           this port can queue downloads and read your download list.",
-            file=sys.stderr,
-        )
-    if args.open or cfg.get("server.open_browser"):
-        webbrowser.open(url)
-
-    server = uvicorn.Server(
-        uvicorn.Config(
-            app,
-            host=host,
-            port=port,
-            log_level=args.log_level,
-            access_log=False,
-            # Backstop: a client that ignores the shutdown frame must not be
-            # able to hold the process open.
-            timeout_graceful_shutdown=5,
-        )
-    )
-    # Tell the event-stream clients to let go *before* uvicorn starts draining
-    # connections. Lifespan shutdown runs after that drain, which is too late:
-    # the SSE responses are exactly what the drain waits for.
-    stop = server.handle_exit
-
-    def handle_exit(sig, frame):
-        try:
-            app.state.store.publish({"type": "shutdown", "data": {"ok": True}})
-        except Exception:
-            pass
-        stop(sig, frame)
-
-    server.handle_exit = handle_exit
-
-    # uvicorn handles SIGINT/SIGTERM but not SIGHUP, which is what a closing
-    # terminal sends. Without this the process dies instantly, the shutdown path
-    # never runs, and aria2c is left orphaned holding the RPC port.
-    for name in ("SIGHUP", "SIGQUIT"):
-        if sig := getattr(signal, name, None):
-            try:
-                signal.signal(sig, handle_exit)
-            except (ValueError, OSError):
-                pass  # not the main thread / unsupported platform
-    server.run()
+    print(f"  socket     {socket_path_for(cfg)}")
+    print(f"  config     {cfg.path}", flush=True)
+    try:
+        asyncio.run(serve(cfg))
+    except SocketInUse as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
     return 0
 
 

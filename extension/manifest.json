@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "aria2c manager — download catcher",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "description": "Hand the browser's downloads to your local aria2c-manager, with the page's cookies, referer and user-agent.",
   "browser_specific_settings": {
     "gecko": {
@@ -22,7 +22,8 @@
     "storage",
     "notifications",
     "alarms",
-    "tabs"
+    "tabs",
+    "nativeMessaging"
   ],
   "host_permissions": [
     "<all_urls>"
@@ -31,6 +32,7 @@
     "service_worker": "background.js",
     "scripts": [
       "lib/common.js",
+      "lib/link.js",
       "background.js"
     ]
   },

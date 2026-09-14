@@ -5,6 +5,7 @@ import qs.Widgets
 import "../lib/Fmt.js" as Fmt
 import "../lib/OptionHelp.js" as OptionHelp
 import "../lib/Layout.js" as Layout
+import "../lib/Units.js" as Units
 
 Item {
     id: tab
@@ -14,7 +15,7 @@ Item {
     property string search: ""
     //: Open. This is every option aria2 reports, and the person running a
     //: download manager from their bar is the person who wants them. Folding it
-    //: away is what made this panel look less capable than the web UI.
+    //: away is what made this panel look less capable than the manager page.
     property bool showAdvanced: true
 
     //: The log lives at the bottom of this page. `dms ipc call aria2c tab log`
@@ -25,7 +26,7 @@ Item {
 
     readonly property int scrollbarGutter: Layout.SCROLLBAR_GUTTER
 
-    // Same grouping the web UI uses, so both front-ends teach the same map of
+    // Same grouping the manager page uses, so both front-ends teach the same map of
     // aria2's option surface.
     readonly property var groups: [
         {
@@ -71,7 +72,7 @@ Item {
 
     //: aria2's option names carry their topic as a prefix, which is the only
     //: structure on offer for the options beyond the curated set. Same rules and
-    //: same order as the web UI, so both surfaces group them identically.
+    //: same order as the manager page, so both surfaces group them identically.
     readonly property var advancedRules: [
         ["BitTorrent", /^(bt-|dht|peer-|seed-|follow-torrent|listen-port|enable-peer-exchange|max-open-files)/],
         ["Metalink", /^(metalink|follow-metalink)/],
@@ -129,7 +130,8 @@ Item {
         var changed = 0
         for (const key in edits) {
             const original = current[key] === undefined || current[key] === null ? "" : String(current[key])
-            if (String(edits[key]) !== original) {
+            // By value: "32M" and "33554432" are the same setting.
+            if (!Units.same(edits[key], original)) {
                 options[key] = String(edits[key])
                 changed++
             }
@@ -253,74 +255,12 @@ Item {
                 color: Theme.surfaceText
             }
 
-            Rectangle {
-                width: parent.width
-                height: webUiRow.implicitHeight + Theme.spacingM * 2
-                radius: Theme.cornerRadius
-                color: Theme.surfaceContainer
-                border.width: 1
-                border.color: Theme.withAlpha(Theme.outline, 0.12)
-
-                Item {
-                    id: webUiRow
-
-                    anchors.left: parent.left
-                    anchors.right: parent.right
-                    anchors.top: parent.top
-                    anchors.margins: Theme.spacingM
-                    implicitHeight: Math.max(webUiText.implicitHeight, webUiToggle.height)
-
-                    Column {
-                        id: webUiText
-
-                        anchors.left: parent.left
-                        anchors.right: webUiToggle.left
-                        anchors.rightMargin: Theme.spacingM
-                        anchors.verticalCenter: parent.verticalCenter
-                        spacing: 2
-
-                        StyledText {
-                            width: parent.width
-                            text: "Web UI"
-                            font.pixelSize: Theme.fontSizeMedium
-                            color: Theme.surfaceText
-                        }
-
-                        StyledText {
-                            width: parent.width
-                            text: {
-                                if (!tab.service)
-                                    return ""
-                                const base = "Serve the browser UI at " + tab.service.baseUrl + "/. "
-                                return base + (tab.service.restartRequired
-                                    ? "Restart the manager to apply."
-                                    : "Off by default — this widget talks to the API directly.")
-                            }
-                            font.pixelSize: Theme.fontSizeSmall
-                            color: tab.service && tab.service.restartRequired ? Theme.warning : Theme.surfaceVariantText
-                            wrapMode: Text.WordWrap
-                        }
-                    }
-
-                    BoolSwitch {
-                        id: webUiToggle
-
-                        anchors.right: parent.right
-                        anchors.verticalCenter: parent.verticalCenter
-                        checked: tab.service ? tab.service.webUiEnabled : false
-                        onToggled: checked => tab.service.setManagerConfig({
-                                                                               "web_ui": checked
-                                                                           }, checked ? "Web UI on after a restart" : "Web UI off after a restart")
-                    }
-                }
-            }
-
             DankButton {
                 text: "Restart manager"
                 iconName: "restart_alt"
                 buttonHeight: 40
-                backgroundColor: tab.service && tab.service.restartRequired ? Theme.primary : Theme.surfaceContainerHigh
-                textColor: tab.service && tab.service.restartRequired ? Theme.onPrimary : Theme.surfaceText
+                backgroundColor: Theme.surfaceContainerHigh
+                textColor: Theme.surfaceText
                 onClicked: tab.service.restartManager()
             }
 

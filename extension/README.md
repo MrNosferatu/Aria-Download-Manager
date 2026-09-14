@@ -31,7 +31,13 @@ Segmented streams need ffmpeg installed where the manager runs; a progressive
 * **Chromium / Chrome** — `chrome://extensions` → *Developer mode* →
   *Load unpacked* → pick this directory.
 
-Then check the server URL in Settings matches `server.port` in `config.yaml`.
+Then register the native-messaging host once and restart the browser:
+
+```sh
+python3 -m aria2c_manager --install-native-host
+```
+
+Settings → *Test connection* confirms it and shows the socket it reached.
 
 ## How it works
 
@@ -39,20 +45,35 @@ Then check the server URL in Settings matches `server.port` in `config.yaml`.
 browser starts a download ─→ downloads.onCreated
                               ├─ cancel + erase the browser's copy
                               └─ POST /api/intake/add  (url, cookies, referer, UA)
+                                   │
+                                   └─ runtime.connectNative("com.aria2c.manager")
+                                        └─ native_host.py ─→ $XDG_RUNTIME_DIR/aria2c-manager.sock
 ```
 
-Everything that touches the network lives in `background.js`, because only the
-background context can read the cookie store — which is how `HttpOnly` session
-cookies reach aria2. The content script only captures clicks, draws toasts and
-harvests links for the context menus.
+Requests go through native messaging rather than `fetch()` to `127.0.0.1`,
+because a VPN or proxy built into the browser can route loopback traffic away
+and leave the manager unreachable. A native host is a local process with pipes
+and never touches the network. One port serves every request and closes after
+20 s idle. Replies over Chrome's 1 MiB host-message limit arrive split into
+parts, and `lib/link.js` joins them back together. The manager has no network
+port, so there is nothing else to fall back to: a browser that cannot run the
+host (Flatpak, Snap) cannot use the extension.
+
+Download handoff lives in `background.js`, because only the background context
+can read the cookie store — which is how `HttpOnly` session cookies reach aria2.
+The manager page (`manager/`) talks to the manager directly through the same
+`lib/link.js`. The content script never contacts the manager: it only captures
+clicks, draws toasts and harvests links for the context menus.
 
 | File | Role |
 | --- | --- |
 | `manifest.json` | MV3; declares both `background.service_worker` (Chrome) and `background.scripts` (Firefox) |
-| `lib/common.js` | settings defaults + storage, the HTTP client, and the "is this a download?" rules — loaded by every surface |
+| `lib/common.js` | settings defaults + storage, `request()` for the background, and the "is this a download?" rules — loaded by every surface |
 | `background.js` | download interception, context menus, notifications, badge, all manager requests |
 | `content.js` | click capture, in-page toasts, link harvesting |
-| `popup.html/js` | toolbar popup: live status, quick add, per-site switch |
+| `lib/link.js` | the connection to the manager over native messaging (requests and the live event stream); shared by the background and the manager page |
+| `manager/` | the full manager UI, opened from the popup |
+| `popup.html/js` | toolbar popup: live status, quick add, per-site switch, opens the full manager |
 | `options.html/js` | settings page |
 | `ui.css` | shared styling for popup + options |
 

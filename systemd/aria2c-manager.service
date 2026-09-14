@@ -1,5 +1,5 @@
 [Unit]
-Description=aria2c manager (background aria2c server + web UI)
+Description=aria2c manager (background aria2c server for the extension and DMS widget)
 Documentation=file:%h/GitHub/Aria2C/README.md
 After=network-online.target
 Wants=network-online.target

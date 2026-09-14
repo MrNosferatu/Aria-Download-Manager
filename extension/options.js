@@ -3,12 +3,31 @@
 const $ = (id) => document.getElementById(id);
 const CHECKBOXES = ['enabled', 'intercept', 'capture', 'captureMagnets', 'altClick',
   'paused', 'notify', 'pageToasts', 'videoSniffer'];
-const TEXTS = ['server', 'dir'];
+const TEXTS = ['dir'];
+
+const MIB = 1024 * 1024;
+
+/* The setting is stored in MiB (what background.js compares against), but shown
+   as a number and a unit, in the largest unit it reaches 1 in. */
+function fillMinSize(mib) {
+  const bytes = (Number(mib) || 0) * MIB;
+  const units = [...$('minSizeUnit').options].map((o) => Number(o.value));
+  let unit = MIB;
+  for (const size of units) if (bytes >= size) unit = size;
+  $('minSize').value = bytes ? String(+(bytes / unit).toFixed(2)) : '';
+  $('minSizeUnit').value = String(bytes ? unit : MIB);
+}
+
+function readMinSize() {
+  const amount = Number($('minSize').value.trim());
+  if (!Number.isFinite(amount) || amount <= 0) return 0;
+  return (amount * Number($('minSizeUnit').value)) / MIB;
+}
 
 function fill(settings) {
   for (const key of CHECKBOXES) $(key).checked = !!settings[key];
   for (const key of TEXTS) $(key).value = settings[key] || '';
-  $('minSizeMB').value = settings.minSizeMB || 0;
+  fillMinSize(settings.minSizeMB);
   $('extensions').value = (settings.extensions || []).join(', ');
   $('blockedHosts').value = (settings.blockedHosts || []).join('\n');
 }
@@ -16,9 +35,8 @@ function fill(settings) {
 function collect() {
   const patch = {};
   for (const key of CHECKBOXES) patch[key] = $(key).checked;
-  patch.server = $('server').value.trim() || DEFAULTS.server;
   patch.dir = $('dir').value.trim();
-  patch.minSizeMB = Math.max(0, Number($('minSizeMB').value) || 0);
+  patch.minSizeMB = readMinSize();
   patch.extensions = $('extensions').value
     .split(',')
     .map((s) => s.trim().replace(/^\./, '').toLowerCase())
@@ -48,13 +66,11 @@ async function init() {
   });
 
   $('test').addEventListener('click', async () => {
-    // Test what is typed in the box, not what was last saved.
-    await saveSettings({ server: $('server').value.trim() || DEFAULTS.server });
     const reply = await api.runtime.sendMessage({ type: 'ping' });
     const out = $('test-result');
     if (reply && reply.ok) {
       const info = reply.info || {};
-      out.textContent = `connected — ${info.name} ${info.version}, aria2 ${info.aria2 ? 'up' : 'down'}`;
+      out.textContent = `connected via ${info.socket || 'the socket'} — ${info.name} ${info.version}, aria2 ${info.aria2 ? 'up' : 'down'}`;
       out.className = 'hint ok';
     } else {
       out.textContent = (reply && reply.error) || 'failed';

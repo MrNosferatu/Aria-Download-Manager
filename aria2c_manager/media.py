@@ -149,10 +149,6 @@ def kind_for(url: str, content_type: str = "") -> str:
     return "unknown"
 
 
-def is_media(url: str, content_type: str = "") -> bool:
-    return kind_for(url, content_type) != "unknown"
-
-
 # --------------------------------------------------------------------- HLS
 _ATTR = re.compile(r'([A-Z0-9-]+)=("[^"]*"|[^,]*)')
 

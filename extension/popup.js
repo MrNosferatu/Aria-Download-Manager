@@ -15,7 +15,7 @@ async function refresh() {
   if (!reply || !reply.ok) {
     setStatus('Offline', 'err');
     $('list').innerHTML = '';
-    $('empty').textContent = 'Manager unreachable. Check the server URL in Settings.';
+    $('empty').textContent = `Manager unreachable: ${(reply && reply.error) || 'no reply'}.`;
     $('empty').hidden = false;
     return;
   }
@@ -120,7 +120,7 @@ async function init() {
     if (!url) return;
     const reply = await api.runtime.sendMessage({
       type: 'send',
-      item: { url, referer: '', cookie: '', source: 'popup' },
+      item: { url, referer: '', source: 'popup' },
     });
     if (reply && reply.ok) {
       $('url').value = '';
@@ -130,8 +130,19 @@ async function init() {
     }
   });
 
-  $('open-ui').addEventListener('click', () => {
-    api.tabs.create({ url: baseUrl(settings.server) + '/' });
+  // The full manager ships inside the extension, so it opens without the
+  // manager's web server. An already-open copy is brought forward instead of
+  // stacking up a new tab per click.
+  $('open-ui').addEventListener('click', async () => {
+    const url = api.runtime.getURL('manager/index.html');
+    // Match patterns do not cover extension URLs, so filter by hand.
+    const open = (await api.tabs.query({})).find((t) => (t.url || '').startsWith(url));
+    if (open) {
+      await api.tabs.update(open.id, { active: true });
+      await api.windows.update(open.windowId, { focused: true });
+    } else {
+      await api.tabs.create({ url });
+    }
     window.close();
   });
 

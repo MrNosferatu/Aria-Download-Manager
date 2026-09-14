@@ -1,19 +1,25 @@
 # aria2c manager
 
-A background download server built on aria2c, with a web UI to manage the queue
-and a browser extension that hands the browser's own downloads to it. Every aria2
-capability that matters for downloading — queueing, splitting a file into parts,
-parallel downloads, parallel connections per server, speed limits, BitTorrent —
-is exposed in the UI, and a small rules engine can take automatic action on a
-download when it misbehaves (for example: *speed under 50 KiB/s for 3 seconds →
-pause and resume*).
+A background download server built on aria2c, driven from a browser extension
+(which hands it the browser's own downloads and carries the full manager UI) and,
+optionally, a DankMaterialShell bar widget. Every aria2 capability that matters
+for downloading — queueing, splitting a file into parts, parallel downloads,
+parallel connections per server, speed limits, BitTorrent — is exposed in the UI,
+and a small rules engine can take automatic action on a download when it
+misbehaves (for example: *speed under 50 KiB/s for 3 seconds → pause and resume*).
 
 ```
-Extension ─────POST /api/intake/add─────┐
-                                         ├─→ manager (FastAPI) ──JSON-RPC──→ aria2c
-Browser UI ──REST + SSE─────────────────┘        │
-                                                  └── rules engine (1 Hz tick)
+Extension ──native messaging──→ native host ──┐
+                                              ├─ Unix socket ─→ manager ──JSON-RPC──→ aria2c
+DankBar widget (optional) ────────────────────┘                   │
+                                                                  └── rules engine (1 Hz tick)
 ```
+
+The manager listens on nothing but a Unix socket
+(`$XDG_RUNTIME_DIR/aria2c-manager.sock`). A socket is not network traffic, so a
+VPN or proxy built into the browser cannot route it away the way it can with
+`127.0.0.1` — and there is no port for anything else to reach. The only TCP in
+the picture is the manager's own link to aria2c's RPC on loopback.
 
 The manager owns the aria2c process: it spawns it, waits for its RPC to answer,
 restarts it if it dies, and shuts it down cleanly on exit — including on SIGHUP,
@@ -33,15 +39,16 @@ sudo apt install aria2      # Debian/Ubuntu
 sudo dnf install aria2      # Fedora
 ```
 
-The Python side needs `fastapi`, `uvicorn`, `aiohttp` and `PyYAML`, which are
-already present on this machine's system Python. On another machine:
+The Python side needs `fastapi`, `aiohttp` and `PyYAML`, which are already
+present on this machine's system Python. On another machine:
 
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 ```
 
-Live updates use Server-Sent Events, so no `websockets` package is needed, and
-`.torrent` uploads travel as base64 JSON, so no `python-multipart` either.
+There is no web server: FastAPI only routes the requests that arrive on the
+socket, in-process. `.torrent` uploads travel as base64 JSON, so no
+`python-multipart` either.
 
 ## 2. Run
 
@@ -52,8 +59,7 @@ cp config.example.yaml config.yaml     # optional; defaults work as-is
 
 ```
 aria2c-manager 1.0.0
-  web UI     http://127.0.0.1:6810/
-  intake     POST http://127.0.0.1:6810/api/intake/add
+  socket     /run/user/1000/aria2c-manager.sock
   config     /home/you/GitHub/Aria2C/config.yaml
 ```
 
@@ -61,12 +67,11 @@ Useful flags:
 
 | Flag | Purpose |
 | --- | --- |
-| `--port 6810` / `--host` | override the listen address |
-| `--open` | open the web UI in a browser |
 | `--no-aria2` | attach to an aria2c you already run instead of spawning one |
 | `--print-argv` | show the exact aria2c command line that would be used |
 | `--print-config` | show the effective config after merging defaults |
 | `-c FILE` | use a different config file |
+| `--install-native-host` | register the extension's IPC bridge with Firefox and Chromium browsers (see §3) |
 
 ### Run it in the background at login
 
@@ -101,9 +106,9 @@ adopts it again next time.
 
 ## 3. Browser extension
 
-`extension/` is the browser half: it takes over the browser's own downloads and
-hands them here. Firefox is the supported target; the same directory also loads
-in Chromium.
+`extension/` is the browser half: it takes over the browser's own downloads,
+hands them here, and carries the full manager UI. Firefox is the supported
+target; the same directory also loads in Chromium.
 
 **Install it** — pick one:
 
@@ -115,9 +120,25 @@ in Chromium.
 | Unpacked, Chromium | `chrome://extensions` → *Developer mode* → *Load unpacked* → `extension/` | yes |
 
 Signing needs a free AMO API key; `extension/store/listing.md` has the
-submission material, and `extension/build.sh` wraps the packaging. Then open the
-extension's Settings and check the server URL matches `server.port` in
-`config.yaml`.
+submission material, and `extension/build.sh` wraps the packaging.
+
+**Register the IPC bridge once.** The extension reaches the manager through
+native messaging: the browser starts a small host process
+(`aria2c_manager/native_host.py`), which relays to the manager's Unix socket.
+Nothing goes over the network, so an in-browser VPN cannot get in the way.
+
+```bash
+python3 -m aria2c_manager --install-native-host
+```
+
+That writes a launcher to `~/.local/share/aria2c-manager/` and a host manifest
+for Firefox (`~/.mozilla/native-messaging-hosts/`) and for every Chromium-family
+browser that has the extension loaded unpacked from this checkout — the
+extension id is read from the browser profile. For a packed Chromium install,
+pass `--chrome-extension-id ID`. Restart the browser afterwards. Re-run it if you
+move the checkout or change `server.socket`. Browsers installed as Flatpak or
+Snap cannot start host processes outside their sandbox, so they cannot use the
+extension; use a native package.
 
 **It takes over the browser's own downloads.** Anything the browser starts to
 download is cancelled, wiped from the download list, and queued in aria2c
@@ -132,22 +153,14 @@ On top of that:
 
 | Surface | What it does |
 | --- | --- |
-| Toolbar popup | live speed, active/queued counts, progress of what is running, a box to paste a URL or magnet, and a per-site *skip auto-capture* switch |
+| Toolbar popup | live speed, active/queued counts, progress of what is running, a box to paste a URL or magnet, and a per-site *skip auto-capture* switch, and the button that opens the full manager (§5) |
 | Badge | number of active downloads, `!` when the manager is unreachable |
 | Right-click a link / image / video / audio | send just that one |
 | Right-click a page | send the page URL, or every downloadable link on it |
 | Right-click a selection | send every link inside it |
 | Click capture | left-click on a magnet, or on a link the browser would *render* rather than download, sends it here instead |
 | Alt+click | sends any link, even with capture off |
-| Settings page | server URL, save directory, add-paused, minimum size, which extensions count, per-host blocklist, notification style |
-
-Anything else can post to the same endpoint:
-
-```bash
-curl -X POST http://127.0.0.1:6810/api/intake/add \
-  -H 'Content-Type: application/json' \
-  -d '{"url": "https://example.com/big.iso", "filename": "big.iso"}'
-```
+| Settings page | connection test, save directory, add-paused, minimum size, which extensions count, per-host blocklist, notification style |
 
 ## 4. Custom download actions (the rules engine)
 
@@ -250,25 +263,17 @@ rules at once, and each download's row shows a live countdown badge
 (`stall-recovery 2.1/3s`) plus a trigger count, so you can see a rule building up
 before it fires. Every trigger is written to the **Log** tab.
 
-## 5. Web UI
+## 5. The manager page
 
-The browser UI is **opt-in**: `server.web_ui` defaults to `false`, because the
-DankMaterialShell widget and the browser extension both drive the API directly
-and most sessions never open a browser tab for it. Three ways to turn it on:
+The extension carries the whole manager UI: *open the full manager* in its
+toolbar popup opens it in a tab (or brings an open one forward). It talks to the
+manager through the native-messaging host and the socket, like everything else
+in the extension. The files are `extension/manager/`.
 
-* the **Web UI** switch in the widget's Settings tab, then *Restart manager*;
-* `server.web_ui: true` in `config.yaml`;
-* `python3 -m aria2c_manager --web-ui` for one run (`--open` implies it).
-
-Mounting the UI can only happen at startup, so the switch writes the config and
-asks for a restart — `POST /api/restart` exits cleanly and the service unit
-(`Restart=always`) brings the manager straight back.
-
-With it off, `/` returns a short JSON note saying so and everything under `/api`
-is unchanged. What the UI actually costs while idle is one 1 Hz poll of aria2 —
-and that now backs off to `poll_interval_idle` (5 s) whenever nothing is
-downloading *and* no UI is connected to the event stream, so an idle manager
-with no windows open barely ticks. Any command wakes it immediately.
+The manager polls aria2 once a second, and backs off to `poll_interval_idle`
+whenever nothing is downloading *and* nothing is subscribed to the live stream,
+so an idle manager with no windows open barely ticks. Any command wakes it
+immediately.
 
 **Downloads** — one row per download with progress, speed, ETA, live connection
 count and seeders. Filter chips by status, plus a name filter. Row actions:
@@ -311,6 +316,15 @@ resuming or removing several at once.
 
 Press `n` anywhere to open the add dialog.
 
+**Speeds and sizes** — every speed limit, part size, cache size and the rules'
+speed threshold is a number plus a unit (B/s · KiB/s · MiB/s · GiB/s, or
+B · KiB · MiB · GiB), shown in the most readable unit — `12 MiB/s`, not
+`12582912`. Changing the unit reinterprets the number you typed, shorthand like
+`12M` typed into the box works too, and an empty speed limit means no limit.
+Values are still stored as bytes, which is what aria2 and `config.yaml` get.
+The DankBar widget and the extension's minimum-size setting use the same
+control.
+
 ### Removing a download, and its bytes
 
 aria2 never deletes anything itself, so a removed download used to leave its part
@@ -326,14 +340,13 @@ directory, only ever touches the paths aria2 reported for that download plus
 their `.aria2` control files, and refuses anything that is not a regular file.
 Emptied folders left by a multi-file torrent are pruned.
 
-### The same UI on the DankBar
+### The same UI on the DankBar (optional)
 
-If you run [DankMaterialShell](https://danklinux.com), `dms-plugin/` is the whole
-web UI as a DMS plugin: a download icon on the bar showing live speed, clicked to
+If you run [DankMaterialShell](https://danklinux.com), `dms-plugin/` is the same
+manager as a DMS plugin: a download icon on the bar showing live speed, clicked to
 open a panel with Downloads, Rules and Settings (the event log folds away at the
-bottom of Settings). It is a second front-end onto this daemon —
-same `/api` endpoints, same `/api/events` stream — so the browser and the bar can
-be open at once. Right-clicking the icon gives quick actions (pause/resume all,
+bottom of Settings). It is a second front-end onto this daemon over the same
+socket, so the extension's manager page and the bar can be open at once. Right-clicking the icon gives quick actions (pause/resume all,
 purge, add from clipboard), and the panel can be detached into an ordinary
 window that survives a click elsewhere.
 
@@ -362,18 +375,18 @@ button asks the manager to read that manifest, and offers what it found.
 ```
 page fetches manifest ──► extension sniffs it (webRequest, observation only)
                             │
-                            └─► POST /api/media/probe   → 1080p60 / 720p / 360p
+                            └─► /api/media/probe        → 1080p60 / 720p / 360p
                                      │  (with the page's cookies, so a
                                      │   members-only stream probes correctly)
-                                     └─► POST /api/media/download
+                                     └─► /api/media/download
                                             ├─ progressive file → aria2, as usual
                                             └─ HLS/DASH → ffmpeg fetches the
                                                segments and muxes them into one
                                                .mp4, reported as a media job
 ```
 
-Stream jobs appear in every `/api/state` frame under `media`, so both front-ends
-see them alongside ordinary downloads.
+Stream jobs appear in every state frame under `media`, so both front-ends see
+them alongside ordinary downloads.
 
 **Requires ffmpeg** for segmented streams — it is what fetches the parts and
 joins them. A progressive `.mp4` needs nothing extra and goes to aria2 like any
@@ -383,12 +396,23 @@ other download.
 Widevine, and the keys live in a module the browser will not hand over. That is
 a hard boundary, not a missing feature.
 
-## 6. HTTP API
+## 6. API (over the socket)
+
+The protocol is newline-delimited JSON: send
+`{"id": 1, "method": "GET", "path": "/api/state"}` and get back
+`{"id": 1, "status": 200, "body": {...}}`. `{"method": "SUBSCRIBE"}` starts the
+live frames on that connection as `{"event": "state", "data": {...}}` lines
+(`state`, `event`, `backlog`, `shutdown`), and `UNSUBSCRIBE` stops them. Requests
+on one connection are answered concurrently.
+
+```bash
+echo '{"id":1,"method":"GET","path":"/api/intake/ping"}' \
+  | socat - UNIX-CONNECT:$XDG_RUNTIME_DIR/aria2c-manager.sock
+```
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| `GET` | `/api/state` | latest snapshot |
-| `GET` | `/api/events` | SSE stream of `state`, `event`, `backlog` frames |
+| `GET` | `/api/state` | latest snapshot, including aria2c's process status under `aria2` |
 | `GET` | `/api/log` | recent events and rule triggers |
 | `POST` | `/api/downloads` | add URIs (`{uris, options, position, paused, mirrors}`) |
 | `POST` | `/api/downloads/file` | add a base64 `.torrent`/`.metalink` |
@@ -399,29 +423,27 @@ a hard boundary, not a missing feature.
 | `POST` | `/api/downloads/bulk` | one action across a chosen set (`{action, gids, delete_files, force}`) |
 | `POST` | `/api/media/probe` | read a stream manifest and list its qualities (`{url, cookie, referer, user_agent}`) |
 | `POST` | `/api/media/download` | queue a chosen quality — aria2 for a file, ffmpeg for a stream |
-| `GET` | `/api/media/jobs` | the running stream jobs; also in every `/api/state` frame under `media` |
-| `DELETE` | `/api/media/job/{id}` | cancel a running job, or drop a finished one (`?delete_file=`) |
-| `POST` | `/api/global/pause-all\|resume-all\|purge\|save-session` | queue-wide commands |
+| `POST` | `/api/global/pause-all\|resume-all\|purge` | queue-wide commands |
 | `GET`/`POST` | `/api/global/options` | read/write global aria2 options |
 | `GET`/`POST` | `/api/rules` | read/replace rules; `POST /api/rules/{name}/toggle` |
-| `GET` | `/api/aria2/status`, `POST /api/aria2/restart` | aria2c process supervision |
-| `GET`/`POST` | `/api/config` | read the config / change `web_ui`, `poll_interval`, `poll_interval_idle` |
+| `POST` | `/api/aria2/restart` | restart aria2c |
+| `GET` | `/api/config` | the effective config (RPC secret redacted) |
 | `POST` | `/api/restart` | restart the manager itself (needs `Restart=always`) |
 | `GET` | `/api/history` | finished downloads recorded across restarts (`?limit=&status=`) |
 | `POST` | `/api/history/readd` | queue a past download again (`{key}`) |
 | `POST` | `/api/history/remove`, `/api/history-clear` | forget one entry / all of them |
-| `POST` | `/api/intake/add` | lenient intake used by the extension (alias: `/api/userscript/add`) |
-| `GET` | `/api/intake/ping` | readiness probe for the extension (alias: `/api/userscript/ping`) |
+| `POST` | `/api/intake/add` | lenient intake used by the extension |
+| `GET` | `/api/intake/ping` | readiness probe: version, whether aria2c is up, the socket path |
 
-aria2 errors come back as HTTP 502 with the aria2 message; if aria2c is not
+aria2 errors come back as status 502 with the aria2 message; if aria2c is not
 running at all, commands return 503 explaining why rather than a bare 500.
 
 ## 7. Security
 
-There is **no authentication**, by design — the server binds `127.0.0.1` only,
-and CORS is open because the extension posts from arbitrary page origins. Do not
-bind it to `0.0.0.0`: anything that can reach the port can queue downloads and
-read your download list. The manager warns on startup if you do.
+There is **no authentication**, by design, and nothing that needs it: the manager
+opens no network port at all. Its socket is created with mode `0600` inside
+`$XDG_RUNTIME_DIR` (itself `0700`), so only your user can connect, and no website
+can reach it through your browser.
 
 The aria2 RPC secret is generated randomly on first run and stored at
 `~/.local/share/aria2c-manager/rpc-secret` with `0600` permissions (a secret you
@@ -437,10 +459,12 @@ installation is required** to run it:
 
 ```bash
 python3 tests/test_manager.py     # the whole manager suite
+python3 tests/test_ipc.py         # Unix socket, event stream, native-messaging host
 ```
 
-It covers config merging and persistence, the aria2c command line, the REST and
-SSE surface, adding/pausing/removing/repositioning, global options, the
+It covers config merging and persistence, the aria2c command line, the API and
+live stream over the socket (and that no TCP port is opened),
+adding/pausing/removing/repositioning, global options, the
 browser intake (including that a `../../escape.iso` filename is reduced to a
 basename), managed-mode process supervision (spawn → SIGKILL → automatic
 restart → clean shutdown), the orphan cases above (SIGHUP exits with code 0 and
@@ -456,9 +480,9 @@ Other tools:
 python3 tests/fake_aria2.py --port 6800     # fake aria2 you can point the manager at
 python3 -m aria2c_manager --no-aria2        # ...then attach to it
 
-# Render the UI to a self-contained HTML file (screenshot-able offline)
-python3 tests/render_ui.py --base http://127.0.0.1:6810 --tab downloads --expand \
-    --out /tmp/ui.html
+# Render the manager page from a running manager to a self-contained HTML file
+# (opens offline, screenshot-able headless)
+python3 tests/render_ui.py --tab downloads --expand --out /tmp/ui.html
 ```
 
 `tests/fake_aria2.py` seeds a download that deliberately stalls after 4 seconds,
@@ -471,7 +495,8 @@ to misbehave.
 | --- | --- |
 | `aria2c binary 'aria2c' not found in PATH` | install aria2, or set `aria2.binary` to a full path |
 | `aria2c exited during startup` | usually an invalid option in `aria2.options`; check `~/.local/share/aria2c-manager/aria2.log`, or run `--print-argv` |
-| The extension says "cannot reach the manager" | manager not running, or the server URL in its Settings does not match your port |
+| The extension says "the native host is not installed" | run `python3 -m aria2c_manager --install-native-host`, then restart the browser |
+| The extension or widget says "aria2c-manager is not running (no socket at …)" | start the manager; if `server.socket` is set, re-run `--install-native-host` and set the widget's *Manager socket* to match |
 | A download still lands in the browser | interception is off in Settings, the host is on the blocklist, or it is a `blob:`/`data:` URL aria2 cannot fetch |
 | The extension vanished after restarting Firefox | temporary add-ons do not survive a restart — see §3 |
 | Unfinished downloads did not come back after a restart | they resume from `aria2.session_file` (written every 30 s and on clean shutdown) plus the `.aria2` file beside the partial download — check both still exist |
@@ -492,12 +517,15 @@ aria2c_manager/
   config.py       YAML config: defaults, merge, persistence
   rpc.py          async aria2 JSON-RPC client (HTTP transport)
   supervisor.py   spawn / health-check / restart / shut down aria2c
-  state.py        1 Hz poller, snapshot normalisation, SSE fan-out
+  state.py        1 Hz poller, snapshot normalisation, live-stream fan-out
   rules.py        custom download actions
-  api.py          FastAPI routes
-  static/         web UI (no build step, no dependencies)
-dms-plugin/       DankMaterialShell bar widget (same API, QML front-end)
+  api.py          the API: FastAPI routes, run in-process (no web server)
+  ipc.py          the Unix socket: newline-delimited JSON into those routes
+  native_host.py  native-messaging bridge for the extension (stdlib only)
+dms-plugin/       DankMaterialShell bar widget (optional; QML front-end over the socket)
 extension/        browser extension (Firefox + Chromium, MV3)
+  manager/        the full manager page, opened from the popup
+  lib/link.js     the native-messaging connection, shared by the background and the page
 tests/            fake aria2, suites, UI render harness
 systemd/          user service unit
 ```

@@ -1,45 +1,35 @@
-"""FastAPI application: REST commands, SSE state stream, browser intake."""
+"""The manager's API: routes and validation by FastAPI, run in-process and served
+only over the IPC socket (see ipc.py). Nothing here listens on the network."""
 
 from __future__ import annotations
 
 import asyncio
 import base64
 import binascii
-import json
 import os
 import signal
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import aiohttp
 from fastapi import Body, FastAPI, HTTPException, Request
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
-from fastapi.staticfiles import StaticFiles
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from . import files as filetools
 from . import media as mediatools
-from .config import STATIC_DIR, Config, stringify
+from .config import Config, stringify
 from .mediajobs import MediaJobs
 from .history import History
+from .ipc import IPCServer, socket_path_for
 from .rpc import DETAIL_KEYS, Aria2Error, Aria2RPC
 from .rules import ACTIONS, SPEED_SOURCES, RuleEngine
 from .state import Poller, Store
 from .supervisor import Aria2Supervisor
 
 VERSION = "1.0.0"
-
-FAVICON_SVG = (
-    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">'
-    '<rect width="32" height="32" rx="7" fill="#161a21"/>'
-    '<path d="M16 5v13m0 0l-6-6m6 6l6-6" stroke="#4c8dff" stroke-width="3.2" '
-    'fill="none" stroke-linecap="round" stroke-linejoin="round"/>'
-    '<rect x="8" y="23" width="16" height="3.2" rx="1.6" fill="#4c8dff"/>'
-    "</svg>"
-)
-
 
 # --------------------------------------------------------------------------
 # request models
@@ -72,19 +62,6 @@ class OptionsRequest(BaseModel):
 class PositionRequest(BaseModel):
     pos: int
     how: str = "POS_SET"  # POS_SET | POS_CUR | POS_END
-
-
-class ManagerConfigRequest(BaseModel):
-    """The handful of manager settings a UI may change.
-
-    Deliberately not a free-form config writer: everything else in config.yaml
-    is either machine-specific or unsafe to change from an unauthenticated
-    loopback API.
-    """
-
-    web_ui: bool | None = None
-    poll_interval: float | None = None
-    poll_interval_idle: float | None = None
 
 
 class RulesRequest(BaseModel):
@@ -227,10 +204,6 @@ def piece_map(bitfield: str, num_pieces: int, buckets: int = 256) -> list[int]:
     return out
 
 
-def sse_frame(message: dict) -> str:
-    return f"event: {message.get('type', 'message')}\ndata: {json.dumps(message.get('data'))}\n\n"
-
-
 def decode_b64(data: str, what: str) -> str:
     payload = data.split(",", 1)[1] if data.startswith("data:") else data
     payload = payload.strip()
@@ -239,6 +212,19 @@ def decode_b64(data: str, what: str) -> str:
     except (binascii.Error, ValueError) as exc:
         raise HTTPException(400, f"{what} is not valid base64: {exc}") from exc
     return payload
+
+
+async def run(app: FastAPI, stop: asyncio.Event, started: Callable[[], None] | None = None) -> None:
+    """Run the manager until `stop` is set.
+
+    Takes the place of a web server: startup (the socket, aria2c, the poller) and
+    shutdown are the app's lifespan, and there are no connections to serve other
+    than the ones the socket accepts itself.
+    """
+    async with app.router.lifespan_context(app):
+        if started:
+            started()
+        await stop.wait()
 
 
 # --------------------------------------------------------------------------
@@ -276,6 +262,9 @@ def create_app(cfg: Config) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
+        # First, and fatal if it fails: the socket is the only way in, and a
+        # second manager must find out before it touches aria2c.
+        await ipc.start()
         await rpc.start()
         store.add_event("info", f"aria2c-manager {VERSION} starting")
         try:
@@ -283,11 +272,16 @@ def create_app(cfg: Config) -> FastAPI:
         except Exception as exc:
             supervisor.last_error = str(exc)
             store.add_event("error", f"aria2c unavailable: {exc}")
+        # Say whether aria2c came up now, not after the first poll: against an
+        # RPC port that never answers, that poll takes a full timeout to fail.
+        store.set_snapshot({**store.snapshot, "ts": time.time(), "aria2": supervisor.status()})
         poller.start()
+        store.add_event("info", f"IPC socket listening at {ipc.path}")
         try:
             yield
         finally:
             store.publish({"type": "shutdown", "data": {"ok": True}})
+            await ipc.stop()
             await media_jobs.shutdown()
             history.save(force=True)
             await poller.stop()
@@ -295,15 +289,7 @@ def create_app(cfg: Config) -> FastAPI:
             await rpc.close()
 
     app = FastAPI(title="aria2c-manager", version=VERSION, lifespan=lifespan)
-    # Open CORS on purpose: the extension posts from arbitrary page origins and
-    # the server is bound to loopback with no credentials of its own.
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=["*"],
-        allow_credentials=False,
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
+    ipc = IPCServer(app, store, socket_path_for(cfg))
     app.state.cfg = cfg
     app.state.rpc = rpc
     app.state.store = store
@@ -312,6 +298,7 @@ def create_app(cfg: Config) -> FastAPI:
     app.state.poller = poller
     app.state.history = history
     app.state.media_jobs = media_jobs
+    app.state.ipc = ipc
 
     @app.exception_handler(Aria2Error)
     async def aria2_error_handler(request: Request, exc: Aria2Error):
@@ -344,10 +331,6 @@ def create_app(cfg: Config) -> FastAPI:
         )
 
     # ---- meta ------------------------------------------------------------
-    @app.get("/api/ping")
-    async def ping():
-        return {"ok": True, "name": "aria2c-manager", "version": VERSION}
-
     @app.get("/api/state")
     async def get_state():
         return store.snapshot
@@ -356,43 +339,9 @@ def create_app(cfg: Config) -> FastAPI:
     async def get_config():
         return cfg.public()
 
-    @app.post("/api/config")
-    async def set_config(req: ManagerConfigRequest):
-        changed: dict[str, Any] = {}
-        # `save()` writes the user's own file back, so every change has to land
-        # in both the live config and that copy.
-        if req.web_ui is not None:
-            cfg.data["server"]["web_ui"] = bool(req.web_ui)
-            cfg._user.setdefault("server", {})["web_ui"] = bool(req.web_ui)
-            changed["server.web_ui"] = bool(req.web_ui)
-        if req.poll_interval is not None:
-            value = max(0.25, float(req.poll_interval))
-            cfg.data["poll_interval"] = value
-            cfg._user["poll_interval"] = value
-            poller.interval = value
-            changed["poll_interval"] = value
-        if req.poll_interval_idle is not None:
-            value = max(poller.interval, float(req.poll_interval_idle))
-            cfg.data["poll_interval_idle"] = value
-            cfg._user["poll_interval_idle"] = value
-            poller.idle_interval = value
-            changed["poll_interval_idle"] = value
-        if not changed:
-            raise HTTPException(400, "nothing to change")
-        cfg.save()
-        store.add_event("info", "Config updated: " + ", ".join(sorted(changed)))
-        # Mounting/unmounting the static UI can only happen at startup, so say
-        # so rather than pretending the toggle took effect.
-        return {
-            "ok": True,
-            "changed": changed,
-            "restartRequired": "server.web_ui" in changed,
-            "config": cfg.public(),
-        }
-
     @app.post("/api/restart")
     async def restart_manager():
-        """Exit so the service manager brings us back with the new config."""
+        """Exit so the service manager brings us back, rereading config.yaml."""
 
         async def bye():
             await asyncio.sleep(0.2)
@@ -400,10 +349,6 @@ def create_app(cfg: Config) -> FastAPI:
 
         asyncio.create_task(bye())
         return {"ok": True, "restarting": True}
-
-    @app.get("/api/aria2/status")
-    async def aria2_status():
-        return supervisor.status()
 
     @app.post("/api/aria2/restart")
     async def aria2_restart():
@@ -414,38 +359,6 @@ def create_app(cfg: Config) -> FastAPI:
     @app.get("/api/log")
     async def get_log(limit: int = 200):
         return {"events": store.event_list(limit), "triggers": engine.trigger_log[:100]}
-
-    # ---- live stream -----------------------------------------------------
-    @app.get("/api/events")
-    async def events(request: Request):
-        queue = store.subscribe()
-
-        async def generator():
-            try:
-                yield sse_frame({"type": "state", "data": store.snapshot})
-                yield sse_frame({"type": "backlog", "data": store.event_list(60)})
-                while True:
-                    if await request.is_disconnected():
-                        return
-                    try:
-                        message = await asyncio.wait_for(queue.get(), timeout=15)
-                    except asyncio.TimeoutError:
-                        yield ": keepalive\n\n"
-                        continue
-                    if message.get("type") == "shutdown":
-                        # The manager is going down; end the response instead of
-                        # holding the shutdown open. Clients reconnect on their own.
-                        yield sse_frame(message)
-                        return
-                    yield sse_frame(message)
-            finally:
-                store.unsubscribe(queue)
-
-        return StreamingResponse(
-            generator(),
-            media_type="text/event-stream",
-            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-        )
 
     # ---- adding ----------------------------------------------------------
     async def _add_uris(req: AddRequest) -> dict:
@@ -608,22 +521,6 @@ def create_app(cfg: Config) -> FastAPI:
             name += ".mp4"
         job = media_jobs.start(variant, name, directory, _media_headers(req))
         return {"ok": True, "kind": "stream", "job": job.as_dict()}
-
-    @app.get("/api/media/jobs")
-    async def media_job_list():
-        return {"ok": True, **media_jobs.public_state()}
-
-    @app.delete("/api/media/job/{job_id}")
-    async def media_job_remove(job_id: str, delete_file: bool = False):
-        """Cancel a running job, or drop a finished one from the list."""
-        job = media_jobs.jobs.get(job_id)
-        if not job:
-            raise HTTPException(404, "no such media job")
-        if job.status in ("running", "queued"):
-            media_jobs.cancel(job_id, delete_file=True)
-        else:
-            media_jobs.remove(job_id, delete_file=delete_file)
-        return {"ok": True}
 
     # ---- per-download ----------------------------------------------------
     @app.get("/api/download/{gid}")
@@ -853,11 +750,6 @@ def create_app(cfg: Config) -> FastAPI:
         poller.poke()
         return {"ok": True}
 
-    @app.post("/api/global/save-session")
-    async def save_session():
-        await rpc.save_session()
-        return {"ok": True}
-
     @app.get("/api/global/options")
     async def get_global_options():
         return await rpc.get_global_option()
@@ -1021,10 +913,7 @@ def create_app(cfg: Config) -> FastAPI:
         return {"ok": True, "removed": removed, "purgedAria2Results": purged}
 
     # ---- browser intake ---------------------------------------------------
-    # /api/userscript/* is the pre-extension name for these two, kept so
-    # anything already posting there keeps working.
     @app.get("/api/intake/ping")
-    @app.get("/api/userscript/ping")
     async def intake_ping():
         return {
             "ok": True,
@@ -1032,11 +921,11 @@ def create_app(cfg: Config) -> FastAPI:
             "version": VERSION,
             "aria2": supervisor.status().get("running", False),
             "defaultDir": cfg.get("aria2.options.dir"),
+            "socket": ipc.path,
         }
 
     @app.post("/api/intake/add")
-    @app.post("/api/userscript/add")
-    async def intake_add(req: IntakeRequest, request: Request):
+    async def intake_add(req: IntakeRequest):
         uris = split_uris(req.urls, req.url)
         if not uris:
             raise HTTPException(400, "no url given")
@@ -1067,7 +956,7 @@ def create_app(cfg: Config) -> FastAPI:
 
         gids = [await rpc.add_uri([uri], dict(options), None) for uri in uris]
         poller.poke()
-        origin = request.headers.get("origin") or req.source or "browser"
+        origin = req.source or "browser"
         store.add_event(
             "info",
             f"Browser queued {os.path.basename(uris[0].split('?')[0]) or uris[0]}"
@@ -1076,38 +965,5 @@ def create_app(cfg: Config) -> FastAPI:
             source=origin,
         )
         return {"ok": True, "gids": gids, "count": len(gids)}
-
-    # ---- static UI -------------------------------------------------------
-    # Off by default: with the DankMaterialShell widget or the browser extension
-    # driving it, the browser UI is optional. The REST/SSE API is unaffected.
-    web_ui = bool(cfg.get("server.web_ui", False))
-    if web_ui and STATIC_DIR.is_dir():
-        app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
-
-        @app.get("/")
-        async def index():
-            return FileResponse(str(STATIC_DIR / "index.html"))
-
-        @app.get("/favicon.ico")
-        async def favicon():
-            # Must carry a real body: a 204 here would send bytes with no
-            # Content-Length, which h11 rejects ("Too much data for declared
-            # Content-Length") on every browser favicon request.
-            logo = STATIC_DIR / "aria2-logo.png"
-            if logo.is_file():
-                return FileResponse(str(logo), media_type="image/png")
-            return Response(content=FAVICON_SVG, media_type="image/svg+xml")
-    else:
-
-        @app.get("/")
-        async def index_disabled():
-            return {
-                "ok": True,
-                "name": "aria2c-manager",
-                "version": VERSION,
-                "webUi": False,
-                "hint": "The web UI is off. Set server.web_ui: true in "
-                        f"{cfg.path}, or start with --web-ui. The API is unaffected.",
-            }
 
     return app

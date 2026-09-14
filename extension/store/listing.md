@@ -22,8 +22,8 @@ referer and user-agent, so login-protected files keep working.
 
 This extension is the browser half of aria2c-manager, a small self-hosted
 download server built on aria2c. It does not download anything by itself and
-sends nothing to the internet — it talks only to the address you set in its
-settings, which defaults to http://127.0.0.1:6810 on your own machine.
+sends nothing to the internet — it talks only to the daemon on your own machine,
+through a small native-messaging helper that the daemon installs.
 
 You need the daemon running first: https://github.com/FHADWA/Aria2C
 
@@ -57,7 +57,8 @@ Reviewers ask about each of these. Short answers:
 | --- | --- |
 | `downloads` | The entire point: `downloads.onCreated` is how a browser download is detected, then `cancel`/`erase` hand it to aria2c rather than downloading it twice. |
 | `cookies` | A download URL is often only valid for the session that produced it. The cookie header is read for the download's own URL and forwarded to the daemon, which passes it to aria2. It covers `HttpOnly` cookies, which `document.cookie` cannot see. |
-| `<all_urls>` | Downloads start from arbitrary sites, so the content script (click capture) and the cookie lookup cannot be restricted to a fixed list. The host permission is also what allows requests to the user's own daemon address, which is configurable. |
+| `<all_urls>` | Downloads start from arbitrary sites, so the content script (click capture) and the cookie lookup cannot be restricted to a fixed list. |
+| `nativeMessaging` | The default way to reach the daemon. The browser starts the daemon's helper (`com.aria2c.manager`), which relays to the daemon's local Unix socket. Unlike a request to `127.0.0.1`, this cannot be intercepted or blocked by a VPN or proxy running inside the browser. |
 | `contextMenus` | The right-click entries. |
 | `notifications` | Reports "queued" / "failed" when no page is in focus to show a toast in. |
 | `storage` | Settings only, stored locally. |
@@ -70,10 +71,9 @@ This extension collects nothing, stores nothing remotely, and contains no
 analytics, telemetry or third-party code.
 
 It sends download URLs, and the cookies/referer/user-agent belonging to those
-URLs, to one destination only: the server address configured in its settings,
-which defaults to `http://127.0.0.1:6810` — the user's own machine. That address
-is the aria2c-manager daemon the user runs themselves. No other network requests
-are made.
+URLs, to one destination only: the aria2c-manager daemon the user runs on their
+own machine, through native messaging to the daemon's local socket — no network
+request at all. No other network requests are made.
 
 Settings are kept in the browser's local extension storage and never leave the
 browser.

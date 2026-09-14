@@ -66,8 +66,6 @@ DankPopout {
                       })
         }
 
-        const webUiOn = on && svc.webUiEnabled
-
         return rows.concat([
                                {
                                    "separator": true
@@ -77,13 +75,6 @@ DankPopout {
                                    "text": on && svc.rulesEnabled ? "Disable rules" : "Enable rules",
                                    "enabled": on,
                                    "action": () => svc.setRulesEnabled(!svc.rulesEnabled)
-                               },
-                               {
-                                   "icon": "open_in_browser",
-                                   "text": Actions.webUiLabel(webUiOn),
-                                   "detail": on && !svc.webUiEnabled ? "off" : "",
-                                   "enabled": webUiOn,
-                                   "action": () => Quickshell.execDetached(["xdg-open", svc.baseUrl + "/"])
                                },
                                {
                                    "separator": true
@@ -197,7 +188,7 @@ DankPopout {
                             text: {
                                 const svc = menu.service
                                 if (!menu.online)
-                                    return "offline — " + (svc ? svc.baseUrl : "")
+                                    return "offline — " + (svc ? svc.socketPath : "")
                                 if (svc.activeCount > 0)
                                     return svc.activeCount + " active · " + Fmt.speed(svc.downloadSpeed)
                                 if (svc.waitingCount > 0)

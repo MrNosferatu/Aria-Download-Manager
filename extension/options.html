@@ -9,7 +9,8 @@
 
 <h1>aria2c manager</h1>
 <p class="hint">The extension hands downloads to the local aria2c-manager daemon.
-  Start it first (<code>run.sh</code> or the systemd user unit).</p>
+  Start it first (<code>run.sh</code> or the systemd user unit), and register the IPC
+  bridge once with <code>python3 -m aria2c_manager --install-native-host</code>.</p>
 
 <!-- Every boolean below is the same control in the same place: label and hint
      on the left, switch on the right. A hint that belongs to one setting lives
@@ -30,10 +31,9 @@
 
 <section>
   <h2>Manager</h2>
-  <label class="field">
-    <span>Server URL</span>
-    <input id="server" placeholder="http://127.0.0.1:6810">
-  </label>
+  <p class="hint">The extension reaches the manager through its native-messaging helper
+    and the manager's Unix socket — nothing goes over the network, so a VPN or proxy in
+    the browser cannot get in the way.</p>
   <div class="row-actions">
     <button id="test">Test connection</button>
     <span id="test-result" class="hint"></span>
@@ -82,8 +82,15 @@
   </label>
 
   <label class="field">
-    <span>Minimum size <small>MiB — 0 sends everything</small></span>
-    <input id="minSizeMB" type="number" min="0" step="0.5">
+    <span>Minimum size <small>smaller files stay in the browser — blank sends everything</small></span>
+    <span class="unit-input">
+      <input id="minSize" inputmode="decimal" placeholder="no minimum">
+      <select id="minSizeUnit" aria-label="Unit">
+        <option value="1024">KiB</option>
+        <option value="1048576">MiB</option>
+        <option value="1073741824">GiB</option>
+      </select>
+    </span>
   </label>
   <label class="field">
     <span>Extensions to capture <small>comma separated</small></span>

@@ -39,19 +39,3 @@ var GLOBAL = [
 function tooltipFor(action) {
     return action.tooltip || action.label
 }
-
-// ---- web UI -------------------------------------------------------------
-// server.web_ui is off by default and only takes effect at startup, so there
-// are three states worth telling apart, not two.
-
-function webUiTooltip(enabled, restartPending) {
-    if (!enabled)
-        return "The web UI is off — turn it on under Settings → Manager"
-    if (restartPending)
-        return "Open the web UI — not served until the manager restarts"
-    return "Open the web UI"
-}
-
-function webUiLabel(enabled) {
-    return enabled ? "Open web UI" : "Web UI is off"
-}

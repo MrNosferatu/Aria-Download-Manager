@@ -17,19 +17,11 @@ PluginSettings {
     }
 
     StringSetting {
-        settingKey: "host"
-        label: "Manager host"
-        description: "Where aria2c-manager's HTTP API listens"
-        placeholder: "127.0.0.1"
-        defaultValue: "127.0.0.1"
-    }
-
-    StringSetting {
-        settingKey: "port"
-        label: "Manager port"
-        description: "The server.port from config.yaml"
-        placeholder: "6810"
-        defaultValue: "6810"
+        settingKey: "socketPath"
+        label: "Manager socket"
+        description: "The Unix socket the widget talks to (server.socket in config.yaml). Leave blank for the default, $XDG_RUNTIME_DIR/aria2c-manager.sock"
+        placeholder: "$XDG_RUNTIME_DIR/aria2c-manager.sock"
+        defaultValue: ""
     }
 
     SelectionSetting {

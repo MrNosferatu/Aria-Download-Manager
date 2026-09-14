@@ -71,7 +71,6 @@
         url,
         filename: filenameFromUrl(url, anchor.getAttribute('download')),
         referer: location.href,
-        cookie: document.cookie || undefined,
         source: location.hostname,
       },
     });
@@ -333,10 +332,7 @@
         picked = anchors.filter(
           (a) => looksDownloadable(settings, a.href, a.hasAttribute('download'), location.href));
       }
-      sendResponse({
-        urls: [...new Set(picked.map((a) => a.href).filter(isFetchable))],
-        cookie: document.cookie || '',
-      });
+      sendResponse({ urls: [...new Set(picked.map((a) => a.href).filter(isFetchable))] });
       return false;
     }
     return false;

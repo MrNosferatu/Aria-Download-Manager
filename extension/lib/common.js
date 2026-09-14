@@ -12,7 +12,6 @@ const DEFAULTS = {
   // its own downloads, no click is captured, no video button appears. It stays
   // installed and the popup still works, it just stops intervening.
   enabled: true,
-  server: 'http://127.0.0.1:6810',
   // Hand the browser's own downloads to aria2c instead of downloading them here.
   intercept: true,
   // Auto-capture left-clicks on links that look like downloads.
@@ -51,35 +50,14 @@ async function saveSettings(patch) {
   await api.storage.local.set(patch);
 }
 
-const baseUrl = (server) => String(server || DEFAULTS.server).replace(/\/+$/, '');
-
-async function request(server, path, payload) {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 15000);
-  let res;
-  try {
-    res = await fetch(baseUrl(server) + path, {
-      method: payload ? 'POST' : 'GET',
-      headers: payload ? { 'Content-Type': 'application/json' } : undefined,
-      body: payload ? JSON.stringify(payload) : undefined,
-      signal: controller.signal,
-    });
-  } catch (err) {
-    throw new Error(err.name === 'AbortError'
-      ? 'request timed out'
-      : 'cannot reach the manager — is it running?');
-  } finally {
-    clearTimeout(timer);
-  }
-  let body = null;
-  try {
-    body = await res.json();
-  } catch { /* empty or non-JSON body */ }
-  if (!res.ok) {
-    const detail = body && (body.error || body.detail);
-    throw new Error(typeof detail === 'string' ? detail : `HTTP ${res.status}`);
-  }
-  return body || {};
+// Every call to the manager from the background goes through here. The
+// connection itself lives in lib/link.js, shared with the manager page. Short
+// timeout on purpose: interception waits on these before touching a download.
+async function request(path, payload) {
+  const reply = await ManagerLink.call(payload ? 'POST' : 'GET', path, payload,
+    { timeout: 15000 });
+  if (reply.status < 200 || reply.status >= 300) throw new Error(ManagerLink.errorText(reply));
+  return reply.body && typeof reply.body === 'object' ? reply.body : {};
 }
 
 function filenameFromUrl(url, downloadAttr) {

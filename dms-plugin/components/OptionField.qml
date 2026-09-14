@@ -1,21 +1,23 @@
 import QtQuick
 import qs.Common
 import qs.Widgets
+import "../lib/Units.js" as Units
 
 // One aria2 global option. `kind` is "text", "number", "bool" or
-// "select:a,b,c", matching the web UI's option table.
+// "select:a,b,c", matching the manager page's option table.
 Item {
     id: field
 
     property string optionKey: ""
     property string label: ""
     property string kind: "text"
-    //: One plain line saying what the option does. Same text the web UI shows.
+    //: One plain line saying what the option does. Same text the manager page shows.
     property string description: ""
     property string original: ""
     property string value: ""
 
-    readonly property bool dirty: value !== original
+    //: By value: "32M" and "33554432" are the same setting.
+    readonly property bool dirty: !Units.same(value, original)
     readonly property bool isBool: kind === "bool"
     //: A real choice between named values. A boolean is not one of these — it
     //: gets a switch, the same as every other yes/no in the product.
@@ -23,6 +25,9 @@ Item {
     // aria2's dir is a path, so it gets the folder chooser rather than a bare
     // text box.
     readonly property bool isDirectory: optionKey === "dir"
+    //: "speed" or "size" for an option measured in bytes; they get a number and
+    //: a unit instead of a text box of bytes.
+    readonly property string unitKind: Units.kindFor(optionKey)
     readonly property var choices: {
         if (kind.indexOf("select:") === 0)
             return kind.substring(7).split(",")
@@ -86,6 +91,8 @@ Item {
             sourceComponent: {
                 if (field.isDirectory)
                     return directoryComponent
+                if (field.unitKind !== "")
+                    return unitComponent
                 if (field.isBool)
                     return boolComponent
                 return field.isChoice ? choiceComponent : textComponent
@@ -102,6 +109,16 @@ Item {
             placeholderText: field.optionKey
             font.pixelSize: Theme.fontSizeSmall
             onTextChanged: field.value = text
+        }
+    }
+
+    Component {
+        id: unitComponent
+
+        UnitField {
+            kind: field.unitKind
+            raw: field.original
+            onEdited: newValue => field.value = newValue
         }
     }
 

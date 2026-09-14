@@ -1,7 +1,7 @@
 .pragma library
 
 // Formatting helpers shared by every surface of the plugin. Kept in step with
-// the web UI's own helpers so both front-ends read identically.
+// the manager page's own helpers so both front-ends read identically.
 
 function bytes(n, digits) {
     n = Number(n) || 0
@@ -47,7 +47,7 @@ function dateTime(ts) {
     return new Date(ts * 1000).toLocaleString(Qt.locale(), "yyyy-MM-dd HH:mm")
 }
 
-// "50K" / "1.5M" / "1024" -> bytes. Mirrors the web UI's parseSize.
+// "50K" / "1.5M" / "1024" -> bytes. Mirrors the manager page's parseSize.
 function parseSize(value) {
     var text = String(value === null || value === undefined ? "" : value).trim()
     if (!text)
@@ -93,16 +93,6 @@ function setPath(obj, path, value) {
 function label(value) {
     var text = String(value === null || value === undefined ? "" : value)
     return text ? text.charAt(0).toUpperCase() + text.slice(1) : text
-}
-
-function shortName(job) {
-    if (job.filename)
-        return job.filename
-    var url = String(job.page_url || "")
-    var tail = url.split("?")[0].split("/").filter(function (p) {
-        return p.length > 0
-    }).pop()
-    return tail || url
 }
 
 function basename(path) {

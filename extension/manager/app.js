@@ -1,4 +1,5 @@
-/* aria2c manager — vanilla front-end driven by an SSE state stream. */
+/* aria2c manager — the extension's manager page, driven by the manager's live
+   state stream. */
 'use strict';
 
 const S = {
@@ -12,6 +13,11 @@ const S = {
   globalOptions: {},
   pendingOptions: {},   // key -> value saved to config.yaml but not live in aria2
   optInputs: new Map(),   // key -> {read, original, wrap}
+  // gid -> {options: element, files: {index: checked}} — edits in an open
+  // detail panel, kept across its two-second refresh.
+  detailDrafts: new Map(),
+  // The add dialog's number-and-unit fields.
+  addUnits: null,
   rules: [],
   rulesEnabled: true,
   config: null,
@@ -67,6 +73,97 @@ function sameOptionValue(live, saved) {
   return na !== null && nb !== null && na === nb;
 }
 
+/* ------------------------------------------------------------------ units */
+/* aria2 takes speeds and sizes in bytes and reports them in bytes, so every
+   limit used to be a text box showing 12582912 and asking for arithmetic. These
+   fields are a number and a unit instead. The value stays bytes underneath —
+   what aria2 and config.yaml get — and shorthand like 12M typed into the box
+   still works. */
+const UNITS = {
+  speed: [['B/s', 1], ['KiB/s', 1024], ['MiB/s', 1024 ** 2], ['GiB/s', 1024 ** 3]],
+  size: [['B', 1], ['KiB', 1024], ['MiB', 1024 ** 2], ['GiB', 1024 ** 3]],
+};
+// The unit an empty or zero field starts on: what a limit is usually set in.
+const DEFAULT_UNIT = 2;
+
+// aria2 options that take a speed or a size, wherever they are shown.
+const UNIT_OPTIONS = {
+  'max-overall-download-limit': 'speed',
+  'max-download-limit': 'speed',
+  'max-overall-upload-limit': 'speed',
+  'max-upload-limit': 'speed',
+  'lowest-speed-limit': 'speed',
+  'bt-request-peer-speed-limit': 'speed',
+  'min-split-size': 'size',
+  'disk-cache': 'size',
+  'piece-length': 'size',
+  'max-mmap-limit': 'size',
+  'no-file-allocation-limit': 'size',
+  'rpc-max-request-size': 'size',
+  'socket-recv-buffer-size': 'size',
+};
+
+// bytes -> [amount, unit index], in the largest unit the value reaches 1 in.
+// A speed of 0 is aria2's "no limit", which reads better as an empty box saying
+// so than as "0 MiB/s".
+function splitUnits(bytes, kind) {
+  if (bytes == null) return ['', DEFAULT_UNIT];
+  if (bytes === 0) return [kind === 'speed' ? '' : '0', DEFAULT_UNIT];
+  const units = UNITS[kind];
+  let index = 0;
+  while (index < units.length - 1 && bytes >= units[index + 1][1]) index += 1;
+  return [String(+(bytes / units[index][1]).toFixed(2)), index];
+}
+
+/* One number-and-unit control. read() gives bytes as a string ('' when empty).
+   Changing the unit reinterprets the number rather than converting it: typing
+   12 and picking MiB/s means 12 MiB/s. An untouched field reads back exactly
+   what it was given, so rounding for display never counts as an edit. */
+function unitInput(kind, raw, onEdit, placeholder) {
+  const initialBytes = parseSize(raw);
+  const [amount, unit] = splitUnits(initialBytes, kind);
+  const wrap = document.createElement('span');
+  wrap.className = 'unit-input';
+  const input = document.createElement('input');
+  input.inputMode = 'decimal';
+  input.value = amount;
+  input.placeholder = placeholder || (kind === 'speed' ? 'no limit' : '0');
+  const select = document.createElement('select');
+  select.innerHTML = UNITS[kind].map(([label], i) => `<option value="${i}">${label}</option>`).join('');
+  select.value = String(unit);
+  select.setAttribute('aria-label', 'Unit');
+  wrap.append(input, select);
+
+  const read = () => {
+    const text = input.value.trim();
+    if (text === amount && Number(select.value) === unit) return raw == null ? '' : String(raw);
+    // Clearing a speed that was set means "no limit", not "leave it unset".
+    if (!text) return kind === 'speed' && raw != null ? '0' : '';
+    // Shorthand typed into the box carries its own unit.
+    if (/[a-z]/i.test(text)) {
+      const bytes = parseSize(text);
+      return bytes == null ? text : String(bytes);
+    }
+    const number = Number(text);
+    // Left as typed, so the manager's validation says what is wrong with it.
+    if (!Number.isFinite(number) || number < 0) return text;
+    return String(Math.round(number * UNITS[kind][Number(select.value)][1]));
+  };
+  const changed = () => { if (onEdit) onEdit(); };
+  input.addEventListener('input', changed);
+  select.addEventListener('change', changed);
+  input.addEventListener('change', () => {
+    if (!/[a-z]/i.test(input.value)) return;
+    const bytes = parseSize(input.value);
+    if (bytes == null) return;
+    const [a, u] = splitUnits(bytes, kind);
+    input.value = a;
+    select.value = String(u);
+    changed();
+  });
+  return { el: wrap, read };
+}
+
 function toast(message, kind = '') {
   const el = document.createElement('div');
   el.className = `toast ${kind}`;
@@ -75,19 +172,11 @@ function toast(message, kind = '') {
   setTimeout(() => el.remove(), kind === 'error' ? 7000 : 3200);
 }
 
+/* Requests go through lib/link.js: native messaging to the manager's socket. */
 async function api(path, { method = 'GET', body } = {}) {
-  const res = await fetch(path, {
-    method,
-    headers: body ? { 'Content-Type': 'application/json' } : undefined,
-    body: body ? JSON.stringify(body) : undefined,
-  });
-  let data = null;
-  try { data = await res.json(); } catch { /* empty body */ }
-  if (!res.ok) {
-    const detail = data && (data.error || data.detail);
-    throw new Error(typeof detail === 'string' ? detail : `${res.status} ${res.statusText}`);
-  }
-  return data;
+  const reply = await ManagerLink.call(method, path, body);
+  if (reply.status < 200 || reply.status >= 300) throw new Error(ManagerLink.errorText(reply));
+  return reply.body;
 }
 
 async function act(path, opts, okMessage) {
@@ -103,13 +192,16 @@ async function act(path, opts, okMessage) {
 
 /* ------------------------------------------------------------ live stream */
 function connect() {
-  const source = new EventSource('/api/events');
-  source.addEventListener('state', (ev) => applyState(JSON.parse(ev.data)));
-  source.addEventListener('event', (ev) => pushEvents([JSON.parse(ev.data)]));
-  source.addEventListener('backlog', (ev) => pushEvents(JSON.parse(ev.data), true));
-  source.addEventListener('error', () => {
-    setPill('disconnected', 'pill-err');
-    // EventSource reconnects on its own; nothing to do here.
+  ManagerLink.subscribe({
+    onFrame(kind, data) {
+      if (kind === 'state') applyState(data);
+      else if (kind === 'event') pushEvents([data]);
+      else if (kind === 'backlog') pushEvents(data, true);
+    },
+    // The stream reconnects on its own; this only has to say so.
+    onError(reason) {
+      setPill('disconnected', 'pill-err', reason);
+    },
   });
 }
 
@@ -452,6 +544,7 @@ function toggleDetail(gid) {
   const open = S.expanded.has(gid);
   if (open) {
     S.expanded.delete(gid);
+    S.detailDrafts.delete(gid);
     row._refs.detail.hidden = true;
     row._refs.chev.classList.remove('open');
   } else {
@@ -477,6 +570,8 @@ async function refreshDetail(gid) {
 }
 
 function renderDetail(host, gid, data) {
+  if (!S.detailDrafts.has(gid)) S.detailDrafts.set(gid, {});
+  const draft = S.detailDrafts.get(gid);
   const st = data.status || {};
   const opts = data.options || {};
   const files = data.files || [];
@@ -505,18 +600,14 @@ function renderDetail(host, gid, data) {
           ${st.errorMessage ? `<div><label>Error</label><span style="color:var(--err)">${escapeHtml(st.errorMessage)} (${st.errorCode})</span></div>` : ''}
         </div>
         <h3>Per-download options</h3>
-        <div class="optrow"><label>Split (parts)</label><input data-opt="split" value="${escapeHtml(opts.split || '')}"></div>
-        <div class="optrow"><label>Connections per server</label><input data-opt="max-connection-per-server" value="${escapeHtml(opts['max-connection-per-server'] || '')}"></div>
-        <div class="optrow"><label>Speed limit (0 = none)</label><input data-opt="max-download-limit" value="${escapeHtml(opts['max-download-limit'] || '')}"></div>
-        <div class="optrow"><label>Upload limit</label><input data-opt="max-upload-limit" value="${escapeHtml(opts['max-upload-limit'] || '')}"></div>
-        <div class="optrow"><button class="btn btn-small" data-role="save-opts">Apply to this download</button></div>
+        <div data-role="dl-opts"></div>
       </div>
       <div>
         <h3>Files ${files.length > 1 ? `(${files.length})` : ''}</h3>
         <div class="filelist">
           ${files.map((f) => `
             <div class="filerow">
-              ${files.length > 1 ? `<input type="checkbox" data-file="${f.index}" ${f.selected === 'true' ? 'checked' : ''}>` : ''}
+              ${files.length > 1 ? `<input type="checkbox" data-file="${f.index}" ${(draft.files?.[f.index] ?? f.selected === 'true') ? 'checked' : ''}>` : ''}
               <span class="fname" title="${escapeHtml(f.path)}">${escapeHtml(f.path.split('/').pop() || f.path)}</span>
               <span class="fsize">${fmtBytes(f.completedLength)}/${fmtBytes(f.length)}</span>
             </div>`).join('') || '<p class="hint">No file info yet.</p>'}
@@ -539,18 +630,69 @@ function renderDetail(host, gid, data) {
       </div>
     </div>`;
 
-  $('[data-role="save-opts"]', host)?.addEventListener('click', async () => {
-    const options = {};
-    for (const input of $$('[data-opt]', host)) {
-      if (input.value.trim()) options[input.dataset.opt] = input.value.trim();
-    }
-    await act(`/api/download/${gid}/options`, { method: 'POST', body: { options } }, 'Options applied');
-  });
+  // Rebuilt every two seconds for the live figures, but what the user is in the
+  // middle of editing must survive that: the options block is built once per
+  // expansion and moved into each new render, and file ticks are remembered.
+  const optsHost = $('[data-role="dl-opts"]', host);
+  if (!draft.options) draft.options = buildDownloadOptions(gid, opts);
+  optsHost.replaceWith(draft.options);
+  for (const box of $$('[data-file]', host)) {
+    box.addEventListener('change', () => {
+      draft.files = draft.files || {};
+      draft.files[box.dataset.file] = box.checked;
+    });
+  }
   $('[data-role="save-files"]', host)?.addEventListener('click', async () => {
     const indices = $$('[data-file]', host).filter((c) => c.checked).map((c) => Number(c.dataset.file));
     if (!indices.length) { toast('Select at least one file', 'error'); return; }
     await act(`/api/download/${gid}/select`, { method: 'POST', body: { indices } }, 'Selection applied');
+    draft.files = null;
   });
+}
+
+function buildDownloadOptions(gid, opts) {
+  const block = document.createElement('div');
+  const fields = [];
+  const row = (label, control) => {
+    const line = document.createElement('div');
+    line.className = 'optrow';
+    const lab = document.createElement('label');
+    lab.textContent = label;
+    line.append(lab, control);
+    block.append(line);
+  };
+  for (const [key, label] of [['split', 'Split (parts)'], ['max-connection-per-server', 'Connections per server']]) {
+    const input = document.createElement('input');
+    input.type = 'number';
+    input.min = '1';
+    input.value = opts[key] || '';
+    fields.push([key, () => input.value.trim(), opts[key] || '']);
+    row(label, input);
+  }
+  for (const [key, label] of [['max-download-limit', 'Download limit'], ['max-upload-limit', 'Upload limit']]) {
+    const unitField = unitInput('speed', opts[key] ?? null);
+    fields.push([key, unitField.read, opts[key] || '']);
+    row(label, unitField.el);
+  }
+  const apply = document.createElement('button');
+  apply.className = 'btn btn-small';
+  apply.textContent = 'Apply to this download';
+  apply.addEventListener('click', async () => {
+    const options = {};
+    for (const [key, read, original] of fields) {
+      const value = read();
+      if (value && !sameOptionValue(value, original)) options[key] = value;
+    }
+    if (!Object.keys(options).length) { toast('Nothing changed'); return; }
+    await act(`/api/download/${gid}/options`, { method: 'POST', body: { options } }, 'Options applied');
+    // Start from the applied values next time the panel renders.
+    S.detailDrafts.delete(gid);
+  });
+  const line = document.createElement('div');
+  line.className = 'optrow';
+  line.append(apply);
+  block.append(line);
+  return block;
 }
 
 setInterval(() => { for (const gid of S.expanded) refreshDetail(gid); }, 2000);
@@ -568,8 +710,8 @@ function collectAddOptions() {
   put('out', $('#add-out').value);
   put('max-connection-per-server', $('#add-conn').value);
   put('split', $('#add-split').value);
-  put('min-split-size', $('#add-minsplit').value);
-  put('max-download-limit', $('#add-limit').value);
+  put('min-split-size', S.addUnits.minSplit.read());
+  put('max-download-limit', S.addUnits.limit.read());
   put('referer', $('#add-referer').value);
   put('user-agent', $('#add-ua').value);
   put('all-proxy', $('#add-proxy').value);
@@ -758,6 +900,11 @@ function optionField(key, label, kind, value, desc) {
     input.addEventListener('change', () => wrap.classList.toggle('dirty', input.value !== original));
     read = () => input.value;
     control = input;
+  } else if (UNIT_OPTIONS[key]) {
+    const unitField = unitInput(UNIT_OPTIONS[key], original === '' ? null : original,
+      () => wrap.classList.toggle('dirty', !sameOptionValue(unitField.read(), original)));
+    read = unitField.read;
+    control = unitField.el;
   } else {
     const input = document.createElement('input');
     if (kind === 'number') input.type = 'number';
@@ -852,7 +999,8 @@ async function saveGlobalOptions() {
   const options = {};
   for (const [key, { read, original }] of S.optInputs) {
     const value = read();
-    if (value !== original) options[key] = value;
+    // By value: 32M and 33554432 are the same setting.
+    if (!sameOptionValue(value, original)) options[key] = value;
   }
   if (!Object.keys(options).length) { toast('Nothing changed'); return; }
   try {
@@ -956,7 +1104,7 @@ function renderHistory() {
 const KNOWN_STATUSES = ['active', 'waiting', 'paused', 'error', 'complete', 'removed'];
 
 const RULE_FIELDS = [
-  ['when.speed_below', 'Speed below (50K ok)', 'size'],
+  ['when.speed_below', 'Speed below', 'speed'],
   ['when.for_seconds', 'Hold for (s)', 'number'],
   ['when.min_age_seconds', 'Ignore first (s)', 'number'],
   ['cooldown_seconds', 'Cooldown (s)', 'number'],
@@ -1058,16 +1206,24 @@ function renderRules() {
       field.className = 'field';
       const span = document.createElement('span');
       span.textContent = label;
+      if (kind === 'speed') {
+        const current = getPath(rule, path);
+        const unitField = unitInput('speed', current ?? null, () => {
+          const value = unitField.read();
+          setPath(rule, path, value === '' || !Number.isFinite(Number(value)) ? value : Number(value));
+        });
+        field.append(span, unitField.el);
+        grid.append(field);
+        continue;
+      }
       const input = document.createElement('input');
       if (kind === 'number') input.type = 'number';
       input.value = getPath(rule, path) ?? '';
       input.addEventListener('change', () => {
         let value = input.value.trim();
         if (value === '') { setPath(rule, path, ''); return; }
-        if (kind === 'size') value = parseSize(value);
-        else if (kind === 'number') value = Number(value);
+        if (kind === 'number') value = Number(value);
         setPath(rule, path, value);
-        if (kind === 'size') input.value = value;
       });
       field.append(span, input);
       grid.append(field);
@@ -1211,26 +1367,6 @@ function renderLog() {
   }
 }
 
-/* ------------------------------------------------------------------ help */
-function renderHelp() {
-  const base = location.origin;
-  $('#help-endpoint').textContent = `POST ${base}/api/intake/add`;
-  $('#help-ping').textContent = `GET ${base}/api/intake/ping`;
-  $('#help-snippet').textContent = `fetch('${base}/api/intake/add', {
-  method: 'POST',
-  headers: { 'Content-Type': 'application/json' },
-  body: JSON.stringify({
-    url: 'https://example.com/big.iso',
-    filename: 'big.iso',
-    referer: location.href,
-    cookie: document.cookie,
-    userAgent: navigator.userAgent,
-    dir: '',            // optional, defaults to aria2's dir
-    paused: false
-  })
-});`;
-}
-
 /* ------------------------------------------------------------- bulk mode */
 function setSelecting(on) {
   S.selecting = on;
@@ -1300,6 +1436,12 @@ function switchTab(name) {
 }
 
 function init() {
+  S.addUnits = {
+    minSplit: unitInput('size', null, null, '(default)'),
+    limit: unitInput('speed', null),
+  };
+  $('#add-minsplit').append(S.addUnits.minSplit.el);
+  $('#add-limit').append(S.addUnits.limit.el);
   $$('.tab').forEach((tab) => tab.addEventListener('click', () => switchTab(tab.dataset.tab)));
   $$('.chip').forEach((chip) => chip.addEventListener('click', () => {
     $$('.chip').forEach((c) => c.classList.toggle('active', c === chip));
@@ -1382,17 +1524,13 @@ function init() {
     }
   });
 
-  renderHelp();
   api('/api/config').then((cfg) => { S.config = cfg; }).catch(() => {});
   api('/api/global/options').then((opts) => { S.globalOptions = opts; }).catch(() => {});
   api('/api/log').then((data) => { S.triggers = data.triggers || []; pushEvents(data.events || [], true); }).catch(() => {});
   // Load rules up front so the tab badge is right before the tab is opened.
   loadRules().catch(() => {});
 
-  // Open the stream only once the page has finished loading: a long-lived SSE
-  // request otherwise keeps the document in a permanent "loading" state.
-  if (document.readyState === 'complete') connect();
-  else window.addEventListener('load', connect, { once: true });
+  connect();
 }
 
 document.addEventListener('DOMContentLoaded', init);

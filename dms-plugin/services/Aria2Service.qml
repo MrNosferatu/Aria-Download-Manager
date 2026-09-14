@@ -29,9 +29,11 @@ Singleton {
     readonly property int idlePollSeconds: parseInt(cfg.idlePollSeconds || "3") || 3
     readonly property bool alwaysStream: cfg.alwaysStream === true
 
-    readonly property string host: cfg.host || "127.0.0.1"
-    readonly property int port: parseInt(cfg.port || "6810") || 6810
-    readonly property string baseUrl: "http://" + host + ":" + port
+    //: The manager's Unix socket. Everything goes through it: a socket never
+    //: touches the network stack, so no VPN or proxy can get in between.
+    readonly property string socketPath: cfg.socketPath
+                                         || ((Quickshell.env("XDG_RUNTIME_DIR") || "")
+                                             + "/aria2c-manager.sock")
 
     // ---- live snapshot ---------------------------------------------------
     property bool connected: false
@@ -50,7 +52,6 @@ Singleton {
     readonly property int activeCount: counts.active || 0
     readonly property int waitingCount: (counts.waiting || 0) + (counts.paused || 0)
     readonly property int stoppedCount: counts.stopped || 0
-    readonly property int errorCount: counts.error || 0
     readonly property bool aria2Running: aria2.running === true
 
     // ---- lazily fetched sections ----------------------------------------
@@ -61,12 +62,6 @@ Singleton {
     property var triggers: []
     property var history: null
     property var serverConfig: null
-    //: server.web_ui only takes effect at startup, so a change parks here until
-    //: the manager is restarted.
-    property bool restartRequired: false
-
-    readonly property bool webUiEnabled: serverConfig && serverConfig.server
-                                         ? serverConfig.server.web_ui === true : false
 
     signal rulesLoaded
     signal optionsLoaded
@@ -112,7 +107,8 @@ Singleton {
     property bool requestedLog: false
 
     // ---- event stream ----------------------------------------------------
-    property string _pendingEvent: ""
+    //: Whether the manager is currently sending live frames on the socket.
+    property bool subscribed: false
     property double lastFrameAt: 0
     property int streamStarts: 0
     property int watchdogTrips: 0
@@ -143,12 +139,11 @@ Singleton {
     onWantStreamChanged: {
         if (wantStream) {
             // Opening the window must not show the last idle poll's numbers
-            // while curl starts up: fetch the current snapshot right away.
+            // while the stream starts: fetch the current snapshot right away.
             refreshSnapshot()
             start()
         } else {
-            stream.running = false
-            reconnectTimer.stop()
+            root.unsubscribe()
             root.refreshSnapshot()
         }
     }
@@ -179,64 +174,150 @@ Singleton {
     }
 
     function start() {
-        if (!root.wantStream)
+        // Asked for again from onConnectionStateChanged once the link is up.
+        if (!root.wantStream || root.subscribed || !link.linkUp)
             return
-        if (!stream.running) {
-            root.lastFrameAt = Date.now()
-            root.streamStarts++
-            stream.running = true
-        }
+        root.lastFrameAt = Date.now()
+        root.streamStarts++
+        root.subscribed = true
+        root._send({
+                       "method": "SUBSCRIBE"
+                   }, null)
     }
 
+    function unsubscribe() {
+        if (!root.subscribed)
+            return
+        root.subscribed = false
+        if (link.linkUp)
+            root._send({
+                           "method": "UNSUBSCRIBE"
+                       }, null)
+    }
+
+    //: Drop the connection and dial again. The stream comes back with it when
+    //: something is watching; the idle poll covers the pill otherwise.
     function restart() {
-        stream.running = false
-        reconnectTimer.stop()
-        // A settings change must not resurrect the stream when nothing is
-        // watching; the idle poll covers the pill.
-        if (root.wantStream)
-            Qt.callLater(() => root.start())
-        else
-            Qt.callLater(() => root.refreshSnapshot())
+        root.subscribed = false
+        link.connected = false
+        Qt.callLater(() => link.connected = true)
     }
 
-    onBaseUrlChanged: restart()
+    onSocketPathChanged: restart()
+
+    // A plugin reload drops this singleton; close the socket with it.
+    Component.onDestruction: link.connected = false
 
     Component.onCompleted: {
         refreshSnapshot()
-        start()
         loadConfig()
         loadRules()
         loadLog()
     }
 
-    Process {
-        id: stream
+    // ---- the socket ------------------------------------------------------
+    //: One connection for everything: newline-delimited JSON, requests matched
+    //: to replies by id, live frames arriving on the same connection. See
+    //: aria2c_manager/ipc.py for the protocol.
+    property int _nextId: 0
+    property var _pending: ({})
+    property var _outbox: []
+    property double _outboxSince: 0
 
-        running: false
-        command: ["curl", "-sN", "--no-buffer", "--max-time", "0", "-H", "Accept: text/event-stream", root.baseUrl + "/api/events"]
+    //: DMS's own wrapper rather than a bare Socket: Quickshell's Socket cannot
+    //: redial after a failed attempt, so a manager restart that outlasted the
+    //: first retry left the widget offline for good. DankSocket gives every
+    //: attempt a fresh Socket and backs off between them.
+    DankSocket {
+        id: link
 
-        stdout: SplitParser {
+        path: root.socketPath
+        connected: true
+
+        parser: SplitParser {
             splitMarker: "\n"
             onRead: data => root._handleLine(data)
         }
 
-        onExited: (exitCode, exitStatus) => {
+        onConnectionStateChanged: {
+            if (linkUp) {
+                const queued = root._outbox
+                root._outbox = []
+                for (const line of queued)
+                    link.send(line)
+                // A new connection has no subscription: the old one died with
+                // the old connection (or the old manager).
+                root.subscribed = false
+                if (root.wantStream)
+                    root.start()
+                else
+                    root.refreshSnapshot()
+                return
+            }
             root.connected = false
-            if (!root.lastError)
-                root.lastError = "event stream closed"
-            reconnectTimer.restart()
+            root.subscribed = false
+            root._failPending("aria2c-manager closed the connection")
         }
     }
 
-    // A plugin reload drops this singleton; without this the orphaned curl
-    // lingers with nobody draining its pipe.
-    Component.onDestruction: stream.running = false
+    function _send(message, callback) {
+        const id = ++root._nextId
+        message.id = id
+        if (callback)
+            root._pending[id] = {
+                "callback": callback,
+                "at": Date.now()
+            }
+        const line = JSON.stringify(message) + "\n"
+        if (link.linkUp) {
+            link.send(line)
+            return
+        }
+        // Held briefly: the first calls of a session race the first dial. The
+        // sweep fails them if the link does not come up, so the pill says
+        // "offline" instead of waiting on a manager that is not there.
+        if (!root._outbox.length)
+            root._outboxSince = Date.now()
+        root._outbox = root._outbox.concat([line]).slice(-50)
+    }
+
+    function _failPending(message) {
+        const pending = root._pending
+        root._pending = ({})
+        root._outbox = []
+        for (const id in pending)
+            pending[id].callback(null, message)
+    }
+
+    Timer {
+        id: pendingSweep
+
+        interval: 500
+        repeat: true
+        running: true
+        onTriggered: {
+            const now = Date.now()
+            if (!link.linkUp && root._outbox.length && now - root._outboxSince > 1500) {
+                root.connected = false
+                root.lastError = "no aria2c-manager at " + root.socketPath
+                root._failPending(root.lastError)
+                return
+            }
+            for (const id in root._pending) {
+                const entry = root._pending[id]
+                if (now - entry.at < 20000)
+                    continue
+                delete root._pending[id]
+                entry.callback(null, "aria2c-manager did not answer")
+            }
+        }
+    }
 
     // Supervisor. Two jobs: reconcile the stream with what the UI actually
-    // wants (a missed viewer count, a daemon restart or a dropped process would
-    // otherwise leave the popout showing a frozen snapshot forever), and notice
-    // a pipe that died without curl exiting — the manager pushes state every
-    // second and a keepalive every 15s, so a long silence means it is gone.
+    // wants (a missed viewer ping would otherwise leave the popout showing a
+    // frozen snapshot forever), and notice a connection that went quiet without
+    // closing — the manager pushes state on every poll, so a long silence means
+    // it is gone.
     Timer {
         id: watchdog
 
@@ -244,18 +325,18 @@ Singleton {
         repeat: true
         running: true
         onTriggered: {
-            if (root.wantStream && !stream.running) {
-                if (!reconnectTimer.running) {
+            if (root.wantStream && !root.subscribed) {
+                if (link.linkUp) {
                     root.watchdogTrips++
                     root.start()
                 }
                 return
             }
-            if (!root.wantStream && stream.running) {
-                stream.running = false
+            if (!root.wantStream && root.subscribed) {
+                root.unsubscribe()
                 return
             }
-            if (!stream.running || !root.wantStream)
+            if (!root.subscribed)
                 return
             if (Date.now() - root.lastFrameAt < 20000)
                 return
@@ -265,39 +346,24 @@ Singleton {
         }
     }
 
-    Timer {
-        id: reconnectTimer
-        interval: 3000
-        repeat: false
-        onTriggered: root.start()
-    }
-
     function _handleLine(rawLine) {
-        root.lastFrameAt = Date.now()
-        // SSE ends every frame with a blank line, and the reader hands that back
-        // as a leading newline on the *next* line rather than as an empty line
-        // of its own. Without trimming, "\nevent: state" fails the prefix test,
-        // the frame's type is lost, and its data is dropped as unknown — which
-        // froze the UI on everything but the first frame.
         const line = String(rawLine).trim()
-        if (!line || line.charAt(0) === ":")
+        if (!line)
             return
-        if (line.indexOf("event:") === 0) {
-            root._pendingEvent = line.substring(6).trim()
-            return
-        }
-        if (line.indexOf("data:") !== 0)
-            return
-
-        const kind = root._pendingEvent || "message"
-        root._pendingEvent = ""
-        let payload = null
+        let message = null
         try {
-            payload = JSON.parse(line.substring(5).trim())
+            message = JSON.parse(line)
         } catch (e) {
             return
         }
+        if (message.event === undefined) {
+            root._settle(message)
+            return
+        }
 
+        root.lastFrameAt = Date.now()
+        const kind = message.event
+        const payload = message.data
         if (kind === "state") {
             root.stateFrames++
             root.snapshot = payload
@@ -314,7 +380,28 @@ Singleton {
             root.events = merged.slice(0, 400)
             root._syncTriggers()
             root._notify(payload)
+        } else if (kind === "shutdown") {
+            // The manager is going away and will close the socket; the
+            // reconnect timer picks up the next one.
+            root.connected = false
         }
+    }
+
+    //: A reply to one of our requests.
+    function _settle(message) {
+        const entry = root._pending[message.id]
+        if (!entry)
+            return
+        delete root._pending[message.id]
+        const status = message.status || 0
+        const data = message.body
+        if (status >= 200 && status < 300) {
+            entry.callback(data, null)
+            return
+        }
+        const detail = data && (data.error || data.detail)
+        entry.callback(null, typeof detail === "string" ? detail
+                                                        : (status ? "HTTP " + status : "aria2c-manager is not reachable"))
     }
 
     function _syncTriggers() {
@@ -339,33 +426,16 @@ Singleton {
             ToastService.showInfo("aria2c", event.message)
     }
 
-    // ---- REST ------------------------------------------------------------
+    // ---- API calls -------------------------------------------------------
+    //: Same method + path + JSON body as the REST API; the socket carries them.
     function request(method, path, body, callback) {
-        const xhr = new XMLHttpRequest()
-        xhr.onreadystatechange = () => {
-            if (xhr.readyState !== XMLHttpRequest.DONE)
-                return
-            let data = null
-            try {
-                data = JSON.parse(xhr.responseText)
-            } catch (e) {
-                data = null
-            }
-            if (xhr.status >= 200 && xhr.status < 300) {
-                if (callback)
-                    callback(data, null)
-                return
-            }
-            const detail = data && (data.error || data.detail)
-            const message = typeof detail === "string" ? detail
-                : (xhr.status ? xhr.status + " " + xhr.statusText : "aria2c-manager is not reachable")
-            if (callback)
-                callback(null, message)
+        const message = {
+            "method": method,
+            "path": path
         }
-        xhr.open(method, root.baseUrl + path)
         if (body !== undefined && body !== null)
-            xhr.setRequestHeader("Content-Type", "application/json")
-        xhr.send(body === undefined || body === null ? undefined : JSON.stringify(body))
+            message.body = body
+        root._send(message, callback || ((data, error) => {}))
     }
 
     function get(path, callback) {
@@ -373,7 +443,7 @@ Singleton {
     }
 
     // Fire a mutating call, toasting the outcome. `callback` sees the payload
-    // only on success, matching the web UI's act().
+    // only on success, matching the manager page's act().
     function act(method, path, body, okMessage, callback) {
         request(method, path, body, (data, error) => {
             if (error) {
@@ -434,19 +504,10 @@ Singleton {
         })
     }
 
-    // ---- manager settings ------------------------------------------------
-    function setManagerConfig(patch, okMessage) {
-        post("/api/config", patch, okMessage, data => {
-                 if (data && data.config)
-                     root.serverConfig = data.config
-                 if (data && data.restartRequired)
-                     root.restartRequired = true
-             })
-    }
-
+    // ---- manager ---------------------------------------------------------
+    //: Exit and let systemd bring the manager back, rereading config.yaml.
     function restartManager() {
         post("/api/restart", null, "Restarting the manager…", () => {
-                 root.restartRequired = false
                  root.connected = false
                  restartSettle.restart()
              })
@@ -565,7 +626,8 @@ Singleton {
                     + " snapshotAge=" + age + "s"
                     + " downloads=" + root.downloads.length
 
-                    + " running=" + stream.running + " connected=" + root.connected
+                    + " socket=" + root.socketPath + " linked=" + link.linkUp
+                    + " subscribed=" + root.subscribed + " connected=" + root.connected
                     + " silentFor=" + Math.round((Date.now() - root.lastFrameAt) / 1000) + "s"
                     + " starts=" + root.streamStarts + " watchdogTrips=" + root.watchdogTrips
         }
@@ -596,7 +658,7 @@ Singleton {
 
         function status(): string {
             if (!root.connected)
-                return "offline (" + root.baseUrl + ")"
+                return "offline (" + root.socketPath + ")"
             return root.activeCount + " active, " + root.waitingCount + " queued, "
                     + root.stoppedCount + " stopped, down " + root.downloadSpeed + " B/s"
         }

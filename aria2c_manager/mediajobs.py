@@ -22,12 +22,10 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
-import os
 import shutil
 import time
 import uuid
 from pathlib import Path
-from typing import Any
 
 #: Terminal states. Anything else is still going.
 FINAL = {"complete", "error", "cancelled"}
@@ -274,16 +272,6 @@ class MediaJobs:
         if delete_file:
             self._discard(job)
         self.on_event("info", f"Cancelled {job.name}")
-        return True
-
-    def remove(self, job_id: str, delete_file: bool = False) -> bool:
-        job = self.jobs.pop(job_id, None)
-        if not job:
-            return False
-        if job.status not in FINAL:
-            self.cancel(job_id, delete_file=True)
-        elif delete_file:
-            self._discard(job)
         return True
 
     def _trim(self) -> None:

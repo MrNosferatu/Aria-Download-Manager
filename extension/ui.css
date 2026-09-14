@@ -1,5 +1,5 @@
 /* Shared styling for the popup and the settings page — the same dark palette
-   the web UI uses, so both front-ends look like one product. */
+   the manager page uses, so both front-ends look like one product. */
 :root {
   --bg: #10131a;
   --bg2: #161a21;
@@ -47,7 +47,7 @@ button.icon {
 button.icon svg { width: 15px; height: 15px; fill: currentColor; display: block; }
 button.link { background: none; border: none; color: var(--accent); padding: 0; }
 
-input, textarea {
+input, textarea, select {
   background: var(--bg3);
   color: var(--fg);
   border: 1px solid var(--line);
@@ -56,7 +56,7 @@ input, textarea {
   font: inherit;
   width: 100%;
 }
-input:focus, textarea:focus { outline: none; border-color: var(--accent); }
+input:focus, textarea:focus, select:focus { outline: none; border-color: var(--accent); }
 textarea { resize: vertical; }
 
 .hint { color: var(--fg-dim); font-size: 12px; }
@@ -173,5 +173,15 @@ textarea { resize: vertical; }
 }
 .field { display: flex; flex-direction: column; gap: 4px; margin-bottom: 12px; }
 .field > span { font-size: 12px; color: var(--fg-dim); display: flex; gap: 6px; }
+/* A number and its unit, read as one control. */
+/* Beats `.field > span`, which would otherwise style it as a label. */
+.field > span.unit-input { display: flex; gap: 0; font-size: inherit; color: inherit; }
+.unit-input input { flex: 1; min-width: 0; border-top-right-radius: 0; border-bottom-right-radius: 0; }
+.unit-input select {
+  flex: none; width: auto; margin-left: -1px;
+  border-top-left-radius: 0; border-bottom-left-radius: 0;
+}
+.unit-input input:focus, .unit-input select:focus { position: relative; z-index: 1; }
 .row-actions { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
+.row-actions button { flex: none; }
 .save-bar { display: flex; align-items: center; gap: 10px; }

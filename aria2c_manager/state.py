@@ -1,4 +1,4 @@
-"""Snapshot polling, normalisation and fan-out to SSE subscribers."""
+"""Snapshot polling, normalisation and fan-out to the socket's stream subscribers."""
 
 from __future__ import annotations
 
@@ -10,9 +10,6 @@ from collections import deque
 from typing import Any
 
 from .rpc import STATUS_KEYS, Aria2RPC
-
-ACTIVE_STATUSES = ("active",)
-WAITING_STATUSES = ("waiting", "paused")
 
 #: Samples kept per download, and the shortest span worth dividing by. At the
 #: default 1s poll interval this measures speed over roughly three seconds.
@@ -92,7 +89,7 @@ def normalize(item: dict) -> dict:
 
 
 class Store:
-    """Latest snapshot + rolling event log + SSE subscriber queues."""
+    """Latest snapshot + rolling event log + stream subscriber queues."""
 
     def __init__(self, max_events: int = 500):
         self.snapshot: dict[str, Any] = {
@@ -249,6 +246,13 @@ class Poller:
                 self._fail_streak += 1
                 if self._fail_streak in (1, 5) or self._fail_streak % 30 == 0:
                     self.store.add_event("error", f"Poll failed: {exc}")
+                # The downloads cannot be refreshed, but whether aria2c is up
+                # (and why not) can. Without this the last good snapshot kept
+                # saying "running" for as long as aria2c stayed down.
+                stale = dict(self.store.snapshot)
+                stale["ts"] = time.time()
+                stale["aria2"] = self.supervisor.status()
+                self.store.set_snapshot(stale)
             try:
                 await asyncio.wait_for(self._wake.wait(), timeout=self.current_interval)
             except asyncio.TimeoutError:

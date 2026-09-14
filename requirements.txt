@@ -1,10 +1,10 @@
-# Runtime dependencies. All four are already present on this machine's system
+# Runtime dependencies. All three are already present on this machine's system
 # Python (3.14), so `python3 -m aria2c_manager` works without a venv.
 fastapi>=0.110
-uvicorn>=0.27
 aiohttp>=3.9
 PyYAML>=6.0
 
 # Deliberately NOT required:
-#   websockets / wsproto — live updates use Server-Sent Events over plain HTTP
+#   uvicorn / any server — nothing listens on the network; FastAPI only routes
+#                          requests arriving on the Unix socket, in-process
 #   python-multipart     — .torrent uploads are sent as base64 JSON

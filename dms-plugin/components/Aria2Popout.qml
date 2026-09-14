@@ -72,7 +72,7 @@ PopoutComponent {
         if (!service)
             return ""
         if (!service.connected)
-            return "manager offline — " + service.baseUrl
+            return "manager offline — " + service.socketPath
         const aria2 = service.aria2
         if (!aria2.running)
             return "aria2c not running — " + (aria2.last_error || "see the Log tab")

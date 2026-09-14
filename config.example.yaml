@@ -5,15 +5,13 @@
 #   cp config.example.yaml config.yaml
 
 server:
-  # Loopback only. There is no authentication, so do not bind this to 0.0.0.0
-  # on a shared network.
-  host: 127.0.0.1
-  port: 6810
-  open_browser: false
-  # Serve the browser UI at /. Off by default — the DankMaterialShell widget and
-  # the browser extension talk to the API directly, so the UI is opt-in. The
-  # REST/SSE API is served either way. Override for one run with --web-ui.
-  web_ui: false
+  # The manager's only interface: a Unix socket the browser extension (through
+  # its native-messaging host) and the DankMaterialShell widget connect to.
+  # Nothing listens on the network, so an in-browser VPN or proxy cannot get in
+  # the way. Mode 0600: this user only.
+  # Blank = $XDG_RUNTIME_DIR/aria2c-manager.sock. After changing it, re-run
+  #   python3 -m aria2c_manager --install-native-host
+  socket: ""
 
 # How often the manager polls aria2 (seconds). This is also the tick rate of the
 # rules engine, so keep it at or below the smallest rule `for_seconds`.

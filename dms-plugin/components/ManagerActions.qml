@@ -1,5 +1,4 @@
 import QtQuick
-import Quickshell
 import qs.Common
 import qs.Widgets
 import "../lib/Actions.js" as Actions
@@ -20,11 +19,6 @@ Row {
     //: The popout asks to close itself after an action that moves the user
     //: somewhere else; the window ignores it.
     signal dismissRequested
-
-    //: server.web_ui is off by default, and the manager only mounts the UI at
-    //: startup — so a config change is pending until it restarts.
-    readonly property bool webUiOn: service ? service.webUiEnabled : false
-    readonly property bool webUiPending: service ? service.restartRequired : false
 
     spacing: Theme.spacingXS
 
@@ -52,18 +46,6 @@ Row {
                 actions.detachRequested()
                 actions.dismissRequested()
             }
-        }
-    }
-
-    DankActionButton {
-        iconName: "open_in_browser"
-        tooltipText: Actions.webUiTooltip(actions.webUiOn, actions.webUiPending)
-        buttonSize: 30
-        enabled: actions.webUiOn
-        opacity: enabled ? 1 : 0.5
-        onClicked: {
-            Quickshell.execDetached(["xdg-open", actions.service.baseUrl + "/"])
-            actions.dismissRequested()
         }
     }
 }

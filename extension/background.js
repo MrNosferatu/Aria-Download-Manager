@@ -5,7 +5,7 @@
 
 // Chrome runs this as a service worker and needs the shared code pulled in;
 // Firefox lists both files in manifest background.scripts instead.
-if (typeof importScripts === 'function') importScripts('lib/common.js');
+if (typeof importScripts === 'function') importScripts('lib/common.js', 'lib/link.js');
 
 const RECENT_LIMIT = 20;
 
@@ -28,10 +28,10 @@ function noteHealth(ok) {
   health.at = Date.now();
 }
 
-async function managerReachable(settings) {
+async function managerReachable() {
   if (health.ok !== null && Date.now() - health.at < HEALTH_FRESH_MS) return health.ok;
   try {
-    await request(settings.server, '/api/intake/ping');
+    await request('/api/intake/ping');
     noteHealth(true);
   } catch {
     noteHealth(false);
@@ -181,11 +181,10 @@ async function videoContext(candidate, sender) {
 }
 
 async function probeVideo(candidate, sender) {
-  const settings = await loadSettings();
   try {
     const body = await videoContext(candidate, sender);
     body.title = candidate.title || (sender.tab && sender.tab.title) || '';
-    const out = await request(settings.server, '/api/media/probe', body);
+    const out = await request('/api/media/probe', body);
     return { ok: true, probe: out };
   } catch (err) {
     return { ok: false, error: err.message };
@@ -200,7 +199,7 @@ async function downloadVideo(message, sender, tabId) {
     body.variant = message.variant || undefined;
     body.variant_id = message.variantId || undefined;
     if (settings.dir) body.dir = settings.dir;
-    const out = await request(settings.server, '/api/media/download', body);
+    const out = await request('/api/media/download', body);
     const label = out.kind === 'stream'
       ? `Downloading ${out.job.name}`
       : 'Queued video';
@@ -232,13 +231,15 @@ async function sendToManager(settings, item, tabId) {
     url,
     filename: item.filename || filenameFromUrl(url, item.downloadAttr),
     referer: item.referer || '',
-    cookie: item.cookie !== undefined ? item.cookie : await cookieHeaderFor(url),
+    // From the cookie store, for the file's own URL: document.cookie would be
+    // the wrong site's (the page, not the file host) and miss HttpOnly ones.
+    cookie: await cookieHeaderFor(url),
     userAgent: navigator.userAgent,
     dir: settings.dir || null,
     paused: !!settings.paused,
     source: item.source || hostOf(item.referer || url) || 'extension',
   };
-  await request(settings.server, '/api/intake/add', payload);
+  await request('/api/intake/add', payload);
   await remember(payload.filename || url);
   return payload.filename || url;
 }
@@ -268,16 +269,26 @@ async function sendMany(urls, context, tabId) {
     await report(settings, 'no links to send', true, tabId);
     return { ok: false };
   }
+  // Cookies belong to the host a file is on, and one batch can span several
+  // hosts, so each host's links go as their own batch with that host's cookies.
+  const byHost = new Map();
+  for (const url of urls) {
+    const host = hostOf(url);
+    if (!byHost.has(host)) byHost.set(host, []);
+    byHost.get(host).push(url);
+  }
   try {
-    await request(settings.server, '/api/intake/add', {
-      urls,
-      referer: context.referer || '',
-      cookie: context.cookie !== undefined ? context.cookie : await cookieHeaderFor(urls[0]),
-      userAgent: navigator.userAgent,
-      dir: settings.dir || null,
-      paused: !!settings.paused,
-      source: hostOf(context.referer || urls[0]) || 'extension',
-    });
+    for (const group of byHost.values()) {
+      await request('/api/intake/add', {
+        urls: group,
+        referer: context.referer || '',
+        cookie: await cookieHeaderFor(group[0]),
+        userAgent: navigator.userAgent,
+        dir: settings.dir || null,
+        paused: !!settings.paused,
+        source: hostOf(context.referer || group[0]) || 'extension',
+      });
+    }
     await remember(`${urls.length} links`);
     await report(settings, `queued ${urls.length} link(s)`, false, tabId);
     refreshBadge();
@@ -306,7 +317,7 @@ api.downloads.onCreated.addListener(async (item) => {
   // then discovering there is nowhere to put it loses the download. If the
   // manager is not answering, do nothing at all and let the browser get on
   // with it — a download that works is better than one that was ours.
-  if (!(await managerReachable(settings))) {
+  if (!(await managerReachable())) {
     if (settings.notify) {
       notify('aria2c manager is not running — the browser is downloading this itself', false);
     }
@@ -410,7 +421,7 @@ api.contextMenus.onClicked.addListener(async (info, tab) => {
         notify('this page does not allow the extension to read its links', true);
         return;
       }
-      sendMany((reply && reply.urls) || [], { referer: info.pageUrl, cookie: reply && reply.cookie }, tabId);
+      sendMany((reply && reply.urls) || [], { referer: info.pageUrl }, tabId);
       break;
     }
   }
@@ -429,7 +440,7 @@ async function refreshBadge() {
     return;
   }
   try {
-    const state = await request(settings.server, '/api/state');
+    const state = await request('/api/state');
     noteHealth(true);
     const counts = state.counts || {};
     const active = counts.active || 0;
@@ -470,18 +481,16 @@ api.runtime.onMessage.addListener((message, sender, sendResponse) => {
         sendResponse(await sendMany(message.urls, message.context || {}, tabId));
         break;
       case 'ping': {
-        const settings = await loadSettings();
         try {
-          sendResponse({ ok: true, info: await request(settings.server, '/api/intake/ping') });
+          sendResponse({ ok: true, info: await request('/api/intake/ping') });
         } catch (err) {
           sendResponse({ ok: false, error: err.message });
         }
         break;
       }
       case 'state': {
-        const settings = await loadSettings();
         try {
-          sendResponse({ ok: true, state: await request(settings.server, '/api/state') });
+          sendResponse({ ok: true, state: await request('/api/state') });
         } catch (err) {
           sendResponse({ ok: false, error: err.message });
         }

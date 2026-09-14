@@ -12,7 +12,6 @@ Item {
     property string placeholderText: "(default)"
     property string dialogTitle: "Choose a download directory"
     property string startDir: ""
-    readonly property bool pickerAvailable: true
 
     implicitHeight: 40
     height: implicitHeight

@@ -18,7 +18,7 @@ Rectangle {
     readonly property var actionValues: ["pause_resume", "force_pause_resume", "restart", "set_option", "stop", "log_only"]
     readonly property var actionLabels: ["Pause + resume", "Force pause + resume", "Restart (remove and re-add)", "Change its options", "Pause and leave paused", "Log only (do nothing)"]
 
-    readonly property var fields: [["when.speed_below", "Speed below (50K ok)", "size"], ["when.for_seconds", "Hold for (s)", "number"], ["when.min_age_seconds", "Ignore first (s)", "number"], ["cooldown_seconds", "Cooldown (s)", "number"], ["resume_after_seconds", "Resume after (s)", "number"], ["max_triggers", "Max triggers (0 = ∞)", "number"], ["when.min_progress", "Only above progress %", "number"], ["when.max_progress", "Only below progress %", "number"], ["when.connections_below", "Connections below", "number"], ["when.name_matches", "Name matches (regex)", "text"]]
+    readonly property var fields: [["when.speed_below", "Speed below", "speed"], ["when.for_seconds", "Hold for (s)", "number"], ["when.min_age_seconds", "Ignore first (s)", "number"], ["cooldown_seconds", "Cooldown (s)", "number"], ["resume_after_seconds", "Resume after (s)", "number"], ["max_triggers", "Max triggers (0 = ∞)", "number"], ["when.min_progress", "Only above progress %", "number"], ["when.max_progress", "Only below progress %", "number"], ["when.connections_below", "Connections below", "number"], ["when.name_matches", "Name matches (regex)", "text"]]
 
     //: aria2's own status vocabulary. Anything already saved in the rule is
     //: kept, so a hand-edited config never loses a value it cannot show.
@@ -161,9 +161,27 @@ Rectangle {
                         elide: Text.ElideRight
                     }
 
+                    UnitField {
+                        width: parent.width
+                        visible: fieldCell.modelData[2] === "speed"
+                        height: visible ? card.fieldHeight : 0
+                        kind: "speed"
+                        raw: {
+                            const current = Fmt.getPath(card.rule, fieldCell.modelData[0])
+                            return current === undefined || current === null ? "" : String(current)
+                        }
+                        onEdited: newValue => {
+                            const number = Number(newValue)
+                            Fmt.setPath(card.rule, fieldCell.modelData[0],
+                                        newValue === "" || !isFinite(number) ? newValue : number)
+                            card.edited()
+                        }
+                    }
+
                     DankTextField {
                         width: parent.width
-                        height: card.fieldHeight
+                        visible: fieldCell.modelData[2] !== "speed"
+                        height: visible ? card.fieldHeight : 0
                         font.pixelSize: Theme.fontSizeSmall
                         text: {
                             const raw = Fmt.getPath(card.rule, fieldCell.modelData[0])
@@ -174,10 +192,6 @@ Rectangle {
                             let value = text.trim()
                             if (value === "") {
                                 Fmt.setPath(card.rule, fieldCell.modelData[0], "")
-                            } else if (kind === "size") {
-                                value = Fmt.parseSize(value)
-                                Fmt.setPath(card.rule, fieldCell.modelData[0], value)
-                                text = String(value)
                             } else if (kind === "number") {
                                 Fmt.setPath(card.rule, fieldCell.modelData[0], Number(value))
                             } else {

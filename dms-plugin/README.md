@@ -1,20 +1,25 @@
 # aria2c manager — DankMaterialShell plugin
 
-The web UI, ported to a [DankMaterialShell](https://danklinux.com) bar widget: a
+The manager UI, as a [DankMaterialShell](https://danklinux.com) bar widget: a
 download icon on the DankBar that opens a panel with three tabs — Downloads,
 Rules and Settings. Left-click for the bar popout, right-click for quick
 actions, and the popout's *open in window* button detaches the whole thing into
 an ordinary window that stays put while you work elsewhere.
 
 The plugin does **not** download anything itself. It is a second front-end onto
-the same `aria2c-manager` daemon the web UI talks to (`/api/*` over HTTP, plus
-the `/api/events` SSE stream), so both can be open at once and stay in sync.
+the same `aria2c-manager` daemon the browser extension talks to, over the same
+Unix socket, so the extension's manager page and the widget can be open at once
+and stay in sync.
 
 ```
-DankBar pill ──► Aria2Service (singleton) ──► http://127.0.0.1:6810
-                   │  curl -sN /api/events  (one stream, all monitors)
-                   └─ XHR for every command and lazily loaded section
+DankBar pill ──► Aria2Service (singleton) ──► $XDG_RUNTIME_DIR/aria2c-manager.sock
+                   │  one Quickshell Socket, newline-delimited JSON
+                   ├─ SUBSCRIBE while a panel is open (live frames, all monitors)
+                   └─ request/reply by id for every command and lazily loaded section
 ```
+
+Nothing goes through the network stack, so a VPN or proxy cannot get between the
+widget and the manager.
 
 ## Install
 
@@ -41,7 +46,7 @@ looked.
 
 | Setting | Default | What it does |
 | --- | --- | --- |
-| Manager host / port | `127.0.0.1` / `6810` | Must match `server.host`/`server.port` in `config.yaml` |
+| Manager socket | `$XDG_RUNTIME_DIR/aria2c-manager.sock` | Must match `server.socket` in `config.yaml` (blank on both sides = default) |
 | Bar label | Download speed | Speed, active count, or icon only |
 | Clicking the bar icon | Bar popout | Whether left click opens the bar popout or goes straight to the standalone window |
 | Popout width / content height | 640 / 540 | Size of the bar popout (the window is resized by dragging it) |
@@ -119,16 +124,12 @@ opening the manager at all:
 - **Open in window** and **Add URL from clipboard** (needs `wl-clipboard`; the
   clipboard has to hold an `http`/`https`/`ftp`/`sftp`/`magnet` URL)
 - **Pause all**, **Resume all**, **Purge finished** — each showing its count
-- **Enable/Disable rules**, **Open web UI**
+- **Enable/Disable rules**
 - **Restart aria2c**
 
 Entries that cannot do anything right now are greyed out: purge with nothing
-finished, anything at all while the manager is offline, and **Open web UI**
-whenever `server.web_ui` is off — that endpoint serves a JSON hint rather than
-the UI, so the button would only ever open a page explaining itself. The menu
-marks it *Web UI is off*; the same button in the popout and window headers is
-dimmed with a tooltip saying where to turn it on. The top of the menu repeats
-the pill's status in words.
+finished, and anything at all while the manager is offline. The top of the menu
+repeats the pill's status in words.
 
 ## What each tab does
 
@@ -136,13 +137,16 @@ the pill's status in words.
   *Complete*), name filter, and an inline Add
   panel (URLs, directory, rename, plus connections/split/referer/cookie/headers
   and a `.torrent`/`.metalink` path under *More options*). Each row expands into
-  the same detail the web UI shows: piece map, paths, per-download options,
+  the same detail the extension's manager page shows: piece map, paths, per-download options,
   file selection, live connections, URLs and peers. The **History** chip lists
   what the manager recorded, with re-add and forget.
+- Speeds and sizes (limits, part size, disk cache, a rule's speed threshold) are
+  a number plus a unit picker, shown as `12 MiB/s` rather than bytes — the same
+  control as the extension's manager page.
 - **Rules** — the rule cards, editable field by field or as raw JSON, plus the
   speed-source selector and recent triggers. The master switch is the toggle in
   the window header.
-- **Settings** — a **Manager** section (Web UI switch + *Restart manager*), then
+- **Settings** — a **Manager** section (*Restart manager*), then
   the grouped aria2 global options, a filter box, an *All options (advanced)*
   section built from whatever aria2 reports, the aria2c process card with a
   restart button, and the event log. Edited fields are dot-marked until saved.
@@ -168,10 +172,6 @@ in both the download list and History, and its *open file* button goes away so
 it cannot launch something that is not there. The manager checks the path when
 it reports a finished download, so moving or deleting a file is reflected within
 a tick — there is nothing to refresh.
-
-Setup material — how to load the extension, the intake endpoints — lives in the
-web UI's Extension tab instead, since it is read once. The header's
-*open in browser* button goes there.
 
 ## Hacking
 
@@ -199,8 +199,8 @@ dms-plugin/
 ├── qmldir                   registers the Aria2Service singleton
 ├── Aria2Widget.qml          bar pill, control-center tile, popout/window host
 ├── Aria2Settings.qml        Settings → Plugins page
-├── services/Aria2Service.qml   SSE stream, REST calls, shared state, IPC
-├── lib/Fmt.js               byte/speed/ETA formatting shared with the web UI
+├── services/Aria2Service.qml   socket connection, event stream, API calls, shared state, IPC
+├── lib/Fmt.js               byte/speed/ETA formatting shared with the extension's manager page
 ├── lib/Actions.js           the global actions, described once for every surface
 ├── lib/Layout.js            layout constants more than one surface has to agree on
 └── components/

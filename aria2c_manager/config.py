@@ -13,7 +13,6 @@ import yaml
 
 PKG_DIR = Path(__file__).resolve().parent
 PROJECT_DIR = PKG_DIR.parent
-STATIC_DIR = PKG_DIR / "static"
 
 DEFAULT_STATE_DIR = Path(
     os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share")
@@ -23,14 +22,11 @@ DEFAULT_STATE_DIR = Path(
 # passed straight to the process as --key=value and aria2c aborts on unknown ones.
 DEFAULTS: dict[str, Any] = {
     "server": {
-        "host": "127.0.0.1",
-        "port": 6810,
-        # No auth by design: the socket is bound to loopback only.
-        "open_browser": False,
-        # Serve the browser UI at /. Off by default: the DankMaterialShell
-        # widget and the browser extension both drive the API directly, so the
-        # UI is opt-in. The REST/SSE API is served either way.
-        "web_ui": False,
+        # The only way into the manager: a Unix socket for the DMS widget and the
+        # browser extension (through its native-messaging host). No auth by
+        # design — it is mode 0600, this user only.
+        # Blank = $XDG_RUNTIME_DIR/aria2c-manager.sock.
+        "socket": "",
     },
     "poll_interval": 1.0,
     # Used when nothing is downloading and no UI is connected to the stream.

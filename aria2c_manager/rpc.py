@@ -203,9 +203,6 @@ class Aria2RPC:
     async def get_global_option(self) -> dict:
         return await self.call("aria2.getGlobalOption")
 
-    async def get_global_stat(self) -> dict:
-        return await self.call("aria2.getGlobalStat")
-
     async def change_position(self, gid: str, pos: int, how: str = "POS_SET") -> int:
         return await self.call("aria2.changePosition", gid, int(pos), how)
 
@@ -214,9 +211,6 @@ class Aria2RPC:
 
     async def get_files(self, gid: str) -> list[dict]:
         return await self.call("aria2.getFiles", gid)
-
-    async def get_servers(self, gid: str) -> list[dict]:
-        return await self.call("aria2.getServers", gid)
 
     async def get_peers(self, gid: str) -> list[dict]:
         return await self.call("aria2.getPeers", gid)

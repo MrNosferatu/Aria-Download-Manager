@@ -1,51 +1,60 @@
-"""Render the web UI to a self-contained HTML file for visual inspection.
+"""Render the extension's manager page to a self-contained HTML file.
 
-Captures the live JSON from a running manager, then emits one HTML file with the
-CSS/JS inlined and `fetch`/`EventSource` stubbed out by the captured fixtures.
-The result opens offline and renders exactly what the real UI would, which makes
-it screenshot-able by headless browsers (a live SSE stream keeps a real page in
-a permanent "loading" state, so headless screenshots never fire).
+Captures the live JSON from a running manager over its socket, then emits one
+HTML file with the CSS/JS inlined and `ManagerLink` (the native-messaging
+connection, which only exists inside the extension) replaced by the captured
+fixtures. The result opens offline in any browser, headless ones included.
 
-    python3 tests/render_ui.py --base http://127.0.0.1:6810 --tab downloads \
-        --out /tmp/ui.html
+    python3 tests/render_ui.py --tab downloads --out /tmp/ui.html
 
-Options: --tab downloads|settings|rules|log|help, --expand to open the first
-download's detail panel.
+Options: --socket PATH (default: the manager's default socket), --tab
+downloads|settings|rules|log, --expand to open the first download's detail panel.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
-import urllib.error
-import urllib.request
+import socket
+import sys
 from pathlib import Path
 
-STATIC = Path(__file__).resolve().parent.parent / "aria2c_manager" / "static"
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
+
+from aria2c_manager.native_host import default_socket_path  # noqa: E402
+
+STATIC = ROOT / "extension" / "manager"
 
 
-def fetch(base: str, path: str):
+def fetch(sock_path: str, path: str):
     try:
-        with urllib.request.urlopen(base.rstrip("/") + path, timeout=10) as res:
-            return json.load(res)
-    except (urllib.error.URLError, json.JSONDecodeError, TimeoutError) as exc:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+            sock.settimeout(10)
+            sock.connect(sock_path)
+            sock.sendall((json.dumps({"id": 1, "method": "GET", "path": path}) + "\n").encode())
+            reply = json.loads(sock.makefile("r", encoding="utf-8").readline())
+    except (OSError, ValueError) as exc:
         print(f"  warning: {path} -> {exc}")
         return None
+    if reply.get("status") != 200:
+        print(f"  warning: {path} -> status {reply.get('status')}")
+        return None
+    return reply.get("body")
 
 
-def capture(base: str) -> dict:
+def capture(sock_path: str) -> dict:
     fixtures = {
-        "/api/state": fetch(base, "/api/state"),
-        "/api/log": fetch(base, "/api/log"),
-        "/api/config": fetch(base, "/api/config"),
-        "/api/global/options": fetch(base, "/api/global/options"),
-        "/api/rules": fetch(base, "/api/rules"),
-        "/api/ping": fetch(base, "/api/ping"),
+        "/api/state": fetch(sock_path, "/api/state"),
+        "/api/log": fetch(sock_path, "/api/log"),
+        "/api/config": fetch(sock_path, "/api/config"),
+        "/api/global/options": fetch(sock_path, "/api/global/options"),
+        "/api/rules": fetch(sock_path, "/api/rules"),
     }
     state = fixtures.get("/api/state") or {}
     for download in state.get("downloads", []):
         gid = download["gid"]
-        detail = fetch(base, f"/api/download/{gid}")
+        detail = fetch(sock_path, f"/api/download/{gid}")
         if detail:
             fixtures[f"/api/download/{gid}"] = detail
     return fixtures
@@ -55,6 +64,7 @@ def build(fixtures: dict, tab: str, expand: bool) -> str:
     html = (STATIC / "index.html").read_text(encoding="utf-8")
     css = (STATIC / "style.css").read_text(encoding="utf-8")
     js = (STATIC / "app.js").read_text(encoding="utf-8")
+    option_help = (STATIC / "option-help.js").read_text(encoding="utf-8")
 
     state = fixtures.get("/api/state") or {}
     first_gid = ""
@@ -65,25 +75,19 @@ def build(fixtures: dict, tab: str, expand: bool) -> str:
 
     stub = f"""
 const __FIXTURES = {json.dumps(fixtures)};
-window.fetch = async (url, opts = {{}}) => {{
-  const path = String(url).replace(/^https?:\\/\\/[^/]+/, '').split('?')[0];
-  const body = __FIXTURES[path];
-  return {{
-    ok: body != null, status: body != null ? 200 : 404,
-    statusText: body != null ? 'OK' : 'Not Found',
-    headers: {{ get: () => 'application/json' }},
-    json: async () => body, text: async () => JSON.stringify(body),
-  }};
-}};
-window.EventSource = class {{
-  constructor() {{ this._handlers = {{}}; setTimeout(() => this._fire(), 30); }}
-  addEventListener(type, fn) {{ (this._handlers[type] ||= []).push(fn); }}
-  _fire() {{
-    const emit = (type, data) => (this._handlers[type] || [])
-      .forEach((fn) => fn({{ data: JSON.stringify(data) }}));
-    emit('state', __FIXTURES['/api/state']);
-    emit('backlog', (__FIXTURES['/api/log'] || {{}}).events || []);
-  }}
+window.ManagerLink = {{
+  async call(method, path) {{
+    const body = __FIXTURES[path.split('?')[0]];
+    return {{ status: body != null ? 200 : 404, body }};
+  }},
+  subscribe(sub) {{
+    setTimeout(() => {{
+      sub.onFrame('state', __FIXTURES['/api/state']);
+      sub.onFrame('backlog', (__FIXTURES['/api/log'] || {{}}).events || []);
+    }}, 30);
+    return () => {{}};
+  }},
+  errorText: (reply) => (reply.body && reply.body.error) || `HTTP ${{reply.status}}`,
 }};
 """
 
@@ -95,26 +99,28 @@ window.addEventListener('load', () => setTimeout(() => {{
 }}, 120));
 """
 
-    html = html.replace('<link rel="stylesheet" href="/static/style.css">', f"<style>\n{css}\n</style>")
+    html = html.replace('<link rel="stylesheet" href="style.css">', f"<style>\n{css}\n</style>")
     html = html.replace(
-        '<script src="/static/app.js"></script>',
-        f"<script>{stub}</script>\n<script>\n{js}\n</script>\n<script>{driver}</script>",
+        '<script src="../lib/link.js"></script>\n<script src="option-help.js"></script>\n'
+        '<script src="app.js"></script>',
+        f"<script>{stub}</script>\n<script>\n{option_help}\n"
+        f"</script>\n<script>\n{js}\n</script>\n<script>{driver}</script>",
     )
     return html
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--base", default="http://127.0.0.1:6810")
+    parser.add_argument("--socket", default=default_socket_path())
     parser.add_argument("--out", default="/tmp/aria2c-manager-ui.html")
     parser.add_argument("--tab", default="downloads",
-                        choices=["downloads", "settings", "rules", "log", "help"])
+                        choices=["downloads", "settings", "rules", "log"])
     parser.add_argument("--expand", action="store_true",
                         help="open the first active download's detail panel")
     args = parser.parse_args()
 
-    print(f"capturing from {args.base}")
-    fixtures = capture(args.base)
+    print(f"capturing from {args.socket}")
+    fixtures = capture(args.socket)
     if not fixtures.get("/api/state"):
         print("error: could not read /api/state — is the manager running?")
         return 1

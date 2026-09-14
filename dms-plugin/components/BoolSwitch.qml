@@ -1,7 +1,7 @@
 import QtQuick
 import qs.Common
 
-/* The product's yes/no control, at the size the web UI and the browser
+/* The product's yes/no control, at the size the manager page and the browser
    extension use it (34x20).
 
    DMS ships DankToggle, and a plugin would normally just use it — but its track

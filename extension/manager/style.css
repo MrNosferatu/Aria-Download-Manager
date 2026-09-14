@@ -1,4 +1,4 @@
-/* aria2c manager — web UI
+/* aria2c manager — manager page
  *
  * Layout notes that are easy to undo by accident:
  *  - A download row shows its progress twice on purpose: a precise rail along
@@ -468,6 +468,21 @@ main { padding: 20px var(--gutter); }
 .optrow { display: flex; gap: 7px; align-items: center; margin-bottom: 6px; }
 .optrow label { flex: 1; color: var(--fg-dim); }
 .optrow input { width: 115px; }
+.optrow .unit-input { width: 190px; }
+
+/* A number and its unit, read as one control: the two parts share a border
+   and only the outer corners are rounded. */
+.unit-input { display: inline-flex; flex-shrink: 0; min-width: 0; }
+.unit-input input {
+  flex: 1; min-width: 0; width: auto;
+  border-top-right-radius: 0; border-bottom-right-radius: 0;
+}
+.unit-input select {
+  flex: none; width: auto; margin-left: -1px;
+  border-top-left-radius: 0; border-bottom-left-radius: 0;
+}
+.unit-input input:focus, .unit-input select:focus { position: relative; z-index: 1; }
+.field .unit-input { width: 100%; }
 
 /* ---------- options --------------------------------------------------- */
 .optgroup {
@@ -512,6 +527,8 @@ main { padding: 20px var(--gutter); }
    the download path was still being truncated — the gap was not doing any work,
    so the control took it back. */
 .optfield input, .optfield select { width: var(--optval); flex-shrink: 0; }
+.optfield .unit-input { width: var(--optval); margin-top: 1px; }
+.optfield .unit-input input, .optfield .unit-input select { width: auto; margin-top: 0; }
 /* Left-aligned, not right: every control in a column then starts at the same x,
    so a 34px switch lines up with the text inputs above and below it instead of
    floating at the far edge of its cell against the next column. */

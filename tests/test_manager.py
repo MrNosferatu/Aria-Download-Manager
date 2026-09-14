@@ -13,14 +13,13 @@ import asyncio
 import base64
 import contextlib
 import json
+import os
 import shutil
 import sys
 import tempfile
 import time
 from pathlib import Path
 
-import aiohttp
-import uvicorn
 import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -28,7 +27,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from aria2c_manager.api import clean_options, create_app, piece_map, split_uris  # noqa: E402
 from aria2c_manager.config import Config  # noqa: E402
 from tests.fake_aria2 import serve  # noqa: E402
-from tests.harness import check, free_port, summary, wait_for  # noqa: E402
+from tests.harness import IPCSession, ManagerRunner, check, free_port, summary, wait_for  # noqa: E402
 
 
 # --------------------------------------------------------------------------
@@ -192,12 +191,12 @@ def test_units() -> None:
 # end-to-end
 # --------------------------------------------------------------------------
 async def test_e2e(tmp_dir: Path) -> None:
-    rpc_port, web_port = free_port(), free_port()
+    rpc_port = free_port()
     httpd, fake = serve(rpc_port, secret="test-secret")
 
     config_path = tmp_dir / "config.yaml"
     config_path.write_text(yaml.safe_dump({
-        "server": {"host": "127.0.0.1", "port": web_port, "web_ui": True},
+        "server": {"socket": str(tmp_dir / "manager.sock")},
         "poll_interval": 0.5,
         "aria2": {
             "managed": False,
@@ -219,12 +218,11 @@ async def test_e2e(tmp_dir: Path) -> None:
 
     cfg = Config(config_path)
     app = create_app(cfg)
-    server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=web_port,
-                                           log_level="error", access_log=False))
+    server = ManagerRunner(app)
     task = asyncio.create_task(server.serve())
-    base = f"http://127.0.0.1:{web_port}"
+    base = ""
 
-    async with aiohttp.ClientSession() as http:
+    async with IPCSession(cfg.get("server.socket")) as http:
         async def get(path):
             async with http.get(base + path) as res:
                 return res.status, await res.json()
@@ -236,12 +234,12 @@ async def test_e2e(tmp_dir: Path) -> None:
         # --- startup
         print("\ne2e: startup")
         up = await wait_for(lambda: server.started, 15)
-        check("web server starts", up)
+        check("manager starts and opens its socket", up)
         if not up:
             return
 
-        status, ping = await get("/api/ping")
-        check("GET /api/ping", status == 200 and ping.get("ok"))
+        status, ping = await get("/api/intake/ping")
+        check("GET /api/intake/ping", status == 200 and ping.get("ok"))
 
         ready = await wait_for(lambda: _state_has_downloads(http, base), 10)
         check("state stream picks up the fake downloads", ready)
@@ -258,52 +256,8 @@ async def test_e2e(tmp_dir: Path) -> None:
         check("queue position exposed",
               any(d.get("queuePosition") == 0 for d in state["downloads"] if d["status"] == "waiting"))
 
-        # --- UI assets
-        print("\ne2e: static UI")
-        for path in ("/", "/static/app.js", "/static/style.css"):
-            async with http.get(base + path) as res:
-                body = await res.text()
-            check(f"serves {path}", res.status == 200 and len(body) > 500, f"{res.status}, {len(body)}B")
-
-        # A 204 with a body makes h11 raise "Too much data for declared
-        # Content-Length" on every browser favicon request.
-        async with http.get(base + "/favicon.ico") as res:
-            icon = await res.read()
-            declared = res.headers.get("content-length")
-        check("favicon returns a body with a matching Content-Length",
-              res.status == 200 and icon and declared == str(len(icon)),
-              f"status={res.status} len={len(icon)} content-length={declared}")
-        check("favicon is not a bodyless status", res.status not in (204, 304))
-
-        # With server.web_ui off (the default) the API stays up and / explains
-        # itself instead of 404ing.
-        off_cfg = Config(tmp_dir / "web-ui-off.yaml")
-        off_cfg.data["server"]["web_ui"] = False
-        off_app = create_app(off_cfg)
-        off_routes = {getattr(r, "path", None) for r in off_app.routes}
-        check("web UI off: no /static mount", "/static" not in off_routes)
-        check("web UI off: the API is still routed", "/api/state" in off_routes)
-
-        # --- manager config writes
-        print("\ne2e: manager config")
         status, before = await get("/api/config")
-        check("config is readable", status == 200 and "server" in before)
-
-        status, applied = await post("/api/config", {"web_ui": False})
-        check("web_ui can be written", status == 200 and applied["changed"]["server.web_ui"] is False)
-        check("a web_ui change asks for a restart", applied["restartRequired"] is True)
-
-        status, tuned = await post("/api/config", {"poll_interval_idle": 9.0})
-        check("idle interval can be written", status == 200 and tuned["changed"]["poll_interval_idle"] == 9.0)
-        check("a poll change needs no restart", tuned["restartRequired"] is False)
-
-        status, empty = await post("/api/config", {})
-        check("an empty config write is rejected", status == 400)
-
-        saved = yaml.safe_load(config_path.read_text())
-        check("the change reached config.yaml",
-              saved["server"]["web_ui"] is False and saved["poll_interval_idle"] == 9.0,
-              str(saved.get("server")))
+        check("config is readable", status == 200 and "aria2" in before)
 
         # --- adding
         print("\ne2e: adding downloads")
@@ -415,22 +369,21 @@ async def test_e2e(tmp_dir: Path) -> None:
         check("invalid rule set is rejected with 400", status == 400,
               json.dumps(rejected)[:120])
 
-        # --- SSE
-        print("\ne2e: SSE stream")
-        frames: list[str] = []
-        async with http.get(base + "/api/events") as res:
-            check("SSE content type", res.headers.get("content-type", "").startswith("text/event-stream"))
-            deadline = time.monotonic() + 6
-            async for line in res.content:
-                frames.append(line.decode("utf-8", "replace"))
-                if sum(1 for f in frames if f.startswith("event: state")) >= 2:
-                    break
-                if time.monotonic() > deadline:
-                    break
-        check("SSE pushes repeated state frames",
-              sum(1 for f in frames if f.startswith("event: state")) >= 2,
-              f"{len(frames)} lines")
-        check("SSE sends the event backlog", any(f.startswith("event: backlog") for f in frames))
+        # --- live stream
+        print("\ne2e: live stream")
+        reader, writer = await asyncio.open_unix_connection(cfg.get("server.socket"),
+                                                            limit=64 * 1024 * 1024)
+        writer.write(b'{"id": 1, "method": "SUBSCRIBE"}\n')
+        await writer.drain()
+        kinds: list[str] = []
+        deadline = time.monotonic() + 6
+        while time.monotonic() < deadline and kinds.count("state") < 2:
+            with contextlib.suppress(asyncio.TimeoutError):
+                message = json.loads(await asyncio.wait_for(reader.readline(), 2))
+                kinds.append(message.get("event") or f"reply:{message.get('id')}")
+        writer.close()
+        check("the stream pushes repeated state frames", kinds.count("state") >= 2, str(kinds))
+        check("the stream sends the event backlog", "backlog" in kinds)
 
         # --- THE watchdog: speed below X for N seconds -> pause + resume
         print("\ne2e: stall-recovery rule (the custom download action)")
@@ -511,10 +464,6 @@ async def test_e2e(tmp_dir: Path) -> None:
         status, nourl = await post("/api/intake/add", {})
         check("intake add without a url is 400", status == 400)
 
-        status, legacy = await get("/api/userscript/ping")
-        check("the pre-extension /api/userscript alias still answers",
-              status == 200 and legacy["ok"])
-
         # --- finished-download history (survives restarts and purges)
         print("\ne2e: finished-download history")
         history_file = tmp_dir / "history.json"
@@ -572,10 +521,10 @@ async def test_e2e(tmp_dir: Path) -> None:
         check("GET /api/config hides the RPC secret", status == 200
               and cfg_out["aria2"]["rpc"]["secret"] == "***")
 
-        status, proc = await get("/api/aria2/status")
-        check("aria2 status reports unmanaged mode", status == 200 and proc["managed"] is False)
+        status, state = await get("/api/state")
+        check("aria2 status reports unmanaged mode", status == 200 and state["aria2"]["managed"] is False)
 
-    server.should_exit = True
+    server.stop()
     with contextlib.suppress(asyncio.TimeoutError):
         await asyncio.wait_for(task, timeout=10)
     httpd.shutdown()
@@ -588,12 +537,12 @@ async def test_managed(tmp_dir: Path) -> None:
     import signal
 
     print("\ne2e: managed aria2c process")
-    rpc_port, web_port = free_port(), free_port()
+    rpc_port = free_port()
     shim = Path(__file__).resolve().parent / "fake_aria2c"
 
     config_path = tmp_dir / "managed.yaml"
     config_path.write_text(yaml.safe_dump({
-        "server": {"host": "127.0.0.1", "port": web_port},
+        "server": {"socket": str(tmp_dir / "manager.sock")},
         "poll_interval": 0.5,
         "aria2": {
             "managed": True,
@@ -611,21 +560,20 @@ async def test_managed(tmp_dir: Path) -> None:
 
     cfg = Config(config_path)
     app = create_app(cfg)
-    server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=web_port,
-                                           log_level="error", access_log=False))
+    server = ManagerRunner(app)
     task = asyncio.create_task(server.serve())
-    base = f"http://127.0.0.1:{web_port}"
+    base = ""
 
-    async with aiohttp.ClientSession() as http:
+    async with IPCSession(cfg.get("server.socket")) as http:
         async def status() -> dict:
-            async with http.get(base + "/api/aria2/status") as res:
-                return await res.json()
+            async with http.get(base + "/api/state") as res:
+                return (await res.json())["aria2"]
 
         await wait_for(lambda: server.started, 15)
         started = await wait_for(lambda: _running(http, base), 20)
         check("manager spawns aria2c and reaches its RPC", started)
         if not started:
-            server.should_exit = True
+            server.stop()
             with contextlib.suppress(asyncio.TimeoutError):
                 await asyncio.wait_for(task, timeout=10)
             return
@@ -652,12 +600,12 @@ async def test_managed(tmp_dir: Path) -> None:
         pid_before = info["pid"]
         async with http.post(base + "/api/aria2/restart") as res:
             check("POST /api/aria2/restart succeeds", res.status == 200)
+        replaced = await wait_for(lambda: _pid_changed(http, base, pid_before), 10)
         info = await status()
-        check("explicit restart replaces the process",
-              info["running"] and info["pid"] != pid_before, str(info["pid"]))
+        check("explicit restart replaces the process", replaced, str(info["pid"]))
         final_pid = info["pid"]
 
-    server.should_exit = True
+    server.stop()
     with contextlib.suppress(asyncio.TimeoutError):
         await asyncio.wait_for(task, timeout=15)
     gone = await wait_for(lambda: not _pid_alive(final_pid), 12, interval=0.4)
@@ -889,7 +837,7 @@ async def test_slot_preservation(tmp_dir: Path) -> None:
     """
     print("\ne2e: a stalled download keeps its slot")
     tmp_dir.mkdir(parents=True, exist_ok=True)
-    rpc_port, web_port = free_port(), free_port()
+    rpc_port = free_port()
     httpd, fake = serve(rpc_port, secret="slot-secret", seed=False)
     fake.global_options["max-concurrent-downloads"] = "1"
 
@@ -900,7 +848,7 @@ async def test_slot_preservation(tmp_dir: Path) -> None:
 
     config_path = tmp_dir / "slot.yaml"
     config_path.write_text(yaml.safe_dump({
-        "server": {"host": "127.0.0.1", "port": web_port},
+        "server": {"socket": str(tmp_dir / "manager.sock")},
         "poll_interval": 0.5,
         "aria2": {"managed": False,
                   "rpc": {"host": "127.0.0.1", "port": rpc_port, "secret": "slot-secret"}},
@@ -909,12 +857,11 @@ async def test_slot_preservation(tmp_dir: Path) -> None:
     }))
     cfg = Config(config_path)
     app = create_app(cfg)
-    server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=web_port,
-                                           log_level="error", access_log=False))
+    server = ManagerRunner(app)
     task = asyncio.create_task(server.serve())
-    base = f"http://127.0.0.1:{web_port}"
+    base = ""
 
-    async with aiohttp.ClientSession() as http:
+    async with IPCSession(cfg.get("server.socket")) as http:
         await wait_for(lambda: server.started, 15)
         engine = app.state.engine
 
@@ -951,7 +898,7 @@ async def test_slot_preservation(tmp_dir: Path) -> None:
               and fake.downloads[first.gid].status == "waiting",
               f"FIRST={fake.downloads[first.gid].status} SECOND={fake.downloads[second.gid].status}")
 
-    server.should_exit = True
+    server.stop()
     with contextlib.suppress(asyncio.TimeoutError):
         await asyncio.wait_for(task, timeout=10)
     httpd.shutdown()
@@ -962,7 +909,7 @@ async def test_history_clear_purges(tmp_dir: Path) -> None:
     """Clearing history must also drop aria2's finished results from the list."""
     print("\ne2e: clearing history empties the finished list too")
     tmp_dir.mkdir(parents=True, exist_ok=True)
-    rpc_port, web_port = free_port(), free_port()
+    rpc_port = free_port()
     httpd, fake = serve(rpc_port, secret="hist-secret", seed=False)
     done = fake.add("finished.bin", 1024)
     done.status = "complete"
@@ -973,7 +920,7 @@ async def test_history_clear_purges(tmp_dir: Path) -> None:
 
     config_path = tmp_dir / "hist.yaml"
     config_path.write_text(yaml.safe_dump({
-        "server": {"host": "127.0.0.1", "port": web_port},
+        "server": {"socket": str(tmp_dir / "manager.sock")},
         "poll_interval": 0.4,
         "aria2": {"managed": False,
                   "rpc": {"host": "127.0.0.1", "port": rpc_port, "secret": "hist-secret"}},
@@ -982,12 +929,11 @@ async def test_history_clear_purges(tmp_dir: Path) -> None:
     }))
     cfg = Config(config_path)
     app = create_app(cfg)
-    server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=web_port,
-                                           log_level="error", access_log=False))
+    server = ManagerRunner(app)
     task = asyncio.create_task(server.serve())
-    base = f"http://127.0.0.1:{web_port}"
+    base = ""
 
-    async with aiohttp.ClientSession() as http:
+    async with IPCSession(cfg.get("server.socket")) as http:
         async def get(path):
             async with http.get(base + path) as res:
                 return await res.json()
@@ -1012,7 +958,7 @@ async def test_history_clear_purges(tmp_dir: Path) -> None:
         check("the finished rows disappear from the downloads list as well", gone,
               json.dumps((await get("/api/state"))["downloads"]))
 
-    server.should_exit = True
+    server.stop()
     with contextlib.suppress(asyncio.TimeoutError):
         await asyncio.wait_for(task, timeout=10)
     httpd.shutdown()
@@ -1047,13 +993,13 @@ async def test_orphan_handling(tmp_dir: Path) -> None:
     print("\ne2e: orphaned aria2c handling")
     tmp_dir.mkdir(parents=True, exist_ok=True)
     shim = Path(__file__).resolve().parent / "fake_aria2c"
-    rpc_port, web_port = free_port(), free_port()
+    rpc_port = free_port()
     session = tmp_dir / "aria2.session"
     session.write_text("# session\n")  # so the shim's cmdline references it
 
     config_path = tmp_dir / "orphan.yaml"
     config_path.write_text(yaml.safe_dump({
-        "server": {"host": "127.0.0.1", "port": web_port},
+        "server": {"socket": str(tmp_dir / "manager.sock")},
         "poll_interval": 0.5,
         "aria2": {
             "managed": True,
@@ -1066,12 +1012,9 @@ async def test_orphan_handling(tmp_dir: Path) -> None:
         "rules_enabled": False, "rules": [],
         "history": {"enabled": False},
     }))
-    base = f"http://127.0.0.1:{web_port}"
-
     def manager() -> subprocess.Popen:
         return subprocess.Popen(
-            [sys.executable, "-m", "aria2c_manager", "--config", str(config_path),
-             "--log-level", "warning"],
+            [sys.executable, "-m", "aria2c_manager", "--config", str(config_path)],
             cwd=str(Path(__file__).resolve().parent.parent),
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
@@ -1091,9 +1034,8 @@ async def test_orphan_handling(tmp_dir: Path) -> None:
 
     async def running() -> dict | None:
         try:
-            async with aiohttp.ClientSession() as http:
-                async with http.get(base + "/api/aria2/status", timeout=aiohttp.ClientTimeout(total=5)) as res:
-                    return await res.json()
+            res = await IPCSession(str(tmp_dir / "manager.sock")).call("GET", "/api/state", timeout=5)
+            return (await res.json())["aria2"]
         except Exception:
             return None
 
@@ -1143,7 +1085,7 @@ async def test_orphan_handling(tmp_dir: Path) -> None:
         blocker.listen(1)
         try:
             proc = manager()
-            await asyncio.sleep(9)
+            await wait_for(lambda: _status_failed(running()), 20)
             info = await running()
             message = (info or {}).get("last_error", "")
             check("an unrelated listener on the RPC port is reported clearly",
@@ -1160,6 +1102,11 @@ async def test_orphan_handling(tmp_dir: Path) -> None:
         for pid in shim_pids():
             with contextlib.suppress(ProcessLookupError, PermissionError):
                 os.kill(pid, signal.SIGKILL)
+
+
+async def _status_failed(coro) -> bool:
+    info = await coro
+    return bool(info and "running" in info and not info["running"] and info.get("last_error"))
 
 
 async def _status_running(coro) -> bool:
@@ -1182,13 +1129,13 @@ def _pid_alive(pid: int) -> bool:
 
 
 async def _running(http, base) -> bool:
-    async with http.get(base + "/api/aria2/status") as res:
-        return (await res.json()).get("running") is True
+    async with http.get(base + "/api/state") as res:
+        return (await res.json())["aria2"].get("running") is True
 
 
 async def _pid_changed(http, base, old_pid: int) -> bool:
-    async with http.get(base + "/api/aria2/status") as res:
-        info = await res.json()
+    async with http.get(base + "/api/state") as res:
+        info = (await res.json())["aria2"]
     return bool(info.get("running")) and info.get("pid") not in (None, old_pid)
 
 
@@ -1274,12 +1221,12 @@ def test_config(tmp_dir: Path) -> None:
     print("\nunit: config")
     path = tmp_dir / "cfg.yaml"
     path.write_text(yaml.safe_dump({
-        "server": {"port": 7000},
+        "server": {"socket": "/tmp/custom.sock"},
         "aria2": {"options": {"split": 32}},
     }))
     cfg = Config(path)
-    check("user values win", cfg.get("server.port") == 7000)
-    check("defaults fill the gaps", cfg.get("server.host") == "127.0.0.1")
+    check("user values win", cfg.get("server.socket") == "/tmp/custom.sock")
+    check("defaults fill the gaps", cfg.get("poll_interval") == 1.0)
     check("nested user options merge, not replace",
           cfg.get("aria2.options.split") == "32" and cfg.get("aria2.options.continue") == "true")
     check("paths expanded", not str(cfg.get("aria2.session_file")).startswith("~"))
@@ -1289,7 +1236,7 @@ def test_config(tmp_dir: Path) -> None:
     cfg.save()
     reread = yaml.safe_load(path.read_text())
     check("save() persists rules", reread["rules"][0]["name"] == "only")
-    check("save() keeps unrelated user keys", reread["server"]["port"] == 7000)
+    check("save() keeps unrelated user keys", reread["server"]["socket"] == "/tmp/custom.sock")
     check("save() does not write the generated secret",
           "secret" not in json.dumps(reread.get("aria2", {})))
 
@@ -1299,6 +1246,9 @@ def main() -> int:
 
     with tempfile.TemporaryDirectory(prefix="aria2c-manager-test-") as tmp:
         tmp_dir = Path(tmp)
+        # Every manager started here opens its IPC socket at the default path;
+        # keep that away from a real manager running in this session.
+        os.environ["XDG_RUNTIME_DIR"] = tmp
         for name in ("c1", "c2", "c3", "c4", "c6", "c7", "c8", "c9"):
             (tmp_dir / name).mkdir(parents=True, exist_ok=True)
         test_units()
