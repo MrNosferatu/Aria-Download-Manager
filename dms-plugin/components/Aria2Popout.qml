@@ -67,7 +67,7 @@ PopoutComponent {
         }
     }
 
-    headerText: inWindow ? "" : "aria2c manager"
+    headerText: inWindow ? "" : "Aria Download Manager"
     detailsText: {
         if (!service)
             return ""

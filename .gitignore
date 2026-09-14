@@ -28,7 +28,7 @@ htmlcov/
 # machine-specific paths, your tuned rules, and possibly an explicit RPC secret.
 /config.yaml
 
-# Runtime state. These normally live in ~/.local/share/aria2c-manager, but they
+# Runtime state. These normally live in ~/.local/share/aria-download-manager, but they
 # land here if you point the *_file settings at the checkout. rpc-secret is
 # sensitive.
 rpc-secret

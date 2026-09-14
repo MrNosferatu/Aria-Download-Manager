@@ -1,4 +1,4 @@
-# aria2c manager — DankMaterialShell plugin
+# Aria Download Manager — DankMaterialShell plugin
 
 The manager UI, as a [DankMaterialShell](https://danklinux.com) bar widget: a
 download icon on the DankBar that opens a panel with three tabs — Downloads,
@@ -7,12 +7,12 @@ actions, and the popout's *open in window* button detaches the whole thing into
 an ordinary window that stays put while you work elsewhere.
 
 The plugin does **not** download anything itself. It is a second front-end onto
-the same `aria2c-manager` daemon the browser extension talks to, over the same
+the same Aria Download Manager daemon the browser extension talks to, over the same
 Unix socket, so the extension's manager page and the widget can be open at once
 and stay in sync.
 
 ```
-DankBar pill ──► Aria2Service (singleton) ──► $XDG_RUNTIME_DIR/aria2c-manager.sock
+DankBar pill ──► Aria2Service (singleton) ──► $XDG_RUNTIME_DIR/aria-download-manager.sock
                    │  one Quickshell Socket, newline-delimited JSON
                    ├─ SUBSCRIBE while a panel is open (live frames, all monitors)
                    └─ request/reply by id for every command and lazily loaded section
@@ -27,14 +27,14 @@ The plugin lives in this repo and is symlinked into the DMS plugin directory, so
 `git pull` updates it in place:
 
 ```sh
-ln -s "$PWD/dms-plugin" ~/.config/DankMaterialShell/plugins/aria2cManager
-dms ipc call plugins enable aria2cManager
+ln -s "$PWD/dms-plugin" ~/.config/DankMaterialShell/plugins/ariaDownloadManager
+dms ipc call plugins enable ariaDownloadManager
 ```
 
-Then add it to the bar: **Settings → DankBar → Widgets**, add *aria2c Manager*
+Then add it to the bar: **Settings → DankBar → Widgets**, add *Aria Download Manager*
 to a section (or edit `barConfigs[].rightWidgets` in
 `~/.config/DankMaterialShell/settings.json` and add
-`{"id": "aria2cManager", "enabled": true}`).
+`{"id": "ariaDownloadManager", "enabled": true}`).
 
 Start the daemon first — `./run.sh`, or the systemd user unit in `systemd/`.
 Until it answers, the pill shows `offline` and the window explains where it
@@ -42,11 +42,11 @@ looked.
 
 ## Settings
 
-**Settings → Plugins → aria2c Manager**:
+**Settings → Plugins → Aria Download Manager**:
 
 | Setting | Default | What it does |
 | --- | --- | --- |
-| Manager socket | `$XDG_RUNTIME_DIR/aria2c-manager.sock` | Must match `server.socket` in `config.yaml` (blank on both sides = default) |
+| Manager socket | `$XDG_RUNTIME_DIR/aria-download-manager.sock` | Must match `server.socket` in `config.yaml` (blank on both sides = default) |
 | Bar label | Download speed | Speed, active count, or icon only |
 | Clicking the bar icon | Bar popout | Whether left click opens the bar popout or goes straight to the standalone window |
 | Popout width / content height | 640 / 540 | Size of the bar popout (the window is resized by dragging it) |
@@ -57,14 +57,14 @@ looked.
 ## IPC
 
 ```sh
-dms ipc call aria2c toggle              # show/hide the bar popout
-dms ipc call aria2c toggleWindow        # show/hide the standalone window
-dms ipc call aria2c tab rules           # switch tab: downloads rules settings
-dms ipc call aria2c tab log             # settings, with the event log unfolded
-dms ipc call aria2c add <url>           # queue a URL with default options
-dms ipc call aria2c status              # one-line summary
-dms ipc call aria2c streamInfo          # event-stream health (silence, restarts)
-dms ipc call aria2c pauseAll            # / resumeAll
+dms ipc call ariaDownloadManager toggle              # show/hide the bar popout
+dms ipc call ariaDownloadManager toggleWindow        # show/hide the standalone window
+dms ipc call ariaDownloadManager tab rules           # switch tab: downloads rules settings
+dms ipc call ariaDownloadManager tab log             # settings, with the event log unfolded
+dms ipc call ariaDownloadManager add <url>           # queue a URL with default options
+dms ipc call ariaDownloadManager status              # one-line summary
+dms ipc call ariaDownloadManager streamInfo          # event-stream health (silence, restarts)
+dms ipc call ariaDownloadManager pauseAll            # / resumeAll
 ```
 
 Bind `toggle` to a key in your compositor for a hotkey-driven download manager —
@@ -105,7 +105,7 @@ floating over it:
 
 ```kdl
 window-rule {
-    match app-id=r#"^com\.danklinux\.dms$"# title=r#"^aria2c manager$"#
+    match app-id=r#"^com\.danklinux\.dms$"# title=r#"^Aria Download Manager$"#
     open-floating false
 }
 window-rule {
@@ -154,7 +154,7 @@ repeats the pill's status in words.
 The **event log** is no longer a tab of its own. It is diagnostic material
 rather than something to watch, so it folds away at the bottom of *Settings*,
 under the aria2c process card it usually explains — click the header to unfold
-it, or run `dms ipc call aria2c tab log`, which unfolds it and scrolls down to
+it, or run `dms ipc call ariaDownloadManager tab log`, which unfolds it and scrolls down to
 it. Same live stream as before: click a line to copy it.
 
 ### What "All" holds
@@ -176,7 +176,7 @@ a tick — there is nothing to refresh.
 ## Hacking
 
 QML files are compiled once per shell session. `dms ipc call plugins reload
-aria2cManager` re-runs the widget, but **changes to
+ariaDownloadManager` re-runs the widget, but **changes to
 `services/Aria2Service.qml` (or anything already compiled) only take effect
 after `systemctl --user restart dms`** — reload alone will keep serving the
 cached component and the old singleton.

@@ -131,7 +131,7 @@ class IPCServer:
         if target.exists() or target.is_symlink():
             if await self._is_live(target):
                 raise SocketInUse(
-                    f"another aria2c-manager is already listening on {target}")
+                    f"another Aria Download Manager is already listening on {target}")
             target.unlink()  # left behind by a manager that did not exit cleanly
         # Created 0600 from the start rather than chmod-ed after: there is no
         # window in which another user could connect.

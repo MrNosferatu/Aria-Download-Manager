@@ -1,4 +1,4 @@
-"""End-to-end checks for aria2c-manager, driven against tests/fake_aria2.py.
+"""End-to-end checks for Aria Download Manager, driven against tests/fake_aria2.py.
 
     python3 tests/test_manager.py
 
@@ -23,9 +23,12 @@ from pathlib import Path
 import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+# The state dir (RPC secret, history) is fixed when the package is imported, so it
+# has to point somewhere disposable before that, not at the real one.
+os.environ["XDG_DATA_HOME"] = tempfile.mkdtemp(prefix="aria-download-manager-test-data-")
 
-from aria2c_manager.api import clean_options, create_app, piece_map, split_uris  # noqa: E402
-from aria2c_manager.config import Config  # noqa: E402
+from aria_download_manager.api import clean_options, create_app, piece_map, split_uris  # noqa: E402
+from aria_download_manager.config import Config  # noqa: E402
 from tests.fake_aria2 import serve  # noqa: E402
 from tests.harness import IPCSession, ManagerRunner, check, free_port, summary, wait_for  # noqa: E402
 
@@ -53,7 +56,7 @@ def test_units() -> None:
     check("piece_map tolerates no bitfield", piece_map("", 0) == [])
 
     print("\nunit: deleting a download's files")
-    from aria2c_manager import files as filetools
+    from aria_download_manager import files as filetools
 
     root = Path(tempfile.mkdtemp())
     folder = root / "torrent-folder"
@@ -90,7 +93,7 @@ def test_units() -> None:
     shutil.rmtree(outside, ignore_errors=True)
 
     print("\nunit: reading a stream manifest")
-    from aria2c_manager import media as mediatools
+    from aria_download_manager import media as mediatools
 
     hls_master = "\n".join([
         "#EXTM3U",
@@ -169,7 +172,7 @@ def test_units() -> None:
           "/" not in mediatools.suggested_name("https://x/m.m3u8", "a/b:c", None))
 
     print("\nunit: rules validation")
-    from aria2c_manager.rules import RuleEngine
+    from aria_download_manager.rules import RuleEngine
 
     engine = RuleEngine.__new__(RuleEngine)  # validate() needs no collaborators
     good = {"name": "r", "when": {"speed_below": 100, "for_seconds": 3}, "action": "pause_resume"}
@@ -615,7 +618,7 @@ async def test_managed(tmp_dir: Path) -> None:
 def test_rule_timing() -> None:
     """Regressions around *when* a rule is allowed to fire."""
     print("\nunit: rule timing and speed source")
-    from aria2c_manager.rules import RuleEngine, Tracker
+    from aria_download_manager.rules import RuleEngine, Tracker
 
     engine = RuleEngine.__new__(RuleEngine)
     engine.cfg = _FakeCfg()
@@ -672,7 +675,7 @@ class _FakeCfg:
 def test_speed_sources() -> None:
     """aria2 / measured / hybrid must each behave as advertised."""
     print("\nunit: speed source choices")
-    from aria2c_manager.rules import RuleEngine
+    from aria_download_manager.rules import RuleEngine
 
     engine = RuleEngine.__new__(RuleEngine)
     engine.cfg = _FakeCfg()
@@ -701,7 +704,7 @@ def test_speed_sources() -> None:
           engine.speed_of(lagging, {"speed_source": "measured"}) == 0)
 
     # A rule must not fire on a speed it cannot measure.
-    from aria2c_manager.rules import Tracker
+    from aria_download_manager.rules import Tracker
     engine.cfg = _FakeCfg()
     tracker = Tracker(first_seen=0.0, active_since=1.0)
     row = {"gid": "g", "status": "active", "connections": 4, "progress": 5.0,
@@ -715,7 +718,7 @@ def test_speed_sources() -> None:
 def test_idle_backoff():
     """The poller only slows down when nothing is live and nobody is watching."""
     print("\nunit: idle poll backoff")
-    from aria2c_manager.state import Poller, Store
+    from aria_download_manager.state import Poller, Store
 
     store = Store()
     poller = Poller(None, store, None, None, interval=1.0, idle_interval=5.0)
@@ -742,7 +745,7 @@ def test_idle_backoff():
 
 def test_measured_speed() -> None:
     print("\nunit: measured speed")
-    from aria2c_manager.state import Poller
+    from aria_download_manager.state import Poller
 
     poller = Poller.__new__(Poller)
     poller._progress = {}
@@ -780,7 +783,7 @@ def test_measured_speed() -> None:
 def test_history(tmp_dir: Path) -> None:
     """Clearing history must stick, even though aria2 keeps listing the downloads."""
     print("\nunit: history")
-    from aria2c_manager.history import History
+    from aria_download_manager.history import History
 
     tmp_dir.mkdir(parents=True, exist_ok=True)
     path = tmp_dir / "history.json"
@@ -1014,7 +1017,7 @@ async def test_orphan_handling(tmp_dir: Path) -> None:
     }))
     def manager() -> subprocess.Popen:
         return subprocess.Popen(
-            [sys.executable, "-m", "aria2c_manager", "--config", str(config_path)],
+            [sys.executable, "-m", "aria_download_manager", "--config", str(config_path)],
             cwd=str(Path(__file__).resolve().parent.parent),
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
@@ -1176,8 +1179,8 @@ async def _download_progressing(http, base, name: str) -> bool:
 def test_supervisor_argv(tmp_dir: Path) -> None:
     """Managed mode: check the aria2c command line we would spawn."""
     print("\nunit: supervisor argv")
-    from aria2c_manager.rpc import Aria2RPC
-    from aria2c_manager.supervisor import Aria2Supervisor, SupervisorError
+    from aria_download_manager.rpc import Aria2RPC
+    from aria_download_manager.supervisor import Aria2Supervisor, SupervisorError
 
     config_path = tmp_dir / "argv.yaml"
     config_path.write_text(yaml.safe_dump({
@@ -1244,7 +1247,7 @@ def test_config(tmp_dir: Path) -> None:
 def main() -> int:
     import tempfile
 
-    with tempfile.TemporaryDirectory(prefix="aria2c-manager-test-") as tmp:
+    with tempfile.TemporaryDirectory(prefix="aria-download-manager-test-") as tmp:
         tmp_dir = Path(tmp)
         # Every manager started here opens its IPC socket at the default path;
         # keep that away from a real manager running in this session.

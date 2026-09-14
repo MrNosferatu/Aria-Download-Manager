@@ -6,11 +6,11 @@ import qs.Modules.Plugins
 PluginSettings {
     id: settings
 
-    pluginId: "aria2cManager"
+    pluginId: "ariaDownloadManager"
 
     StyledText {
         width: parent.width
-        text: "This widget is a front-end for the aria2c-manager daemon — it does not download anything on its own. Start the daemon first (run.sh, or the systemd user unit), then point the widget at it."
+        text: "This widget is a front-end for the Aria Download Manager daemon — it does not download anything on its own. Start the daemon first (run.sh, or the systemd user unit), then point the widget at it."
         font.pixelSize: Theme.fontSizeSmall
         color: Theme.surfaceVariantText
         wrapMode: Text.WordWrap
@@ -19,8 +19,8 @@ PluginSettings {
     StringSetting {
         settingKey: "socketPath"
         label: "Manager socket"
-        description: "The Unix socket the widget talks to (server.socket in config.yaml). Leave blank for the default, $XDG_RUNTIME_DIR/aria2c-manager.sock"
-        placeholder: "$XDG_RUNTIME_DIR/aria2c-manager.sock"
+        description: "The Unix socket the widget talks to (server.socket in config.yaml). Leave blank for the default, $XDG_RUNTIME_DIR/aria-download-manager.sock"
+        placeholder: "$XDG_RUNTIME_DIR/aria-download-manager.sock"
         defaultValue: ""
     }
 

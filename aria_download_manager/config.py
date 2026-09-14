@@ -16,7 +16,7 @@ PROJECT_DIR = PKG_DIR.parent
 
 DEFAULT_STATE_DIR = Path(
     os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share")
-) / "aria2c-manager"
+) / "aria-download-manager"
 
 # Every key under aria2.options must be a real aria2c long option name; they are
 # passed straight to the process as --key=value and aria2c aborts on unknown ones.
@@ -25,7 +25,7 @@ DEFAULTS: dict[str, Any] = {
         # The only way into the manager: a Unix socket for the DMS widget and the
         # browser extension (through its native-messaging host). No auth by
         # design — it is mode 0600, this user only.
-        # Blank = $XDG_RUNTIME_DIR/aria2c-manager.sock.
+        # Blank = $XDG_RUNTIME_DIR/aria-download-manager.sock.
         "socket": "",
     },
     "poll_interval": 1.0,

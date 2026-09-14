@@ -7,13 +7,13 @@ import Quickshell.Io
 import qs.Common
 import qs.Services
 
-// Single connection to the aria2c-manager daemon, shared by every widget
+// Single connection to the Aria Download Manager daemon, shared by every widget
 // instance (bar, control center, popout) so multi-monitor setups still open
 // exactly one event stream.
 Singleton {
     id: root
 
-    readonly property string pluginId: "aria2cManager"
+    readonly property string pluginId: "ariaDownloadManager"
     readonly property var cfg: SettingsData.pluginSettings[pluginId] || ({})
 
     //: A visible popout pings once a second. Counting open/close events instead
@@ -33,7 +33,7 @@ Singleton {
     //: touches the network stack, so no VPN or proxy can get in between.
     readonly property string socketPath: cfg.socketPath
                                          || ((Quickshell.env("XDG_RUNTIME_DIR") || "")
-                                             + "/aria2c-manager.sock")
+                                             + "/aria-download-manager.sock")
 
     // ---- live snapshot ---------------------------------------------------
     property bool connected: false
@@ -67,7 +67,7 @@ Singleton {
     signal optionsLoaded
     signal historyLoaded
 
-    //: Bar widgets listen for this so `dms ipc call aria2c toggle` (or a
+    //: Bar widgets listen for this so `dms ipc call ariaDownloadManager toggle` (or a
     //: compositor keybind) opens the manager window without a click.
     signal popoutToggleRequested
 
@@ -218,7 +218,7 @@ Singleton {
     // ---- the socket ------------------------------------------------------
     //: One connection for everything: newline-delimited JSON, requests matched
     //: to replies by id, live frames arriving on the same connection. See
-    //: aria2c_manager/ipc.py for the protocol.
+    //: aria_download_manager/ipc.py for the protocol.
     property int _nextId: 0
     property var _pending: ({})
     property var _outbox: []
@@ -256,7 +256,7 @@ Singleton {
             }
             root.connected = false
             root.subscribed = false
-            root._failPending("aria2c-manager closed the connection")
+            root._failPending("Aria Download Manager closed the connection")
         }
     }
 
@@ -299,7 +299,7 @@ Singleton {
             const now = Date.now()
             if (!link.linkUp && root._outbox.length && now - root._outboxSince > 1500) {
                 root.connected = false
-                root.lastError = "no aria2c-manager at " + root.socketPath
+                root.lastError = "no Aria Download Manager at " + root.socketPath
                 root._failPending(root.lastError)
                 return
             }
@@ -308,7 +308,7 @@ Singleton {
                 if (now - entry.at < 20000)
                     continue
                 delete root._pending[id]
-                entry.callback(null, "aria2c-manager did not answer")
+                entry.callback(null, "Aria Download Manager did not answer")
             }
         }
     }
@@ -401,7 +401,7 @@ Singleton {
         }
         const detail = data && (data.error || data.detail)
         entry.callback(null, typeof detail === "string" ? detail
-                                                        : (status ? "HTTP " + status : "aria2c-manager is not reachable"))
+                                                        : (status ? "HTTP " + status : "Aria Download Manager is not reachable"))
     }
 
     function _syncTriggers() {
@@ -605,7 +605,7 @@ Singleton {
     }
 
     IpcHandler {
-        target: "aria2c"
+        target: "ariaDownloadManager"
 
         function toggle(): string {
             root.popoutToggleRequested()
@@ -649,7 +649,7 @@ Singleton {
 
         function add(url: string): string {
             if (!url)
-                return "usage: dms ipc call aria2c add <url>"
+                return "usage: dms ipc call ariaDownloadManager add <url>"
             root.post("/api/downloads", {
                           "uris": [url]
                       }, "Queued")

@@ -1,4 +1,4 @@
-"""CLI entrypoint: python -m aria2c_manager"""
+"""CLI entrypoint: python -m aria_download_manager"""
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ from .ipc import SocketInUse, socket_path_for
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="aria2c-manager",
+        prog="aria-download-manager",
         description="Background aria2c server for the browser extension and the "
         "DankMaterialShell widget, reachable only through its Unix socket.",
     )
@@ -108,7 +108,7 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         return 0
 
-    print(f"aria2c-manager {VERSION}")
+    print(f"Aria Download Manager {VERSION}")
     print(f"  socket     {socket_path_for(cfg)}")
     print(f"  config     {cfg.path}", flush=True)
     try:

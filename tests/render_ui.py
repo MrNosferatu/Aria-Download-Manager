@@ -22,7 +22,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from aria2c_manager.native_host import default_socket_path  # noqa: E402
+from aria_download_manager.native_host import default_socket_path  # noqa: E402
 
 STATIC = ROOT / "extension" / "manager"
 
@@ -112,7 +112,7 @@ window.addEventListener('load', () => setTimeout(() => {{
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--socket", default=default_socket_path())
-    parser.add_argument("--out", default="/tmp/aria2c-manager-ui.html")
+    parser.add_argument("--out", default="/tmp/aria-download-manager-ui.html")
     parser.add_argument("--tab", default="downloads",
                         choices=["downloads", "settings", "rules", "log"])
     parser.add_argument("--expand", action="store_true",

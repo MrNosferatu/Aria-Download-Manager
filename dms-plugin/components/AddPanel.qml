@@ -53,7 +53,7 @@ Column {
         if (torrent) {
             // aria2's file intake wants base64; base64(1) is the shortest path
             // from a local path to that payload.
-            Proc.runCommand("aria2cManager.torrent", ["base64", "-w0", torrent], (stdout, exitCode) => {
+            Proc.runCommand("ariaDownloadManager.torrent", ["base64", "-w0", torrent], (stdout, exitCode) => {
                                 if (exitCode !== 0 || !stdout.trim()) {
                                     ToastService.showError("aria2c", "Could not read " + torrent)
                                     return

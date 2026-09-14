@@ -10,7 +10,7 @@ import "./lib/Fmt.js" as Fmt
 PluginComponent {
     id: root
 
-    layerNamespacePlugin: "aria2c-manager"
+    layerNamespacePlugin: "aria-download-manager"
 
     property var popoutService: null
 

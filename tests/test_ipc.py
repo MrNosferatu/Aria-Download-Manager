@@ -27,11 +27,14 @@ import yaml
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
+# The state dir (RPC secret, history) is fixed when the package is imported, so it
+# has to point somewhere disposable before that, not at the real one.
+os.environ["XDG_DATA_HOME"] = tempfile.mkdtemp(prefix="aria-download-manager-test-data-")
 
-from aria2c_manager import native_host  # noqa: E402
-from aria2c_manager.api import create_app  # noqa: E402
-from aria2c_manager.config import Config  # noqa: E402
-from aria2c_manager.ipc import SocketInUse  # noqa: E402
+from aria_download_manager import native_host  # noqa: E402
+from aria_download_manager.api import create_app  # noqa: E402
+from aria_download_manager.config import Config  # noqa: E402
+from aria_download_manager.ipc import SocketInUse  # noqa: E402
 from tests.fake_aria2 import serve  # noqa: E402
 from tests.harness import ManagerRunner, check, free_port, summary, wait_for  # noqa: E402
 
@@ -236,7 +239,7 @@ async def test_ipc(tmp_dir: Path) -> None:
 
         print("\nipc: native-messaging host")
         env = {**os.environ, native_host.SOCKET_ENV: str(sock_path)}
-        proc = subprocess.Popen([sys.executable, str(ROOT / "aria2c_manager" / "native_host.py")],
+        proc = subprocess.Popen([sys.executable, str(ROOT / "aria_download_manager" / "native_host.py")],
                                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, env=env)
         proc.stdin.write(frame({"id": "a", "method": "GET", "path": "/api/intake/ping"}))
         proc.stdin.write(frame({"id": "b", "method": "POST", "path": "/api/intake/add",
@@ -282,7 +285,7 @@ async def test_ipc(tmp_dir: Path) -> None:
 
         threading.Thread(target=answer_once_then_close, daemon=True).start()
         short = subprocess.Popen(
-            [sys.executable, str(ROOT / "aria2c_manager" / "native_host.py")],
+            [sys.executable, str(ROOT / "aria_download_manager" / "native_host.py")],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE,
             env={**os.environ, native_host.SOCKET_ENV: str(brief_path)})
         short.stdin.write(frame({"id": 1, "method": "SUBSCRIBE"}))
@@ -295,7 +298,7 @@ async def test_ipc(tmp_dir: Path) -> None:
         short.wait(timeout=5)
 
         dead = subprocess.Popen(
-            [sys.executable, str(ROOT / "aria2c_manager" / "native_host.py")],
+            [sys.executable, str(ROOT / "aria_download_manager" / "native_host.py")],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE,
             env={**os.environ, native_host.SOCKET_ENV: str(tmp_dir / "nothing.sock")})
         dead.stdin.write(frame({"id": 7, "method": "GET", "path": "/api/state"}))
@@ -332,11 +335,11 @@ def test_install(tmp_dir: Path) -> None:
         if old_home is not None:
             os.environ["HOME"] = old_home
 
-    firefox = json.loads((home / ".mozilla/native-messaging-hosts/com.aria2c.manager.json").read_text())
+    firefox = json.loads((home / ".mozilla/native-messaging-hosts/aria_download_manager.json").read_text())
     check("firefox manifest names the gecko id",
-          firefox["allowed_extensions"] == ["aria2c-manager@fhadwanur"], str(firefox))
+          firefox["allowed_extensions"] == ["aria-download-manager@fhadwanur"], str(firefox))
     chromium = json.loads(
-        (home / ".config/chromium/NativeMessagingHosts/com.aria2c.manager.json").read_text())
+        (home / ".config/chromium/NativeMessagingHosts/aria_download_manager.json").read_text())
     check("chromium manifest finds the unpacked extension's id, and only that one",
           chromium["allowed_origins"] == ["chrome-extension://abcdefghijklmnopabcdefghijklmnop/"],
           str(chromium))
@@ -348,7 +351,7 @@ def test_install(tmp_dir: Path) -> None:
 
 
 def main() -> int:
-    tmp_dir = Path(tempfile.mkdtemp(prefix="aria2c-ipc-test-"))
+    tmp_dir = Path(tempfile.mkdtemp(prefix="aria-download-manager-ipc-test-"))
     try:
         test_install(tmp_dir / "install")
         asyncio.run(test_ipc(tmp_dir / "e2e"))

@@ -44,7 +44,7 @@ class History:
     def path(self) -> Path:
         return expand(
             self.cfg.get("history.file")
-            or "~/.local/share/aria2c-manager/history.json"
+            or "~/.local/share/aria-download-manager/history.json"
         )
 
     @property

@@ -523,7 +523,7 @@ Item {
         visible: tab.historyMode ? historyList.count === 0 : list.count === 0
         text: {
             if (!tab.service || !tab.service.connected)
-                return "Can't reach aria2c-manager at " + (tab.service ? tab.service.socketPath : "") + ".\nStart it with run.sh or the systemd unit."
+                return "Can't reach Aria Download Manager at " + (tab.service ? tab.service.socketPath : "") + ".\nStart it with run.sh or the systemd unit."
             if (tab.historyMode)
                 return "Nothing recorded yet."
             return tab.filter === "all" && !tab.search ? "No downloads. Hit Add, or send one from the browser extension." : "Nothing matches this filter."

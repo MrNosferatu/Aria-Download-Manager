@@ -1,4 +1,4 @@
-# aria2c-manager configuration.
+# Aria Download Manager configuration.
 # Copy to config.yaml and edit. Every key is optional — anything you leave out
 # falls back to the built-in default shown here.
 #
@@ -9,8 +9,8 @@ server:
   # its native-messaging host) and the DankMaterialShell widget connect to.
   # Nothing listens on the network, so an in-browser VPN or proxy cannot get in
   # the way. Mode 0600: this user only.
-  # Blank = $XDG_RUNTIME_DIR/aria2c-manager.sock. After changing it, re-run
-  #   python3 -m aria2c_manager --install-native-host
+  # Blank = $XDG_RUNTIME_DIR/aria-download-manager.sock. After changing it, re-run
+  #   python3 -m aria_download_manager --install-native-host
   socket: ""
 
 # How often the manager polls aria2 (seconds). This is also the tick rate of the
@@ -41,15 +41,15 @@ aria2:
     host: 127.0.0.1
     port: 6800
     # Blank + managed: a random secret is generated and stored (mode 0600) at
-    # ~/.local/share/aria2c-manager/rpc-secret. It is kept rather than being
+    # ~/.local/share/aria-download-manager/rpc-secret. It is kept rather than being
     # per-run so that a NEW manager can still talk to an aria2c left behind by an
     # old one (terminal closed, crash) and adopt it instead of failing to bind
     # this port. Set one explicitly if you attach to an external aria2c.
     secret: ""
 
   # Downloads survive restarts through this session file.
-  session_file: ~/.local/share/aria2c-manager/aria2.session
-  log_file: ~/.local/share/aria2c-manager/aria2.log
+  session_file: ~/.local/share/aria-download-manager/aria2.session
+  log_file: ~/.local/share/aria-download-manager/aria2.log
 
   # Raw aria2c flags appended last, for anything not covered below.
   extra_args: []
@@ -115,7 +115,7 @@ aria2:
 # resume automatically after a restart or a crash.
 history:
   enabled: true
-  file: ~/.local/share/aria2c-manager/history.json
+  file: ~/.local/share/aria-download-manager/history.json
   # Oldest entries are dropped past this count. 0 = unlimited.
   max_entries: 2000
 

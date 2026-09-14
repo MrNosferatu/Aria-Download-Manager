@@ -18,7 +18,7 @@ Item {
     //: away is what made this panel look less capable than the manager page.
     property bool showAdvanced: true
 
-    //: The log lives at the bottom of this page. `dms ipc call aria2c tab log`
+    //: The log lives at the bottom of this page. `dms ipc call ariaDownloadManager tab log`
     //: opens this tab with the section unfolded and scrolls down to it. Kept a
     //: plain property, not a binding on requestedLog: the reveal is a one-shot
     //: request, and clicking the header afterwards has to stick.

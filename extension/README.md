@@ -1,6 +1,6 @@
-# aria2c manager — browser extension
+# Aria Download Manager — browser extension
 
-Hands the browser's downloads to the local `aria2c-manager` daemon. MV3, and the
+Hands the browser's downloads to the local Aria Download Manager daemon. MV3, and the
 same unpacked directory loads in both Firefox and Chromium.
 
 ## Video downloads
@@ -34,7 +34,7 @@ Segmented streams need ffmpeg installed where the manager runs; a progressive
 Then register the native-messaging host once and restart the browser:
 
 ```sh
-python3 -m aria2c_manager --install-native-host
+python3 -m aria_download_manager --install-native-host
 ```
 
 Settings → *Test connection* confirms it and shows the socket it reached.
@@ -46,8 +46,8 @@ browser starts a download ─→ downloads.onCreated
                               ├─ cancel + erase the browser's copy
                               └─ POST /api/intake/add  (url, cookies, referer, UA)
                                    │
-                                   └─ runtime.connectNative("com.aria2c.manager")
-                                        └─ native_host.py ─→ $XDG_RUNTIME_DIR/aria2c-manager.sock
+                                   └─ runtime.connectNative("aria_download_manager")
+                                        └─ native_host.py ─→ $XDG_RUNTIME_DIR/aria-download-manager.sock
 ```
 
 Requests go through native messaging rather than `fetch()` to `127.0.0.1`,

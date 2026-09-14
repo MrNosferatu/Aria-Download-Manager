@@ -23,7 +23,7 @@ Item {
         const args = ["zenity", "--file-selection", "--directory", "--title=" + field.dialogTitle]
         if (start)
             args.push("--filename=" + start.replace(/\/*$/, "/"))
-        Proc.runCommand("aria2cManager.pickDir." + field.objectName, args, (stdout, exitCode) => {
+        Proc.runCommand("ariaDownloadManager.pickDir." + field.objectName, args, (stdout, exitCode) => {
                             if (exitCode !== 0)
                                 return   // cancelled
                             const path = stdout.trim()

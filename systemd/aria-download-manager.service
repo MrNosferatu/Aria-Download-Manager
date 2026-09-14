@@ -1,5 +1,5 @@
 [Unit]
-Description=aria2c manager (background aria2c server for the extension and DMS widget)
+Description=Aria Download Manager (background aria2c server for the extension and DMS widget)
 Documentation=file:%h/GitHub/Aria2C/README.md
 After=network-online.target
 Wants=network-online.target
@@ -7,7 +7,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 WorkingDirectory=%h/GitHub/Aria2C
-ExecStart=/usr/bin/python3 -m aria2c_manager
+ExecStart=/usr/bin/python3 -m aria_download_manager
 # always, not on-failure: /api/restart exits cleanly to reload config
 Restart=always
 RestartSec=1

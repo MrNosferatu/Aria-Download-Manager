@@ -124,7 +124,7 @@ DankPopout {
         }
     }
 
-    layerNamespace: "dms:plugins:aria2c-manager-quick"
+    layerNamespace: "dms:plugins:aria-download-manager-quick"
     popupWidth: 260
     popupHeight: {
         let total = menu.padding * 2 + menu.statusHeight
@@ -178,7 +178,7 @@ DankPopout {
                         spacing: 0
 
                         StyledText {
-                            text: "aria2c manager"
+                            text: "Aria Download Manager"
                             font.pixelSize: Theme.fontSizeSmall
                             font.weight: Font.Bold
                             color: Theme.surfaceText

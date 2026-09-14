@@ -210,7 +210,7 @@
       ].filter(Boolean).join(' · ');
       row.append(quality, meta);
       row.addEventListener('click', async () => {
-        menu.replaceChildren(note(`Sending ${variant.quality} to aria2c manager…`));
+        menu.replaceChildren(note(`Sending ${variant.quality} to Aria Download Manager…`));
         const out = await api.runtime.sendMessage({
           type: 'videoDownload',
           candidate: candidates[0],

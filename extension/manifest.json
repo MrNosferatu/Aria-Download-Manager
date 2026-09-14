@@ -1,11 +1,11 @@
 {
   "manifest_version": 3,
-  "name": "aria2c manager — download catcher",
+  "name": "Aria Download Manager",
   "version": "1.4.0",
-  "description": "Hand the browser's downloads to your local aria2c-manager, with the page's cookies, referer and user-agent.",
+  "description": "Hand the browser's downloads to your local Aria Download Manager, with the page's cookies, referer and user-agent.",
   "browser_specific_settings": {
     "gecko": {
-      "id": "aria2c-manager@fhadwanur",
+      "id": "aria-download-manager@fhadwanur",
       "strict_min_version": "115.0",
       "data_collection_permissions": {
         "required": [
@@ -50,7 +50,7 @@
     }
   ],
   "action": {
-    "default_title": "aria2c manager",
+    "default_title": "Aria Download Manager",
     "default_popup": "popup.html",
     "default_icon": {
       "16": "icons/icon-16.png",

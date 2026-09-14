@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Start aria2c-manager. Uses ./.venv if it exists, otherwise the system Python.
+# Start Aria Download Manager. Uses ./.venv if it exists, otherwise the system Python.
 set -euo pipefail
 
 cd "$(dirname "$(readlink -f "$0")")"
@@ -20,4 +20,4 @@ if ! command -v aria2c >/dev/null 2>&1; then
   echo "  Debian: sudo apt install aria2" >&2
 fi
 
-exec "$PYTHON" -m aria2c_manager "$@"
+exec "$PYTHON" -m aria_download_manager "$@"

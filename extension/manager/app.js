@@ -1,4 +1,4 @@
-/* aria2c manager — the extension's manager page, driven by the manager's live
+/* Aria Download Manager — the extension's manager page, driven by the manager's live
    state stream. */
 'use strict';
 

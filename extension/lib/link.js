@@ -1,7 +1,7 @@
-/* The connection to aria2c-manager, shared by the background worker and the
+/* The connection to Aria Download Manager, shared by the background worker and the
    manager page (manager/index.html).
 
-   runtime.connectNative → aria2c_manager/native_host.py → the manager's Unix
+   runtime.connectNative → aria_download_manager/native_host.py → the manager's Unix
    socket. Not network traffic, so a VPN or proxy in the browser cannot route it
    away — and the manager has no network port for anything else to reach.
 
@@ -12,9 +12,9 @@
 
   const ext = globalThis.browser || globalThis.chrome;
 
-  const NATIVE_HOST = 'com.aria2c.manager';
+  const NATIVE_HOST = 'aria_download_manager';
   const INSTALL_HINT = 'the native host is not installed — run: '
-    + 'python3 -m aria2c_manager --install-native-host';
+    + 'python3 -m aria_download_manager --install-native-host';
   const NATIVE_IDLE_MS = 20000;
   const RETRY_MS = 3000;
 
@@ -74,7 +74,7 @@
     // The host saw the manager's socket close (a restart, usually). The stream
     // has to be asked for again once there is a manager to ask.
     if (kind === 'disconnected') {
-      nativeStreamLost('aria2c-manager closed the connection');
+      nativeStreamLost('Aria Download Manager closed the connection');
       return;
     }
     for (const sub of native.subs) sub.onFrame(kind, data);
@@ -144,7 +144,7 @@
     const body = reply.body;
     const detail = body && typeof body === 'object' && (body.error || body.detail);
     if (typeof detail === 'string') return detail;
-    return reply.status ? `HTTP ${reply.status}` : 'aria2c-manager is not reachable';
+    return reply.status ? `HTTP ${reply.status}` : 'Aria Download Manager is not reachable';
   }
 
   //: One request. Resolves to {status, body}; never rejects — status 0 means

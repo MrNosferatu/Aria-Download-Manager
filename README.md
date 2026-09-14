@@ -1,4 +1,4 @@
-# aria2c manager
+# Aria Download Manager
 
 A background download server built on aria2c, driven from a browser extension
 (which hands it the browser's own downloads and carries the full manager UI) and,
@@ -16,7 +16,7 @@ DankBar widget (optional) ──────────────────
 ```
 
 The manager listens on nothing but a Unix socket
-(`$XDG_RUNTIME_DIR/aria2c-manager.sock`). A socket is not network traffic, so a
+(`$XDG_RUNTIME_DIR/aria-download-manager.sock`). A socket is not network traffic, so a
 VPN or proxy built into the browser cannot route it away the way it can with
 `127.0.0.1` — and there is no port for anything else to reach. The only TCP in
 the picture is the manager's own link to aria2c's RPC on loopback.
@@ -54,12 +54,12 @@ socket, in-process. `.torrent` uploads travel as base64 JSON, so no
 
 ```bash
 cp config.example.yaml config.yaml     # optional; defaults work as-is
-./run.sh                               # or: python3 -m aria2c_manager
+./run.sh                               # or: python3 -m aria_download_manager
 ```
 
 ```
-aria2c-manager 1.0.0
-  socket     /run/user/1000/aria2c-manager.sock
+Aria Download Manager 1.0.0
+  socket     /run/user/1000/aria-download-manager.sock
   config     /home/you/GitHub/Aria2C/config.yaml
 ```
 
@@ -77,10 +77,10 @@ Useful flags:
 
 ```bash
 mkdir -p ~/.config/systemd/user
-cp systemd/aria2c-manager.service ~/.config/systemd/user/
+cp systemd/aria-download-manager.service ~/.config/systemd/user/
 systemctl --user daemon-reload
-systemctl --user enable --now aria2c-manager
-systemctl --user status aria2c-manager
+systemctl --user enable --now aria-download-manager
+systemctl --user status aria-download-manager
 ```
 
 `KillMode=control-group` in the unit means stopping the service also stops the
@@ -124,14 +124,14 @@ submission material, and `extension/build.sh` wraps the packaging.
 
 **Register the IPC bridge once.** The extension reaches the manager through
 native messaging: the browser starts a small host process
-(`aria2c_manager/native_host.py`), which relays to the manager's Unix socket.
+(`aria_download_manager/native_host.py`), which relays to the manager's Unix socket.
 Nothing goes over the network, so an in-browser VPN cannot get in the way.
 
 ```bash
-python3 -m aria2c_manager --install-native-host
+python3 -m aria_download_manager --install-native-host
 ```
 
-That writes a launcher to `~/.local/share/aria2c-manager/` and a host manifest
+That writes a launcher to `~/.local/share/aria-download-manager/` and a host manifest
 for Firefox (`~/.mozilla/native-messaging-hosts/`) and for every Chromium-family
 browser that has the extension loaded unpacked from this checkout — the
 extension id is read from the browser profile. For a packed Chromium install,
@@ -351,10 +351,10 @@ purge, add from clipboard), and the panel can be detached into an ordinary
 window that survives a click elsewhere.
 
 ```sh
-ln -s "$PWD/dms-plugin" ~/.config/DankMaterialShell/plugins/aria2cManager
-dms ipc call plugins enable aria2cManager      # then add it in Settings -> DankBar
-dms ipc call aria2c toggle                     # bind this to a key if you like
-dms ipc call aria2c toggleWindow               # ...or this, for the standalone window
+ln -s "$PWD/dms-plugin" ~/.config/DankMaterialShell/plugins/ariaDownloadManager
+dms ipc call plugins enable ariaDownloadManager      # then add it in Settings -> DankBar
+dms ipc call ariaDownloadManager toggle                     # bind this to a key if you like
+dms ipc call ariaDownloadManager toggleWindow               # ...or this, for the standalone window
 ```
 
 See [dms-plugin/README.md](dms-plugin/README.md) for settings, IPC and hacking notes.
@@ -407,7 +407,7 @@ on one connection are answered concurrently.
 
 ```bash
 echo '{"id":1,"method":"GET","path":"/api/intake/ping"}' \
-  | socat - UNIX-CONNECT:$XDG_RUNTIME_DIR/aria2c-manager.sock
+  | socat - UNIX-CONNECT:$XDG_RUNTIME_DIR/aria-download-manager.sock
 ```
 
 | Method | Path | Purpose |
@@ -446,7 +446,7 @@ opens no network port at all. Its socket is created with mode `0600` inside
 can reach it through your browser.
 
 The aria2 RPC secret is generated randomly on first run and stored at
-`~/.local/share/aria2c-manager/rpc-secret` with `0600` permissions (a secret you
+`~/.local/share/aria-download-manager/rpc-secret` with `0600` permissions (a secret you
 set explicitly in `config.yaml` is used as-is instead). It is kept on disk rather
 than regenerated per run for a functional reason: without it, a new manager cannot
 authenticate to an aria2c left over from a previous run, so that process could
@@ -478,7 +478,7 @@ Other tools:
 
 ```bash
 python3 tests/fake_aria2.py --port 6800     # fake aria2 you can point the manager at
-python3 -m aria2c_manager --no-aria2        # ...then attach to it
+python3 -m aria_download_manager --no-aria2        # ...then attach to it
 
 # Render the manager page from a running manager to a self-contained HTML file
 # (opens offline, screenshot-able headless)
@@ -494,9 +494,9 @@ to misbehave.
 | Symptom | Cause / fix |
 | --- | --- |
 | `aria2c binary 'aria2c' not found in PATH` | install aria2, or set `aria2.binary` to a full path |
-| `aria2c exited during startup` | usually an invalid option in `aria2.options`; check `~/.local/share/aria2c-manager/aria2.log`, or run `--print-argv` |
-| The extension says "the native host is not installed" | run `python3 -m aria2c_manager --install-native-host`, then restart the browser |
-| The extension or widget says "aria2c-manager is not running (no socket at …)" | start the manager; if `server.socket` is set, re-run `--install-native-host` and set the widget's *Manager socket* to match |
+| `aria2c exited during startup` | usually an invalid option in `aria2.options`; check `~/.local/share/aria-download-manager/aria2.log`, or run `--print-argv` |
+| The extension says "the native host is not installed" | run `python3 -m aria_download_manager --install-native-host`, then restart the browser |
+| The extension or widget says "Aria Download Manager is not running (no socket at …)" | start the manager; if `server.socket` is set, re-run `--install-native-host` and set the widget's *Manager socket* to match |
 | A download still lands in the browser | interception is off in Settings, the host is on the blocklist, or it is a `blob:`/`data:` URL aria2 cannot fetch |
 | The extension vanished after restarting Firefox | temporary add-ons do not survive a restart — see §3 |
 | Unfinished downloads did not come back after a restart | they resume from `aria2.session_file` (written every 30 s and on clean shutdown) plus the `.aria2` file beside the partial download — check both still exist |
@@ -512,7 +512,7 @@ to misbehave.
 ## Layout
 
 ```
-aria2c_manager/
+aria_download_manager/
   __main__.py     CLI entrypoint
   config.py       YAML config: defaults, merge, persistence
   rpc.py          async aria2 JSON-RPC client (HTTP transport)

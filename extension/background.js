@@ -44,7 +44,7 @@ function notify(message, isError) {
   api.notifications.create({
     type: 'basic',
     iconUrl: api.runtime.getURL('icons/icon-128.png'),
-    title: isError ? 'aria2c manager — failed' : 'aria2c manager',
+    title: isError ? 'Aria Download Manager — failed' : 'Aria Download Manager',
     message: String(message).slice(0, 300),
   });
 }
@@ -319,7 +319,7 @@ api.downloads.onCreated.addListener(async (item) => {
   // with it — a download that works is better than one that was ours.
   if (!(await managerReachable())) {
     if (settings.notify) {
-      notify('aria2c manager is not running — the browser is downloading this itself', false);
+      notify('Aria Download Manager is not running — the browser is downloading this itself', false);
     }
     return;
   }

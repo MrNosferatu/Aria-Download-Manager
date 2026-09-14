@@ -113,10 +113,10 @@ class IPCSession:
 
 
 class ManagerRunner:
-    """Runs an app the way `python -m aria2c_manager` does, inside a test."""
+    """Runs an app the way `python -m aria_download_manager` does, inside a test."""
 
     def __init__(self, app):
-        from aria2c_manager.api import run
+        from aria_download_manager.api import run
 
         self.app = app
         self.started = False

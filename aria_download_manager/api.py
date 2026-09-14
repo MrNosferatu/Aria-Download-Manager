@@ -266,7 +266,7 @@ def create_app(cfg: Config) -> FastAPI:
         # second manager must find out before it touches aria2c.
         await ipc.start()
         await rpc.start()
-        store.add_event("info", f"aria2c-manager {VERSION} starting")
+        store.add_event("info", f"Aria Download Manager {VERSION} starting")
         try:
             await supervisor.start()
         except Exception as exc:
@@ -288,7 +288,7 @@ def create_app(cfg: Config) -> FastAPI:
             await supervisor.stop()
             await rpc.close()
 
-    app = FastAPI(title="aria2c-manager", version=VERSION, lifespan=lifespan)
+    app = FastAPI(title="Aria Download Manager", version=VERSION, lifespan=lifespan)
     ipc = IPCServer(app, store, socket_path_for(cfg))
     app.state.cfg = cfg
     app.state.rpc = rpc
@@ -917,7 +917,7 @@ def create_app(cfg: Config) -> FastAPI:
     async def intake_ping():
         return {
             "ok": True,
-            "name": "aria2c-manager",
+            "name": "Aria Download Manager",
             "version": VERSION,
             "aria2": supervisor.status().get("running", False),
             "defaultDir": cfg.get("aria2.options.dir"),

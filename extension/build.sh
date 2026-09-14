@@ -3,7 +3,7 @@
 # demand with npx so there is nothing to install first.
 #
 #   ./build.sh lint     validate the sources the way AMO will
-#   ./build.sh build    -> dist/aria2c_manager-<version>.zip  (upload this to AMO)
+#   ./build.sh build    -> dist/aria_download_manager-<version>.zip  (upload this to AMO)
 #   ./build.sh sign     -> dist/*.xpi, signed via your AMO API credentials
 #   ./build.sh run      launch a scratch Firefox with the extension loaded
 #

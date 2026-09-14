@@ -29,7 +29,7 @@ DankFloatingWindow {
         visible = !visible
     }
 
-    title: "aria2c manager"
+    title: "Aria Download Manager"
     minimumSize: Qt.size(520, 420)
     implicitWidth: 760
     implicitHeight: 860
@@ -70,7 +70,7 @@ DankFloatingWindow {
 
                 StyledText {
                     anchors.verticalCenter: parent.verticalCenter
-                    text: "aria2c manager"
+                    text: "Aria Download Manager"
                     font.pixelSize: Theme.fontSizeLarge
                     font.weight: Font.Medium
                     color: Theme.surfaceText
