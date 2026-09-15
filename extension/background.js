@@ -44,7 +44,7 @@ function notify(message, isError) {
   api.notifications.create({
     type: 'basic',
     iconUrl: api.runtime.getURL('icons/icon-128.png'),
-    title: isError ? 'Aria Download Manager — failed' : 'Aria Download Manager',
+    title: isError ? 'Aria Download Manager: not added' : 'Aria Download Manager',
     message: String(message).slice(0, 300),
   });
 }
@@ -202,12 +202,12 @@ async function downloadVideo(message, sender, tabId) {
     const out = await request('/api/media/download', body);
     const label = out.kind === 'stream'
       ? `Downloading ${out.job.name}`
-      : 'Queued video';
+      : 'Video added';
     await report(settings, label, false, tabId);
     await refreshBadge();
     return { ok: true, result: out };
   } catch (err) {
-    await report(settings, `Video download failed: ${err.message}`, true, tabId);
+    await report(settings, `Could not add the video: ${err.message}`, true, tabId);
     return { ok: false, error: err.message };
   }
 }
@@ -254,7 +254,7 @@ async function sendOne(item, tabId) {
   const settings = await loadSettings();
   try {
     const name = await sendToManager(settings, item, tabId);
-    await report(settings, `queued ${name}`, false, tabId);
+    await report(settings, `Added ${name}`, false, tabId);
     refreshBadge();
     return { ok: true };
   } catch (err) {
@@ -266,7 +266,7 @@ async function sendOne(item, tabId) {
 async function sendMany(urls, context, tabId) {
   const settings = await loadSettings();
   if (!urls.length) {
-    await report(settings, 'no links to send', true, tabId);
+    await report(settings, 'No links to add here.', true, tabId);
     return { ok: false };
   }
   // Cookies belong to the host a file is on, and one batch can span several
@@ -290,7 +290,7 @@ async function sendMany(urls, context, tabId) {
       });
     }
     await remember(`${urls.length} links`);
-    await report(settings, `queued ${urls.length} link(s)`, false, tabId);
+    await report(settings, `Added ${urls.length} link${urls.length === 1 ? '' : 's'}`, false, tabId);
     refreshBadge();
     return { ok: true, count: urls.length };
   } catch (err) {
@@ -319,7 +319,7 @@ api.downloads.onCreated.addListener(async (item) => {
   // with it — a download that works is better than one that was ours.
   if (!(await managerReachable())) {
     if (settings.notify) {
-      notify('Aria Download Manager is not running — the browser is downloading this itself', false);
+      notify('The manager is not running, so the browser is downloading this itself.', false);
     }
     return;
   }
@@ -349,9 +349,9 @@ api.downloads.onCreated.addListener(async (item) => {
     noteHealth(false);
     try {
       await api.downloads.download({ url: item.url });
-      notify(`aria2c could not take ${name || item.url} — the browser is downloading it instead`, true);
+      notify(`The manager could not take ${name || item.url}. The browser is downloading it instead.`, true);
     } catch (err) {
-      notify(`could not hand off ${name || item.url} — ${result.error}`, true);
+      notify(`Could not hand off ${name || item.url}: ${result.error}`, true);
     }
   }
   handedOff.delete(item.id);
@@ -359,11 +359,11 @@ api.downloads.onCreated.addListener(async (item) => {
 
 /* ------------------------------------------------------------ context menus */
 const MENUS = [
-  { id: 'link', title: 'Send this link to aria2c', contexts: ['link'] },
-  { id: 'page', title: 'Send this page URL to aria2c', contexts: ['page'] },
-  { id: 'selection', title: 'Send links in the selection to aria2c', contexts: ['selection'] },
-  { id: 'all', title: 'Send ALL downloadable links on this page', contexts: ['page'] },
-  { id: 'media', title: 'Send this media file to aria2c', contexts: ['image', 'video', 'audio'] },
+  { id: 'link', title: 'Download link with Aria', contexts: ['link'] },
+  { id: 'page', title: 'Download this page with Aria', contexts: ['page'] },
+  { id: 'selection', title: 'Download selected links with Aria', contexts: ['selection'] },
+  { id: 'all', title: 'Download every file link on this page with Aria', contexts: ['page'] },
+  { id: 'media', title: 'Download media with Aria', contexts: ['image', 'video', 'audio'] },
 ];
 
 /* The exclusion list governs *automatic* behaviour — interception, click
@@ -418,7 +418,7 @@ api.contextMenus.onClicked.addListener(async (info, tab) => {
           scope: info.menuItemId === 'all' ? 'downloadable' : 'selection',
         });
       } catch {
-        notify('this page does not allow the extension to read its links', true);
+        notify('This page does not let the extension read its links.', true);
         return;
       }
       sendMany((reply && reply.urls) || [], { referer: info.pageUrl }, tabId);

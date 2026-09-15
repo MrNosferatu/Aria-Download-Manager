@@ -15,7 +15,7 @@ Item {
     readonly property int scrollbarGutter: Layout.SCROLLBAR_GUTTER
 
     readonly property var speedValues: ["hybrid", "measured", "aria2"]
-    readonly property var speedLabels: ["measured, else aria2 (default)", "measured write speed only", "aria2's reported speed"]
+    readonly property var speedLabels: ["Hybrid", "Write speed", "Reported speed"]
 
     function reload() {
         if (!service)
@@ -28,7 +28,7 @@ Item {
     function addRule() {
         const next = JSON.parse(JSON.stringify(rules))
         next.push({
-                      "name": "rule-" + (next.length + 1),
+                      "name": "action-" + (next.length + 1),
                       "enabled": true,
                       "description": "",
                       "when": {
@@ -81,7 +81,8 @@ Item {
             id: speedSource
 
             anchors.verticalCenter: parent.verticalCenter
-            width: Math.max(0, parent.width - addButton.width - saveButton.width - Theme.spacingS * 2)
+            //: Sized to its longest entry, so the buttons keep their room.
+            width: 150
             height: 40
             compactMode: true
             currentValue: {
@@ -100,8 +101,7 @@ Item {
             id: addButton
 
             anchors.verticalCenter: parent.verticalCenter
-            width: 120
-            text: "New rule"
+            text: "New action"
             iconName: "add"
             buttonHeight: 40
             backgroundColor: Theme.surfaceContainerHigh
@@ -113,8 +113,7 @@ Item {
             id: saveButton
 
             anchors.verticalCenter: parent.verticalCenter
-            width: 100
-            text: tab.dirty ? "Save •" : "Save"
+            text: tab.dirty ? "Save actions •" : "Save actions"
             iconName: "save"
             buttonHeight: 40
             backgroundColor: Theme.primary
@@ -143,14 +142,6 @@ Item {
             width: parent.width - tab.scrollbarGutter
             spacing: Theme.spacingS
 
-            StyledText {
-                width: parent.width
-                text: "A rule fires when its conditions hold continuously for the hold time, then that download enters cooldown."
-                font.pixelSize: Theme.fontSizeSmall
-                color: Theme.surfaceVariantText
-                wrapMode: Text.WordWrap
-            }
-
             Repeater {
                 model: tab.rules
 
@@ -171,7 +162,7 @@ Item {
             StyledText {
                 width: parent.width
                 visible: tab.rules.length === 0
-                text: "No rules yet. A typical one pauses and resumes a download that stalls under 50 KiB/s for 3 seconds."
+                text: "No actions yet. A common one pauses and resumes a download that stalls under 50 KiB/s for 3 seconds."
                 font.pixelSize: Theme.fontSizeMedium
                 color: Theme.surfaceVariantText
                 wrapMode: Text.WordWrap
@@ -193,7 +184,7 @@ Item {
             StyledText {
                 width: parent.width
                 visible: !tab.service || tab.service.triggers.length === 0
-                text: "No rule has fired yet."
+                text: "No action has fired yet."
                 font.pixelSize: Theme.fontSizeSmall
                 color: Theme.surfaceVariantText
             }
@@ -219,7 +210,7 @@ Item {
                     StyledText {
                         width: Math.max(0, parent.width - 58 - Theme.spacingS)
                         text: trigger.modelData.rule + " · " + String(trigger.modelData.action || "").replace(/_/g, " ")
-                              + " → " + trigger.modelData.name + " @ " + Fmt.speed(trigger.modelData.speed)
+                              + " → " + trigger.modelData.name + " at " + Fmt.speed(trigger.modelData.speed)
                         font.pixelSize: Theme.fontSizeSmall
                         color: Theme.surfaceText
                         elide: Text.ElideRight

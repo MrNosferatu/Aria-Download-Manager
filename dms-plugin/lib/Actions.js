@@ -17,22 +17,22 @@ var GLOBAL = [
         "icon": "pause",
         "label": "Pause all",
         "path": "/api/global/pause-all",
-        "ok": "Paused all"
+        "ok": "Paused everything"
     },
     {
         "id": "resumeAll",
         "icon": "play_arrow",
         "label": "Resume all",
         "path": "/api/global/resume-all",
-        "ok": "Resumed all"
+        "ok": "Resumed everything"
     },
     {
         "id": "purge",
         "icon": "cleaning_services",
-        "label": "Purge finished",
-        "tooltip": "Purge finished results from the list",
+        "label": "Clear finished",
+        "tooltip": "Clear finished and failed from the list",
         "path": "/api/global/purge",
-        "ok": "Purged finished results"
+        "ok": "Cleared finished and failed"
     }
 ]
 

@@ -2,89 +2,102 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="lib/design.css">
 <link rel="stylesheet" href="ui.css">
-<title>Aria Download Manager — settings</title>
+<title>Aria Download Manager — Settings</title>
 </head>
 <body class="options">
 
-<h1>Aria Download Manager</h1>
-<p class="hint">The extension hands downloads to the local Aria Download Manager daemon.
-  Start it first (<code>run.sh</code> or the systemd user unit), and register the IPC
-  bridge once with <code>python3 -m aria_download_manager --install-native-host</code>.</p>
+<div class="page-head">
+  <span class="logo" aria-hidden="true"><svg class="ico" viewBox="0 0 24 24"><path d="M5 20h14v-2H5v2zM19 9h-4V3H9v6H5l7 7 7-7z"/></svg></span>
+  <div class="titles">
+    <h1>Settings</h1>
+    <p>How the extension hands your downloads to the Aria Download Manager running on this machine.</p>
+  </div>
+  <!-- Simple shows the handful of choices most people make once. Advanced
+       adds every rule the extension follows when deciding what to catch. -->
+  <div class="seg" role="group" aria-label="Detail level">
+    <button type="button" data-mode="simple" aria-pressed="true"><svg class="ico" viewBox="0 0 24 24"><path d="M9 16.17 4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>Simple</button>
+    <button type="button" data-mode="advanced" aria-pressed="false"><svg class="ico" viewBox="0 0 24 24"><path d="M9 16.17 4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>Advanced</button>
+  </div>
+</div>
 
-<!-- Every boolean below is the same control in the same place: label and hint
-     on the left, switch on the right. A hint that belongs to one setting lives
-     inside that setting's row rather than floating after it. -->
+<!-- Every yes/no is the same control in the same place: label and hint on the
+     left, switch on the right. A hint that belongs to one setting lives inside
+     that setting's row. -->
 
-<section>
-  <h2>Extension</h2>
+<section class="card">
+  <h2>Manager</h2>
+  <div class="conn">
+    <span id="test-result" class="status">Not checked yet</span>
+    <button id="test" class="btn btn-sm">Test connection</button>
+  </div>
+  <p class="lead" data-level="advanced">The extension talks to the manager through its native-messaging helper and a Unix socket.
+    Nothing crosses the network, so a VPN or proxy in the browser cannot get in the way. If the test fails,
+    start the manager and run <code>python3 -m aria_download_manager --install-native-host</code> once.</p>
+</section>
+
+<section class="card">
+  <h2>Downloads</h2>
   <label class="setting" for="enabled">
     <span class="text">
-      <span class="label">Capture downloads</span>
-      <span class="hint">Off leaves everything to the browser: nothing intercepted, no
-        link click captured, no video button. The popup still works for sending a URL
-        by hand.</span>
+      <span class="label">Send downloads to Aria</span>
+      <span class="hint">Off leaves every download to the browser. The popup still lets you add a link by hand.</span>
     </span>
     <span class="switch"><input type="checkbox" id="enabled"><span class="track"><span class="knob"></span></span></span>
   </label>
-</section>
-
-<section>
-  <h2>Manager</h2>
-  <p class="hint">The extension reaches the manager through its native-messaging helper
-    and the manager's Unix socket — nothing goes over the network, so a VPN or proxy in
-    the browser cannot get in the way.</p>
-  <div class="row-actions">
-    <button id="test">Test connection</button>
-    <span id="test-result" class="hint"></span>
-  </div>
   <label class="field">
-    <span>Save to directory <small>blank = aria2's own dir</small></span>
-    <input id="dir" placeholder="(default)">
+    <span>Save to <small>blank uses the manager's download folder</small></span>
+    <input id="dir" placeholder="/home/you/Downloads">
   </label>
   <label class="setting" for="paused">
-    <span class="text"><span class="label">Add new downloads paused</span></span>
+    <span class="text">
+      <span class="label">Add new downloads paused</span>
+      <span class="hint">Queue them and start each one yourself from the manager.</span>
+    </span>
     <span class="switch"><input type="checkbox" id="paused"><span class="track"><span class="knob"></span></span></span>
   </label>
 </section>
 
-<section>
+<section class="card" data-level="advanced">
   <h2>What gets caught</h2>
   <label class="setting" for="intercept">
     <span class="text">
       <span class="label">Take over the browser's own downloads</span>
-      <span class="hint">Cancel them here and queue them in aria2c instead.</span>
+      <span class="hint">Cancel them in the browser and queue them in the manager instead.</span>
     </span>
     <span class="switch"><input type="checkbox" id="intercept"><span class="track"><span class="knob"></span></span></span>
   </label>
   <label class="setting" for="capture">
-    <span class="text"><span class="label">Auto-capture clicks on links that look like files</span></span>
+    <span class="text">
+      <span class="label">Catch clicks on file links</span>
+      <span class="hint">Links whose type is in the list below, and links marked as downloads by the page.</span>
+    </span>
     <span class="switch"><input type="checkbox" id="capture"><span class="track"><span class="knob"></span></span></span>
   </label>
   <label class="setting" for="captureMagnets">
-    <span class="text"><span class="label">Always capture <code>magnet:</code> links</span></span>
+    <span class="text"><span class="label">Always catch magnet links</span></span>
     <span class="switch"><input type="checkbox" id="captureMagnets"><span class="track"><span class="knob"></span></span></span>
   </label>
   <label class="setting" for="altClick">
     <span class="text">
       <span class="label">Alt+click sends any link</span>
-      <span class="hint">Works even with auto-capture off.</span>
+      <span class="hint">Works even when click catching is off.</span>
     </span>
     <span class="switch"><input type="checkbox" id="altClick"><span class="track"><span class="knob"></span></span></span>
   </label>
   <label class="setting" for="videoSniffer">
     <span class="text">
-      <span class="label">Show a download button over videos</span>
-      <span class="hint">Watches each tab for video streams and offers the qualities the
-        site publishes.</span>
+      <span class="label">Show a download button on videos</span>
+      <span class="hint">Watches each tab for video streams and offers the qualities the site publishes.</span>
     </span>
     <span class="switch"><input type="checkbox" id="videoSniffer"><span class="track"><span class="knob"></span></span></span>
   </label>
-
   <label class="field">
-    <span>Minimum size <small>smaller files stay in the browser — blank sends everything</small></span>
+    <span>Minimum size <small>smaller files stay with the browser; blank sends everything</small></span>
     <span class="unit-input">
-      <input id="minSize" inputmode="decimal" placeholder="no minimum">
+      <input id="minSize" inputmode="decimal" placeholder="No minimum">
       <select id="minSizeUnit" aria-label="Unit">
         <option value="1024">KiB</option>
         <option value="1048576">MiB</option>
@@ -93,36 +106,35 @@
     </span>
   </label>
   <label class="field">
-    <span>Extensions to capture <small>comma separated</small></span>
+    <span>File types to catch <small>comma separated</small></span>
     <textarea id="extensions" rows="3"></textarea>
   </label>
   <label class="field">
-    <span>Never catch anything on these hosts <small>one per line</small></span>
+    <span>Leave these sites alone <small>one per line</small></span>
     <textarea id="blockedHosts" rows="3" placeholder="example.com"></textarea>
+    <span class="help">A site covers its subdomains, and matches both the page you are on and where the file comes from.
+      The right-click menu still works there.</span>
   </label>
-  <p class="hint">A rule for <code>example.com</code> covers its subdomains, and matches
-    both the page you are on and where the file comes from. The right-click menu still
-    works on an excluded site.</p>
 </section>
 
-<section>
-  <h2>Feedback</h2>
+<section class="card">
+  <h2>Notifications</h2>
   <label class="setting" for="notify">
-    <span class="text"><span class="label">Tell me when something is queued or fails</span></span>
+    <span class="text"><span class="label">Tell me when a download is queued or fails</span></span>
     <span class="switch"><input type="checkbox" id="notify"><span class="track"><span class="knob"></span></span></span>
   </label>
-  <label class="setting" for="pageToasts">
+  <label class="setting" for="pageToasts" data-level="advanced">
     <span class="text">
-      <span class="label">Prefer in-page toasts</span>
-      <span class="hint">Quieter than system notifications, and lands where you are looking.</span>
+      <span class="label">Show it on the page instead of a system notification</span>
+      <span class="hint">Quieter, and it lands where you are looking.</span>
     </span>
     <span class="switch"><input type="checkbox" id="pageToasts"><span class="track"><span class="knob"></span></span></span>
   </label>
 </section>
 
 <div class="save-bar">
-  <button id="save" class="primary">Save</button>
-  <button id="reset">Reset to defaults</button>
+  <button id="save" class="btn btn-primary">Save</button>
+  <button id="reset" class="btn btn-text">Reset to defaults</button>
   <span id="saved" class="hint"></span>
 </div>
 

@@ -95,6 +95,21 @@ function label(value) {
     return text ? text.charAt(0).toUpperCase() + text.slice(1) : text
 }
 
+// aria2's status vocabulary on the wire; what a person reads on screen. The
+// same words the manager page and the extension popup use.
+var STATUS_LABEL = {
+    "active": "Active",
+    "waiting": "Queued",
+    "paused": "Paused",
+    "complete": "Done",
+    "error": "Failed",
+    "removed": "Removed"
+}
+
+function statusLabel(status) {
+    return STATUS_LABEL[status] || label(status)
+}
+
 function basename(path) {
     var parts = String(path || "").split("/")
     return parts[parts.length - 1] || path || ""

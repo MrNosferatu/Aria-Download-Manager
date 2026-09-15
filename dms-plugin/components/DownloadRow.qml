@@ -68,7 +68,7 @@ Rectangle {
     readonly property var badges: {
         const out = [
             {
-                "text": Fmt.label(status),
+                "text": Fmt.statusLabel(status),
                 "color": statusColor
             }
         ]
@@ -91,7 +91,7 @@ Rectangle {
             const info = ruleInfo[name]
             if (info.acting)
                 out.push({
-                             "text": name + ": acting",
+                             "text": name + " acting",
                              "color": Theme.warning
                          })
             else if (info.triggers)
@@ -104,7 +104,7 @@ Rectangle {
     }
 
     readonly property string metaText: {
-        const bits = [Fmt.bytes(dl.completed) + " / " + (dl.total ? Fmt.bytes(dl.total) : "?") + " · " + (dl.progress || 0).toFixed(1) + "%"]
+        const bits = [Fmt.bytes(dl.completed) + " of " + (dl.total ? Fmt.bytes(dl.total) : "?") + " · " + (dl.progress || 0).toFixed(1) + "%"]
         if (status === "active") {
             // aria2's figure is a moving average; the measured one is bytes
             // actually written since the last tick. Showing both when they
@@ -116,15 +116,15 @@ Rectangle {
                       + (disagrees ? " (aria2 says " + Fmt.speed(dl.downloadSpeed) + ")" : ""))
             if (dl.isTorrent)
                 bits.push("↑ " + Fmt.speed(dl.uploadSpeed))
-            bits.push("ETA " + Fmt.eta(dl.eta))
-            bits.push((dl.connections || 0) + " conn")
+            bits.push(Fmt.eta(dl.eta) + " left")
+            bits.push((dl.connections || 0) + " connection" + (dl.connections === 1 ? "" : "s"))
             if (dl.isTorrent)
                 bits.push((dl.numSeeders || 0) + " seeders")
         }
         if (status === "waiting" && dl.queuePosition !== undefined && dl.queuePosition !== null)
-            bits.push("queue #" + (dl.queuePosition + 1))
+            bits.push("#" + (dl.queuePosition + 1) + " in queue")
         if (fileMissing)
-            bits.push("file is no longer at " + dl.path)
+            bits.push("No longer at " + dl.path)
         if (dl.errorMessage)
             bits.push(dl.errorMessage)
         for (const name in ruleInfo) {
@@ -210,7 +210,7 @@ Rectangle {
                 buttonSize: 28
                 iconSize: Theme.iconSizeSmall
                 iconName: "vertical_align_top"
-                tooltipText: "Move to top of queue"
+                tooltipText: "Move to the front of the queue"
                 onClicked: row.service.post("/api/download/" + row.gid + "/position", {
                                                 "pos": 0,
                                                 "how": "POS_SET"
@@ -258,7 +258,7 @@ Rectangle {
                 buttonSize: 28
                 iconSize: Theme.iconSizeSmall
                 iconName: "folder_open"
-                tooltipText: "Open containing folder"
+                tooltipText: "Open folder"
                 onClicked: {
                     const dir = row.dl.dir || row.dl.path.replace(/\/[^/]*$/, "")
                     Quickshell.execDetached(["xdg-open", dir])
@@ -270,8 +270,8 @@ Rectangle {
                 buttonSize: 28
                 iconSize: Theme.iconSizeSmall
                 iconName: "refresh"
-                tooltipText: "Retry with the same URLs and options"
-                onClicked: row.service.post("/api/download/" + row.gid + "/retry", null, "Re-added")
+                tooltipText: "Download again with the same links and options"
+                onClicked: row.service.post("/api/download/" + row.gid + "/retry", null, "Added again")
             }
 
             DankActionButton {
@@ -282,7 +282,7 @@ Rectangle {
                 // being thrown away, which is what the bin means.
                 iconName: row.live ? "close" : "delete"
                 iconColor: Theme.error
-                tooltipText: row.live ? "Cancel and remove…" : "Delete…"
+                tooltipText: row.live ? "Cancel and remove" : "Remove…"
                 onClicked: row.askRemove()
             }
         }
@@ -406,8 +406,8 @@ Rectangle {
             anchors.right: confirmButtons.left
             anchors.rightMargin: Theme.spacingS
             anchors.verticalCenter: parent.verticalCenter
-            text: row.fileMissing ? "The file is already gone — remove the row?"
-                                  : "Remove this download — and the file?"
+            text: row.fileMissing ? "The file is already gone. Remove this entry?"
+                                  : "Remove this download. Keep the file, or delete it too?"
             font.pixelSize: Theme.fontSizeSmall
             color: Theme.surfaceText
             elide: Text.ElideRight
@@ -449,7 +449,7 @@ Rectangle {
                 textColor: Theme.onPrimary
                 onClicked: {
                     row.confirmingRemove = false
-                    row.service.removeDownload(row.gid, true, "Removed and deleted the file")
+                    row.service.removeDownload(row.gid, true, "Removed with its file")
                 }
             }
         }

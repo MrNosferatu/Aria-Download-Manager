@@ -22,15 +22,16 @@
       });
       (document.body || document.documentElement).append(host);
     }
+    // Same tonal palette as the popup and the manager page, hard-coded because
+    // a page's own stylesheet cannot be trusted to leave custom properties alone.
     const el = document.createElement('div');
-    el.textContent = `aria2c: ${message}`;
+    el.textContent = message;
     Object.assign(el.style, {
-      background: kind === 'error' ? '#3a1a1f' : '#161a21',
-      color: kind === 'error' ? '#ff8f99' : '#e6e9ef',
-      border: `1px solid ${kind === 'error' ? '#5a2029' : '#272d38'}`,
-      borderLeft: `3px solid ${kind === 'error' ? '#ff5f6d' : '#4c8dff'}`,
-      borderRadius: '8px', padding: '9px 14px', font: '13px/1.4 system-ui, sans-serif',
-      maxWidth: '380px', boxShadow: '0 8px 24px rgba(0,0,0,.45)',
+      background: kind === 'error' ? 'oklch(31% 0.10 20)' : 'oklch(27.5% 0.012 260)',
+      color: kind === 'error' ? 'oklch(90% 0.06 20)' : 'oklch(93% 0.008 260)',
+      borderLeft: `3px solid ${kind === 'error' ? 'oklch(76% 0.14 20)' : 'oklch(80% 0.12 255)'}`,
+      borderRadius: '12px', padding: '10px 16px', font: '500 13px/1.4 system-ui, sans-serif',
+      maxWidth: '380px', boxShadow: '0 2px 6px rgba(0,0,0,.18), 0 8px 24px rgba(0,0,0,.22)',
     });
     host.append(el);
     setTimeout(() => el.remove(), kind === 'error' ? 6000 : 2800);
@@ -102,37 +103,37 @@
       .wrap { position: relative; font: 500 12px/1.3 system-ui, sans-serif; pointer-events: auto; }
       .btn {
         display: inline-flex; align-items: center; gap: 6px;
-        background: rgba(13,15,19,.86); color: #e7eaf0;
-        border: 1px solid rgba(255,255,255,.16); border-radius: 8px;
-        padding: 6px 10px; cursor: pointer; backdrop-filter: blur(6px);
-        box-shadow: 0 4px 14px rgba(0,0,0,.4); opacity: .55;
+        background: oklch(24% 0.012 260 / .88); color: oklch(93% 0.008 260);
+        border: 0; border-radius: 999px;
+        padding: 7px 12px 7px 10px; cursor: pointer; backdrop-filter: blur(8px);
+        box-shadow: 0 2px 6px rgba(0,0,0,.25), 0 6px 18px rgba(0,0,0,.3); opacity: .6;
         transition: opacity .12s ease, background .12s ease;
       }
-      .btn:hover, .wrap:hover .btn { opacity: 1; background: rgba(20,24,32,.95); }
-      .btn svg { width: 14px; height: 14px; fill: currentColor; }
+      .btn:hover, .wrap:hover .btn { opacity: 1; background: oklch(36% 0.11 255 / .96); }
+      .btn svg { width: 16px; height: 16px; fill: currentColor; }
       .menu {
-        position: absolute; top: calc(100% + 6px); right: 0; min-width: 190px;
-        background: rgba(13,15,19,.97); color: #e7eaf0;
-        border: 1px solid rgba(255,255,255,.14); border-radius: 10px;
-        padding: 5px; box-shadow: 0 12px 34px rgba(0,0,0,.55); display: none;
+        position: absolute; top: calc(100% + 6px); right: 0; min-width: 200px;
+        background: oklch(24% 0.012 260 / .98); color: oklch(93% 0.008 260);
+        border-radius: 12px; padding: 6px;
+        box-shadow: 0 6px 16px rgba(0,0,0,.26), 0 20px 48px rgba(0,0,0,.3); display: none;
       }
       .menu.open { display: block; }
       .menu.up { top: auto; bottom: calc(100% + 6px); }
       .row {
         display: flex; align-items: center; justify-content: space-between; gap: 12px;
-        padding: 7px 9px; border-radius: 6px; cursor: pointer; white-space: nowrap;
+        padding: 8px 10px; border-radius: 8px; cursor: pointer; white-space: nowrap;
       }
-      .row:hover { background: rgba(91,157,255,.16); }
+      .row:hover { background: oklch(80% 0.12 255 / .16); }
       .row .q { font-weight: 600; }
-      .row .meta { color: #8b94a6; font-size: 11px; }
-      .note { padding: 7px 9px; color: #8b94a6; font-size: 11px; white-space: normal; max-width: 240px; }
-      .note.err { color: #ff8f99; }
+      .row .meta { color: oklch(72% 0.014 260); font-size: 11px; }
+      .note { padding: 8px 10px; color: oklch(72% 0.014 260); font-size: 11px; white-space: normal; max-width: 240px; }
+      .note.err { color: oklch(80% 0.10 20); }
     `;
     const wrap = document.createElement('div');
     wrap.className = 'wrap';
     const button = document.createElement('button');
     button.className = 'btn';
-    button.innerHTML = '<svg viewBox="0 0 24 24"><path d="M5 20h14v-2H5v2zM19 9h-4V3H9v6H5l7 7 7-7z"/></svg><span>Download</span>';
+    button.innerHTML = '<svg viewBox="0 0 24 24"><path d="M5 20h14v-2H5v2zM19 9h-4V3H9v6H5l7 7 7-7z"/></svg><span>Download video</span>';
     const menu = document.createElement('div');
     menu.className = 'menu';
     wrap.append(button, menu);
@@ -165,15 +166,14 @@
 
   async function openMenu() {
     const { menu } = buildOverlay();
-    menu.replaceChildren(note('Looking for streams…'));
+    menu.replaceChildren(note('Looking for the stream…'));
     menu.classList.add('open');
 
     const found = await api.runtime.sendMessage({ type: 'videoCandidates' });
     const candidates = (found && found.candidates) || [];
     if (!candidates.length) {
       menu.replaceChildren(note(
-        'No stream seen yet for this tab. Start playback and try again — the '
-        + 'manifest has to go past before it can be downloaded.'));
+        'No stream seen on this tab yet. Start playback, then try again.'));
       return;
     }
 
@@ -185,13 +185,13 @@
     const result = probe.probe || {};
     const variants = result.variants || [];
     if (!variants.length) {
-      menu.replaceChildren(note(result.unsupported || 'Nothing downloadable in that stream', true));
+      menu.replaceChildren(note(result.unsupported || 'Nothing in that stream can be downloaded', true));
       return;
     }
     if (result.kind !== 'direct' && result.ffmpeg === false) {
       menu.replaceChildren(note(
-        'This is a segmented stream and ffmpeg is not installed on the manager, '
-        + 'so its parts cannot be joined into a file.', true));
+        'This stream comes in segments, and ffmpeg is not installed where the manager runs, '
+        + 'so they cannot be joined into one file.', true));
       return;
     }
 
@@ -210,7 +210,7 @@
       ].filter(Boolean).join(' · ');
       row.append(quality, meta);
       row.addEventListener('click', async () => {
-        menu.replaceChildren(note(`Sending ${variant.quality} to Aria Download Manager…`));
+        menu.replaceChildren(note(`Adding ${variant.quality}…`));
         const out = await api.runtime.sendMessage({
           type: 'videoDownload',
           candidate: candidates[0],
@@ -220,7 +220,7 @@
         if (out && out.ok) {
           closeMenu();
         } else {
-          menu.replaceChildren(note((out && out.error) || 'Download failed', true));
+          menu.replaceChildren(note((out && out.error) || 'Could not add it', true));
         }
       });
       menu.append(row);

@@ -43,7 +43,7 @@ DankPopout {
             },
             {
                 "icon": "content_paste",
-                "text": "Add URL from clipboard",
+                "text": "Add link from clipboard",
                 "enabled": on,
                 "action": () => clipboard.running = true
             },
@@ -71,8 +71,8 @@ DankPopout {
                                    "separator": true
                                },
                                {
-                                   "icon": "bolt",
-                                   "text": on && svc.rulesEnabled ? "Disable rules" : "Enable rules",
+                                   "icon": "auto_fix_high",
+                                   "text": on && svc.rulesEnabled ? "Turn actions off" : "Turn actions on",
                                    "enabled": on,
                                    "action": () => svc.setRulesEnabled(!svc.rulesEnabled)
                                },
@@ -100,12 +100,12 @@ DankPopout {
     function addFromClipboard(text) {
         const url = (text || "").trim()
         if (!/^(https?|ftp|sftp|magnet):/i.test(url)) {
-            ToastService.showError("aria2c", "The clipboard does not hold a downloadable URL")
+            ToastService.showError("Aria", "The clipboard does not hold a link that can be downloaded")
             return
         }
         menu.service.post("/api/downloads", {
                               "uris": [url]
-                          }, "Queued")
+                          }, "Added")
     }
 
     Process {
@@ -120,7 +120,7 @@ DankPopout {
 
         onExited: exitCode => {
             if (exitCode !== 0)
-                ToastService.showError("aria2c", "Could not read the clipboard — is wl-clipboard installed?")
+                ToastService.showError("Aria", "Could not read the clipboard. Is wl-clipboard installed?")
         }
     }
 
@@ -188,12 +188,12 @@ DankPopout {
                             text: {
                                 const svc = menu.service
                                 if (!menu.online)
-                                    return "offline — " + (svc ? svc.socketPath : "")
+                                    return "Offline · " + (svc ? svc.socketPath : "")
                                 if (svc.activeCount > 0)
                                     return svc.activeCount + " active · " + Fmt.speed(svc.downloadSpeed)
                                 if (svc.waitingCount > 0)
                                     return svc.waitingCount + " queued"
-                                return "idle"
+                                return "Idle"
                             }
                             font.pixelSize: Theme.fontSizeSmall - 1
                             color: Theme.surfaceVariantText

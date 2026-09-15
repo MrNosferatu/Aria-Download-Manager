@@ -8,7 +8,9 @@ Column {
     id: panel
 
     property var service: null
-    property bool showAdvanced: false
+    //: Simple: links, folder, start paused. Advanced: everything aria2 takes
+    //: per download. The same split as the manager page's Add dialog.
+    property bool advanced: false
     property bool paused: false
     property bool mirrors: false
 
@@ -26,8 +28,8 @@ Column {
         put("split", splitField.text)
         put("min-split-size", minSplitField.value)
         put("max-download-limit", limitField.value)
-        put("Referer", refererField.text)
-        put("User-Agent", uaField.text)
+        put("referer", refererField.text)
+        put("user-agent", uaField.text)
         put("all-proxy", proxyField.text)
         put("checksum", checksumField.text)
 
@@ -43,7 +45,7 @@ Column {
         const uris = urisField.text.split("\n").map(line => line.trim()).filter(line => line.length > 0)
         const torrent = torrentField.text.trim()
         if (!uris.length && !torrent) {
-            ToastService.showError("aria2c", "Give a URL or a .torrent path")
+            ToastService.showError("Aria", "Paste a link or give a torrent path")
             return
         }
 
@@ -55,7 +57,7 @@ Column {
             // from a local path to that payload.
             Proc.runCommand("ariaDownloadManager.torrent", ["base64", "-w0", torrent], (stdout, exitCode) => {
                                 if (exitCode !== 0 || !stdout.trim()) {
-                                    ToastService.showError("aria2c", "Could not read " + torrent)
+                                    ToastService.showError("Aria", "Could not read " + torrent)
                                     return
                                 }
                                 const isMetalink = /\.meta(4|link)$/i.test(torrent)
@@ -67,7 +69,7 @@ Column {
                                                        "options": panel.optionsPayload(),
                                                        "position": position,
                                                        "paused": panel.paused
-                                                   }, "Queued", () => panel.reset())
+                                                   }, "Added", () => panel.reset())
                             }, 0)
             return
         }
@@ -78,7 +80,7 @@ Column {
                          "position": position,
                          "paused": paused,
                          "mirrors": mirrors
-                     }, "Queued", () => panel.reset())
+                     }, "Added", () => panel.reset())
     }
 
     function reset() {
@@ -89,11 +91,37 @@ Column {
 
     spacing: Theme.spacingS
 
+    Item {
+        width: parent.width
+        height: 32
+
+        StyledText {
+            anchors.left: parent.left
+            anchors.verticalCenter: parent.verticalCenter
+            text: "Add download"
+            font.pixelSize: Theme.fontSizeLarge
+            font.weight: Font.Medium
+            color: Theme.surfaceText
+        }
+
+        DankButtonGroup {
+            anchors.right: parent.right
+            anchors.verticalCenter: parent.verticalCenter
+            size: "small"
+            model: ["Simple", "Advanced"]
+            currentIndex: panel.advanced ? 1 : 0
+            onSelectionChanged: (index, selected) => {
+                if (selected)
+                    panel.advanced = index === 1
+            }
+        }
+    }
+
     MultiLineField {
         width: parent.width
         id: urisField
         minimumHeight: 62
-        placeholderText: "URLs — one per line (http, ftp, magnet:)"
+        placeholderText: "Links, one per line: http, ftp, or magnet"
         onAccepted: panel.submit()
     }
 
@@ -104,87 +132,24 @@ Column {
         DirectoryField {
             id: dirField
             objectName: "add"
-            width: (parent.width - Theme.spacingS) / 2
+            width: panel.advanced ? (parent.width - Theme.spacingS) / 2 : parent.width
             implicitHeight: 40
-            placeholderText: "Save to directory (default)"
+            placeholderText: "Save to: manager's download folder"
         }
 
         DankTextField {
             id: outField
+            visible: panel.advanced
             width: (parent.width - Theme.spacingS) / 2
             height: 40
             leftIconName: "drive_file_rename_outline"
-            placeholderText: "Rename to (single file only)"
-        }
-    }
-
-    Row {
-        width: parent.width
-        spacing: Theme.spacingS
-
-        DankButton {
-            text: panel.showAdvanced ? "Fewer options" : "More options"
-            iconName: panel.showAdvanced ? "expand_less" : "expand_more"
-            buttonHeight: 40
-            backgroundColor: Theme.surfaceContainerHigh
-            textColor: Theme.surfaceText
-            onClicked: panel.showAdvanced = !panel.showAdvanced
-        }
-
-        Row {
-            anchors.verticalCenter: parent.verticalCenter
-            spacing: Theme.spacingXS
-
-            DankIcon {
-                anchors.verticalCenter: parent.verticalCenter
-                name: panel.paused ? "check_box" : "check_box_outline_blank"
-                size: Theme.iconSizeSmall
-                color: panel.paused ? Theme.primary : Theme.surfaceVariantText
-
-                MouseArea {
-                    anchors.fill: parent
-                    cursorShape: Qt.PointingHandCursor
-                    onClicked: panel.paused = !panel.paused
-                }
-            }
-
-            StyledText {
-                anchors.verticalCenter: parent.verticalCenter
-                text: "Add paused"
-                font.pixelSize: Theme.fontSizeSmall
-                color: Theme.surfaceText
-            }
-        }
-
-        Row {
-            anchors.verticalCenter: parent.verticalCenter
-            spacing: Theme.spacingXS
-
-            DankIcon {
-                anchors.verticalCenter: parent.verticalCenter
-                name: panel.mirrors ? "check_box" : "check_box_outline_blank"
-                size: Theme.iconSizeSmall
-                color: panel.mirrors ? Theme.primary : Theme.surfaceVariantText
-
-                MouseArea {
-                    anchors.fill: parent
-                    cursorShape: Qt.PointingHandCursor
-                    onClicked: panel.mirrors = !panel.mirrors
-                }
-            }
-
-            StyledText {
-                anchors.verticalCenter: parent.verticalCenter
-                text: "URLs are mirrors of one file"
-                font.pixelSize: Theme.fontSizeSmall
-                color: Theme.surfaceText
-            }
+            placeholderText: "Save as (single file only)"
         }
     }
 
     Grid {
         width: parent.width
-        visible: panel.showAdvanced
+        visible: panel.advanced
         columns: 2
         columnSpacing: Theme.spacingS
         rowSpacing: Theme.spacingXS
@@ -200,14 +165,14 @@ Column {
             id: splitField
             width: (parent.width - Theme.spacingS) / 2
             height: 40
-            placeholderText: "Split (parts)"
+            placeholderText: "Parts per download"
         }
 
         UnitField {
             id: minSplitField
             width: (parent.width - Theme.spacingS) / 2
             kind: "size"
-            placeholderText: "Min part size"
+            placeholderText: "Smallest part"
         }
 
         UnitField {
@@ -228,21 +193,21 @@ Column {
             id: uaField
             width: (parent.width - Theme.spacingS) / 2
             height: 40
-            placeholderText: "User-Agent"
+            placeholderText: "User agent"
         }
 
         DankTextField {
             id: cookieField
             width: (parent.width - Theme.spacingS) / 2
             height: 40
-            placeholderText: "Cookie header (k=v; k2=v2)"
+            placeholderText: "Cookies (name=value; other=value)"
         }
 
         DankTextField {
             id: proxyField
             width: (parent.width - Theme.spacingS) / 2
             height: 40
-            placeholderText: "Proxy (all-proxy)"
+            placeholderText: "Proxy"
         }
 
         DankTextField {
@@ -256,7 +221,7 @@ Column {
             id: positionField
             width: (parent.width - Theme.spacingS) / 2
             height: 40
-            placeholderText: "Queue position (end)"
+            placeholderText: "Queue position (blank adds at the end)"
         }
 
         DankTextField {
@@ -264,24 +229,74 @@ Column {
             width: (parent.width - Theme.spacingS) / 2
             height: 40
             leftIconName: "attach_file"
-            placeholderText: "/path/to/file.torrent"
+            placeholderText: "Torrent or metalink file path"
         }
     }
 
     MultiLineField {
         id: headersField
         width: parent.width
-        visible: panel.showAdvanced
+        visible: panel.advanced
         minimumHeight: 48
-        placeholderText: "Extra headers — one per line, Name: value"
+        placeholderText: "Extra headers, one per line: Name: value"
     }
 
-    DankButton {
-        text: "Add download"
-        iconName: "add"
-        buttonHeight: 40
-        backgroundColor: Theme.primary
-        textColor: Theme.onPrimary
-        onClicked: panel.submit()
+    Item {
+        width: parent.width
+        height: 40
+
+        Row {
+            anchors.left: parent.left
+            anchors.verticalCenter: parent.verticalCenter
+            spacing: Theme.spacingL
+
+            Row {
+                anchors.verticalCenter: parent.verticalCenter
+                spacing: Theme.spacingS
+
+                BoolSwitch {
+                    anchors.verticalCenter: parent.verticalCenter
+                    checked: panel.paused
+                    onToggled: value => panel.paused = value
+                }
+
+                StyledText {
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: "Start paused"
+                    font.pixelSize: Theme.fontSizeSmall
+                    color: Theme.surfaceText
+                }
+            }
+
+            Row {
+                anchors.verticalCenter: parent.verticalCenter
+                visible: panel.advanced
+                spacing: Theme.spacingS
+
+                BoolSwitch {
+                    anchors.verticalCenter: parent.verticalCenter
+                    checked: panel.mirrors
+                    onToggled: value => panel.mirrors = value
+                }
+
+                StyledText {
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: "Links are mirrors of one file"
+                    font.pixelSize: Theme.fontSizeSmall
+                    color: Theme.surfaceText
+                }
+            }
+        }
+
+        DankButton {
+            anchors.right: parent.right
+            anchors.verticalCenter: parent.verticalCenter
+            text: "Add"
+            iconName: "add"
+            buttonHeight: 40
+            backgroundColor: Theme.primary
+            textColor: Theme.onPrimary
+            onClicked: panel.submit()
+        }
     }
 }

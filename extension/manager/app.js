@@ -1,5 +1,5 @@
-/* Aria Download Manager — the extension's manager page, driven by the manager's live
-   state stream. */
+/* Aria Download Manager — the extension's manager page, driven by the manager's
+   live state stream. */
 'use strict';
 
 const S = {
@@ -11,7 +11,7 @@ const S = {
   events: [],
   triggers: [],
   globalOptions: {},
-  pendingOptions: {},   // key -> value saved to config.yaml but not live in aria2
+  pendingOptions: {},     // key -> value saved to config.yaml but not live in aria2
   optInputs: new Map(),   // key -> {read, original, wrap}
   // gid -> {options: element, files: {index: checked}} — edits in an open
   // detail panel, kept across its two-second refresh.
@@ -25,6 +25,10 @@ const S = {
   // gid -> true, for the bulk selection mode.
   selection: new Set(),
   selecting: false,
+  // Simple shows the few options most people tune; Advanced shows everything.
+  // Remembered per surface so each opens the way it was left.
+  settingsMode: localStorage.getItem('aria.settingsMode') || 'simple',
+  addMode: localStorage.getItem('aria.addMode') || 'simple',
 };
 
 const $ = (sel, root = document) => root.querySelector(sel);
@@ -61,9 +65,7 @@ function parseSize(value) {
 }
 
 /* config.yaml keeps sizes the way you wrote them and aria2 reports them in
-   bytes, so `32M` and `33554432` are the same setting spelled two ways. A plain
-   string compare called those a difference and marked untouched options as
-   waiting for a restart. */
+   bytes, so `32M` and `33554432` are the same setting spelled two ways. */
 function sameOptionValue(live, saved) {
   const a = String(live ?? '').trim();
   const b = String(saved ?? '').trim();
@@ -74,19 +76,14 @@ function sameOptionValue(live, saved) {
 }
 
 /* ------------------------------------------------------------------ units */
-/* aria2 takes speeds and sizes in bytes and reports them in bytes, so every
-   limit used to be a text box showing 12582912 and asking for arithmetic. These
-   fields are a number and a unit instead. The value stays bytes underneath —
-   what aria2 and config.yaml get — and shorthand like 12M typed into the box
-   still works. */
+/* aria2 takes speeds and sizes in bytes. These fields are a number and a unit;
+   the value stays bytes underneath, and shorthand like 12M still works. */
 const UNITS = {
   speed: [['B/s', 1], ['KiB/s', 1024], ['MiB/s', 1024 ** 2], ['GiB/s', 1024 ** 3]],
   size: [['B', 1], ['KiB', 1024], ['MiB', 1024 ** 2], ['GiB', 1024 ** 3]],
 };
-// The unit an empty or zero field starts on: what a limit is usually set in.
 const DEFAULT_UNIT = 2;
 
-// aria2 options that take a speed or a size, wherever they are shown.
 const UNIT_OPTIONS = {
   'max-overall-download-limit': 'speed',
   'max-download-limit': 'speed',
@@ -103,9 +100,6 @@ const UNIT_OPTIONS = {
   'socket-recv-buffer-size': 'size',
 };
 
-// bytes -> [amount, unit index], in the largest unit the value reaches 1 in.
-// A speed of 0 is aria2's "no limit", which reads better as an empty box saying
-// so than as "0 MiB/s".
 function splitUnits(bytes, kind) {
   if (bytes == null) return ['', DEFAULT_UNIT];
   if (bytes === 0) return [kind === 'speed' ? '' : '0', DEFAULT_UNIT];
@@ -116,9 +110,8 @@ function splitUnits(bytes, kind) {
 }
 
 /* One number-and-unit control. read() gives bytes as a string ('' when empty).
-   Changing the unit reinterprets the number rather than converting it: typing
-   12 and picking MiB/s means 12 MiB/s. An untouched field reads back exactly
-   what it was given, so rounding for display never counts as an edit. */
+   Changing the unit reinterprets the number rather than converting it. An
+   untouched field reads back exactly what it was given. */
 function unitInput(kind, raw, onEdit, placeholder) {
   const initialBytes = parseSize(raw);
   const [amount, unit] = splitUnits(initialBytes, kind);
@@ -127,7 +120,7 @@ function unitInput(kind, raw, onEdit, placeholder) {
   const input = document.createElement('input');
   input.inputMode = 'decimal';
   input.value = amount;
-  input.placeholder = placeholder || (kind === 'speed' ? 'no limit' : '0');
+  input.placeholder = placeholder || (kind === 'speed' ? 'No limit' : '0');
   const select = document.createElement('select');
   select.innerHTML = UNITS[kind].map(([label], i) => `<option value="${i}">${label}</option>`).join('');
   select.value = String(unit);
@@ -137,15 +130,12 @@ function unitInput(kind, raw, onEdit, placeholder) {
   const read = () => {
     const text = input.value.trim();
     if (text === amount && Number(select.value) === unit) return raw == null ? '' : String(raw);
-    // Clearing a speed that was set means "no limit", not "leave it unset".
     if (!text) return kind === 'speed' && raw != null ? '0' : '';
-    // Shorthand typed into the box carries its own unit.
     if (/[a-z]/i.test(text)) {
       const bytes = parseSize(text);
       return bytes == null ? text : String(bytes);
     }
     const number = Number(text);
-    // Left as typed, so the manager's validation says what is wrong with it.
     if (!Number.isFinite(number) || number < 0) return text;
     return String(Math.round(number * UNITS[kind][Number(select.value)][1]));
   };
@@ -198,9 +188,8 @@ function connect() {
       else if (kind === 'event') pushEvents([data]);
       else if (kind === 'backlog') pushEvents(data, true);
     },
-    // The stream reconnects on its own; this only has to say so.
     onError(reason) {
-      setPill('disconnected', 'pill-err', reason);
+      setPill('Manager offline', 'err', reason);
     },
   });
 }
@@ -208,7 +197,7 @@ function connect() {
 function setPill(text, cls, title = '') {
   const pill = $('#aria2-pill');
   pill.textContent = text;
-  pill.className = `pill ${cls}`;
+  pill.className = `status ${cls}`;
   pill.title = title;
 }
 
@@ -223,27 +212,25 @@ function pushEvents(events, replace = false) {
 function applyState(state) {
   S.state = state;
   const aria2 = state.aria2 || {};
+  const counts = state.counts || {};
+  const busy = (counts.active ?? 0) > 0;
   if (aria2.running) {
-    setPill(`aria2c ${aria2.version || ''} · pid ${aria2.pid ?? 'ext'}`.trim(), 'pill-ok',
-      `${aria2.rpc_url} · up ${fmtEta(aria2.uptime)}`);
+    setPill(busy ? 'Downloading' : 'Ready', busy ? 'busy' : 'ok',
+      `aria2c ${aria2.version || ''} · pid ${aria2.pid ?? 'external'} · ${aria2.rpc_url || ''} · up ${fmtEta(aria2.uptime)}`);
   } else {
-    setPill('aria2c not running', 'pill-err',
-      aria2.last_error || 'no aria2c reachable — see the Log tab');
+    setPill('aria2c is not running', 'err',
+      aria2.last_error || 'No aria2c reachable. See the event log under Settings.');
   }
 
   const g = state.global || {};
-  $('#stat-down').textContent = fmtSpeed(g.downloadSpeed);
-  $('#stat-up').textContent = fmtSpeed(g.uploadSpeed);
-  const counts = state.counts || {};
+  setRate('#stat-down', g.downloadSpeed);
+  setRate('#stat-up', g.uploadSpeed);
   const queued = (counts.waiting ?? 0) + (counts.paused ?? 0);
   setStat('#stat-active', counts.active ?? 0);
   setStat('#stat-waiting', queued);
   setStat('#stat-complete', counts.complete ?? 0);
   setStat('#stat-error', counts.error ?? 0);
 
-  // Every chip carries its own count — "All" and "Complete" included, which is
-  // the pair that used to leave you guessing whether the filter was empty or
-  // the list was.
   setCount('all', counts.total ?? (state.downloads || []).length);
   setCount('active', counts.active ?? 0);
   setCount('waiting', counts.waiting ?? 0);
@@ -259,6 +246,12 @@ function applyState(state) {
   renderProcInfo();
 }
 
+function setRate(sel, value) {
+  const node = $(sel);
+  node.textContent = fmtSpeed(value);
+  node.classList.toggle('quiet', !(Number(value) > 0));
+}
+
 function setStat(sel, value) {
   const node = $(sel);
   if (!node) return;
@@ -272,10 +265,8 @@ function setCount(filter, value) {
 }
 
 /* -------------------------------------------------------------- icons */
-/* Inline SVG rather than emoji or glyphs: emoji render as someone else's
- * artwork at someone else's colour and size, and vary by platform. These
- * inherit currentColor and the button's font-size like any other icon set,
- * with nothing to download. Paths are 24x24. */
+/* Inline Material Symbols paths: they inherit currentColor and the button's
+   size like any other icon, with nothing to download. */
 const ICONS = {
   pause: 'M6 19h4V5H6v14zm8-14v14h4V5h-4z',
   play: 'M8 5v14l11-7z',
@@ -285,11 +276,12 @@ const ICONS = {
   top: 'M8 11h3v10h2V11h3l-4-4-4 4zM4 3v2h16V3H4z',
   up: 'M4 12l1.41 1.41L11 7.83V20h2V7.83l5.58 5.59L20 12l-8-8-8 8z',
   down: 'M20 12l-1.41-1.41L13 16.17V4h-2v12.17l-5.58-5.59L4 12l8 8 8-8z',
-  broom: 'M5 13h14v-2H5v2zm-2 4h14v-2H3v2zM7 7v2h14V7H7z',
-  select: 'M22 7l-1.41-1.41-6.34 6.34 1.41 1.41L22 7zM3 5v2h11V5H3zm0 6v2h8v-2H3zm0 6v2h8v-2H3z',
   open: 'M19 19H5V5h7V3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14c1.1 0 2-.9 2-2v-7h-2v7zM14 3v2h3.59l-9.83 9.83 1.41 1.41L19 6.41V10h2V3h-7z',
   chevron: 'M10 6 8.59 7.41 13.17 12l-4.58 4.59L10 18l6-6z',
   check: 'M9 16.17 4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z',
+  download: 'M5 20h14v-2H5v2zM19 9h-4V3H9v6H5l7 7 7-7z',
+  search: 'M15.5 14h-.79l-.28-.27A6.47 6.47 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z',
+  wand: 'M7.5 5.6 10 7 8.6 4.5 10 2 7.5 3.4 5 2l1.4 2.5L5 7zm12 9.8L17 14l1.4 2.5L17 19l2.5-1.4L22 19l-1.4-2.5L22 14zM22 2l-2.5 1.4L17 2l1.4 2.5L17 7l2.5-1.4L22 7l-1.4-2.5zm-7.63 5.29a.996.996 0 0 0-1.41 0L1.29 18.96a.996.996 0 0 0 0 1.41l2.34 2.34c.39.39 1.02.39 1.41 0L16.7 11.05a.996.996 0 0 0 0-1.41l-2.33-2.35zm-1.03 5.49-2.12-2.12 2.44-2.44 2.12 2.12-2.44 2.44z',
 };
 
 function icon(name) {
@@ -301,12 +293,17 @@ const STATUS_TAG = {
   active: 'tag-active', complete: 'tag-complete', error: 'tag-error',
   paused: 'tag-paused', waiting: '', removed: '',
 };
+// aria2's vocabulary on the wire; what a person reads on the screen.
+const STATUS_LABEL = {
+  active: 'Active', waiting: 'Queued', paused: 'Paused',
+  complete: 'Done', error: 'Failed', removed: 'Removed',
+};
+const statusLabel = (s) => STATUS_LABEL[s] || capitalise(s);
 
 function visibleDownloads() {
   const all = (S.state?.downloads || []).slice();
   // 'paused' sits with the running downloads rather than below the queue: a
-  // pause is a halted in-progress item, and a rule's brief pause+resume would
-  // otherwise make the row dive to the bottom of the list and jump back.
+  // rule's brief pause+resume would otherwise make the row dive and jump back.
   const rank = { active: 0, paused: 0, waiting: 1, error: 2, complete: 3, removed: 4 };
   const acting = new Set(
     Object.entries(S.state?.rules?.downloads || {})
@@ -327,11 +324,21 @@ function visibleDownloads() {
   });
 }
 
+function setEmpty(title, text) {
+  const host = $('#empty');
+  host.innerHTML = `${icon('download')}<b>${escapeHtml(title)}</b><span>${escapeHtml(text)}</span>`;
+}
+
 function renderDownloads() {
   if (S.filter === 'history') return;  // history is rendered from its own fetch
   const list = visibleDownloads();
   const container = $('#downloads');
   $('#empty').hidden = list.length > 0;
+  if (!list.length) {
+    if (S.search) setEmpty('No match', 'Nothing here has that in its name.');
+    else if (S.filter !== 'all') setEmpty(`No ${statusLabel(S.filter).toLowerCase()} downloads`, 'Try another filter.');
+    else setEmpty('Nothing here yet', 'Add a download, or start one in the browser and it lands here.');
+  }
 
   const seen = new Set();
   list.forEach((dl, index) => {
@@ -386,59 +393,56 @@ function updateRow(row, dl) {
     r.name.title = dl.path || dl.firstUri || dl.name;
   }
 
-  const tags = [`<span class="tag ${STATUS_TAG[dl.status] || ''}">${dl.status}</span>`];
-  // Explicit false only: undefined means the manager had no reason to look.
-  if (dl.fileExists === false) tags.push('<span class="tag tag-missing">file missing</span>');
-  if (dl.isTorrent) tags.push('<span class="tag">torrent</span>');
-  if (dl.seeder) tags.push('<span class="tag tag-complete">seeding</span>');
+  const tags = [`<span class="tag ${STATUS_TAG[dl.status] || ''}">${statusLabel(dl.status)}</span>`];
+  if (dl.fileExists === false) tags.push('<span class="tag tag-missing">File missing</span>');
+  if (dl.isTorrent) tags.push('<span class="tag">Torrent</span>');
+  if (dl.seeder) tags.push('<span class="tag tag-complete">Seeding</span>');
   const ruleState = S.state?.rules?.downloads?.[dl.gid] || {};
   for (const [name, info] of Object.entries(ruleState)) {
-    if (info.acting) tags.push(`<span class="tag tag-rule">${name}: acting</span>`);
-    else if (info.triggers) tags.push(`<span class="tag tag-rule">${name} ×${info.triggers}</span>`);
+    if (info.acting) tags.push(`<span class="tag tag-rule">${escapeHtml(name)} acting</span>`);
+    else if (info.triggers) tags.push(`<span class="tag tag-rule">${escapeHtml(name)} ×${info.triggers}</span>`);
   }
   const tagHtml = tags.join('');
   if (r.badges._html !== tagHtml) { r.badges.innerHTML = tagHtml; r.badges._html = tagHtml; }
 
   r.fill.style.width = `${dl.progress}%`;
-  // Drives the wash across the card — see the note at the top of style.css.
   row.style.setProperty('--p', `${dl.progress}%`);
   r.pick.hidden = !S.selecting;
   r.pick.checked = S.selection.has(dl.gid);
   row.classList.toggle('is-selected', S.selecting && r.pick.checked);
 
   const bits = [
-    `<span class="primary">${fmtBytes(dl.completed)} / ${dl.total ? fmtBytes(dl.total) : '?'}`
+    `<span class="primary">${fmtBytes(dl.completed)} of ${dl.total ? fmtBytes(dl.total) : '?'}`
     + ` · ${dl.progress.toFixed(1)}%</span>`,
   ];
   if (dl.status === 'active') {
     // aria2's figure is a moving average; the measured one is bytes actually
-    // written since the last tick. Show both when they disagree materially,
-    // because that gap is what makes a stall look like it is still running.
+    // written since the last tick. Both show when they disagree, because that
+    // gap is what makes a stall look like it is still running.
     const measured = dl.measuredSpeed;
     const disagrees = measured != null
       && Math.abs(measured - dl.downloadSpeed) > Math.max(65536, dl.downloadSpeed * 0.35);
     bits.push(disagrees
-      ? `↓ ${fmtSpeed(measured)} <span title="aria2 reports ${fmtSpeed(dl.downloadSpeed)} — its figure is a moving average and lags reality by a few seconds">(aria2 says ${fmtSpeed(dl.downloadSpeed)})</span>`
+      ? `↓ ${fmtSpeed(measured)} <span title="aria2 reports ${fmtSpeed(dl.downloadSpeed)}: its figure is a moving average and lags by a few seconds">(aria2 says ${fmtSpeed(dl.downloadSpeed)})</span>`
       : `↓ ${fmtSpeed(dl.downloadSpeed)}`);
     if (dl.isTorrent) bits.push(`↑ ${fmtSpeed(dl.uploadSpeed)}`);
-    bits.push(`ETA ${fmtEta(dl.eta)}`);
-    bits.push(`${dl.connections} conn`);
+    bits.push(`${fmtEta(dl.eta)} left`);
+    bits.push(`${dl.connections} connection${dl.connections === 1 ? '' : 's'}`);
     if (dl.isTorrent) bits.push(`${dl.numSeeders} seeders`);
   }
-  if (dl.status === 'waiting' && dl.queuePosition != null) bits.push(`queue #${dl.queuePosition + 1}`);
+  if (dl.status === 'waiting' && dl.queuePosition != null) bits.push(`#${dl.queuePosition + 1} in queue`);
   if (dl.fileExists === false && dl.path) {
-    bits.push(`<span class="err">file is no longer at ${escapeHtml(dl.path)}</span>`);
+    bits.push(`<span class="err">No longer at ${escapeHtml(dl.path)}</span>`);
   }
   if (dl.errorMessage) bits.push(`<span class="err">${escapeHtml(dl.errorMessage)}</span>`);
   for (const [name, info] of Object.entries(ruleState)) {
     if (info.elapsed > 0 && info.threshold) {
-      bits.push(`<span class="rulehint">${name} ${info.elapsed.toFixed(1)}/${info.threshold}s</span>`);
+      bits.push(`<span class="rulehint">${escapeHtml(name)} ${info.elapsed.toFixed(1)}/${info.threshold}s</span>`);
     }
   }
   const metaHtml = bits.map((b) => `<span>${b}</span>`).join('');
   if (r.meta._html !== metaHtml) { r.meta.innerHTML = metaHtml; r.meta._html = metaHtml; }
 
-  // Rebuild the action buttons only when the applicable set changes.
   if (row._actionKey !== dl.status) {
     row._actionKey = dl.status;
     r.actions.innerHTML = '';
@@ -452,20 +456,20 @@ async function removeDownload(gid, deleteFiles, okMessage) {
 }
 
 /* A finished download is the only case worth a question: its file is the point,
- * so removing the row and deleting the file are two different intentions. */
+   so removing the row and deleting the file are two different intentions. */
 function askRemove(dl) {
   const row = S.rows.get(dl.gid);
   if (!row) return;
   const host = $('.dl-confirm', row);
   const gone = dl.fileExists === false;
   host.innerHTML = `<span class="question">${gone
-    ? 'The file is already gone — remove the row?'
-    : 'Remove this download — and the file?'}</span>`;
-  const cancel = mkBtn2('Cancel', 'btn btn-small', () => { host.hidden = true; });
-  const keep = mkBtn2('Keep file', 'btn btn-small',
+    ? 'The file is already gone. Remove this entry?'
+    : 'Remove this download. Keep the file, or delete it too?'}</span>`;
+  const cancel = mkBtn2('Cancel', 'btn btn-sm btn-text', () => { host.hidden = true; });
+  const keep = mkBtn2('Keep file', 'btn btn-sm',
     () => { host.hidden = true; removeDownload(dl.gid, false, 'Removed, file kept'); });
-  const del = mkBtn2('Delete file', 'btn btn-small btn-danger',
-    () => { host.hidden = true; removeDownload(dl.gid, true, 'Removed and deleted the file'); });
+  const del = mkBtn2('Delete file', 'btn btn-sm btn-danger btn-primary',
+    () => { host.hidden = true; removeDownload(dl.gid, true, 'Removed with its file'); });
   del.disabled = gone;
   host.append(cancel, keep, del);
   host.hidden = false;
@@ -479,7 +483,7 @@ function mkBtn2(label, cls, handler) {
   return btn;
 }
 
-function mkBtn(iconName, title, handler, cls = 'btn btn-icon') {
+function mkBtn(iconName, title, handler, cls = 'btn btn-icon btn-sm') {
   const btn = document.createElement('button');
   btn.className = cls;
   btn.innerHTML = icon(iconName);
@@ -499,7 +503,7 @@ function actionsFor(dl) {
     out.push(mkBtn('play', 'Resume', () => act(`/api/download/${gid}/resume`, { method: 'POST' })));
   }
   if (dl.status === 'waiting' || dl.status === 'paused') {
-    out.push(mkBtn('top', 'Move to top of queue',
+    out.push(mkBtn('top', 'Move to the front of the queue',
       () => act(`/api/download/${gid}/position`, { method: 'POST', body: { pos: 0, how: 'POS_SET' } })));
     out.push(mkBtn('up', 'Move up',
       () => act(`/api/download/${gid}/position`, { method: 'POST', body: { pos: -1, how: 'POS_CUR' } })));
@@ -510,25 +514,22 @@ function actionsFor(dl) {
     out.push(mkBtn('open', 'Open the file', () => window.open(`file://${dl.path}`, '_blank')));
   }
   if (dl.status === 'error' || dl.status === 'complete' || dl.status === 'removed') {
-    out.push(mkBtn('retry', 'Retry (re-add with the same URLs and options)',
-      () => act(`/api/download/${gid}/retry`, { method: 'POST' }, 'Re-added')));
+    out.push(mkBtn('retry', 'Download again with the same links and options',
+      () => act(`/api/download/${gid}/retry`, { method: 'POST' }, 'Added again')));
   }
-  // A download still in flight is being cancelled — that is what a cross means.
-  // One that has already stopped is being thrown away, which is the bin. And a
-  // half-written part file is never worth keeping, so cancelling takes it with
-  // it; only a finished download raises a question worth asking.
+  // A download still in flight is being cancelled (a cross); one that has
+  // stopped is being thrown away (the bin). A half-written part file is never
+  // worth keeping, so cancelling takes it along.
   const live = dl.status === 'active' || dl.status === 'waiting' || dl.status === 'paused';
   out.push(mkBtn(live ? 'close' : 'trash',
     live ? 'Cancel and remove' : 'Remove…',
     () => (live
       ? removeDownload(gid, true, 'Cancelled and cleaned up')
       : askRemove(dl)),
-    'btn btn-icon btn-danger'));
+    'btn btn-icon btn-sm btn-danger'));
   return out;
 }
 
-/* aria2's vocabulary is lower case in the protocol and in config.yaml; it is
-   Capitalised wherever a person reads it, which is what the plugin does too. */
 const capitalise = (text) => {
   const s = String(text ?? '');
   return s ? s.charAt(0).toUpperCase() + s.slice(1) : s;
@@ -563,7 +564,7 @@ async function refreshDetail(gid) {
   try {
     data = await api(`/api/download/${gid}`);
   } catch (err) {
-    row._refs.detail.innerHTML = `<p class="hint" style="color:var(--err)">${escapeHtml(err.message)}</p>`;
+    row._refs.detail.innerHTML = `<p class="hint err">${escapeHtml(err.message)}</p>`;
     return;
   }
   renderDetail(row._refs.detail, gid, data);
@@ -579,60 +580,60 @@ function renderDetail(host, gid, data) {
 
   const pieces = data.pieceMap || [];
   const pieceHtml = pieces.length
-    ? `<h3>Parts (${st.numPieces || 0} pieces × ${fmtBytes(st.pieceLength || 0)})</h3>
+    ? `<div><h3>Pieces · ${st.numPieces || 0} × ${fmtBytes(st.pieceLength || 0)}</h3>
        <div class="piecemap">${pieces.map((p) =>
-        `<i style="background:${p >= 100 ? 'var(--accent)' : p > 0 ? '#2d4f86' : 'var(--bg3)'}"></i>`).join('')}</div>`
+        `<i class="${p >= 100 ? 'done' : p > 0 ? 'part' : ''}"></i>`).join('')}</div></div>`
     : '';
 
   host.innerHTML = `
     ${pieceHtml}
     <div class="detail-cols">
       <div>
-        <h3>Info</h3>
+        <h3>About</h3>
         <div class="kv">
-          <div><label>GID</label><code>${gid}</code></div>
-          <div><label>Status</label><span class="tag ${STATUS_TAG[st.status] || ''}">${escapeHtml(st.status || '?')}</span></div>
-          <div><label>Directory</label><code>${escapeHtml(st.dir || '')}</code></div>
-          <div><label>Path</label><code>${escapeHtml(files[0]?.path || '')}</code></div>
-          <div><label>Size</label><span>${fmtBytes(st.completedLength)} / ${fmtBytes(st.totalLength)}</span></div>
-          <div><label>Connections</label><span>${st.connections || 0}</span></div>
-          ${st.infoHash ? `<div><label>Info hash</label><code>${st.infoHash}</code></div>` : ''}
-          ${st.errorMessage ? `<div><label>Error</label><span style="color:var(--err)">${escapeHtml(st.errorMessage)} (${st.errorCode})</span></div>` : ''}
+          <label>ID</label><code>${gid}</code>
+          <label>Status</label><span><span class="tag ${STATUS_TAG[st.status] || ''}">${statusLabel(st.status || '?')}</span></span>
+          <label>Folder</label><code>${escapeHtml(st.dir || '')}</code>
+          <label>Path</label><code>${escapeHtml(files[0]?.path || '')}</code>
+          <label>Size</label><span>${fmtBytes(st.completedLength)} of ${fmtBytes(st.totalLength)}</span>
+          <label>Connections</label><span>${st.connections || 0}</span>
+          ${st.infoHash ? `<label>Info hash</label><code>${st.infoHash}</code>` : ''}
+          ${st.errorMessage ? `<label>Error</label><span class="err">${escapeHtml(st.errorMessage)} (${st.errorCode})</span>` : ''}
         </div>
-        <h3>Per-download options</h3>
+        <h3>Options for this download</h3>
         <div data-role="dl-opts"></div>
       </div>
       <div>
-        <h3>Files ${files.length > 1 ? `(${files.length})` : ''}</h3>
+        <h3>Files ${files.length > 1 ? `· ${files.length}` : ''}</h3>
         <div class="filelist">
           ${files.map((f) => `
             <div class="filerow">
               ${files.length > 1 ? `<input type="checkbox" data-file="${f.index}" ${(draft.files?.[f.index] ?? f.selected === 'true') ? 'checked' : ''}>` : ''}
               <span class="fname" title="${escapeHtml(f.path)}">${escapeHtml(f.path.split('/').pop() || f.path)}</span>
-              <span class="fsize">${fmtBytes(f.completedLength)}/${fmtBytes(f.length)}</span>
-            </div>`).join('') || '<p class="hint">No file info yet.</p>'}
+              <span class="fsize">${fmtBytes(f.completedLength)} / ${fmtBytes(f.length)}</span>
+            </div>`).join('') || '<p class="hint">No file information yet.</p>'}
         </div>
-        ${files.length > 1 ? '<button class="btn btn-small" data-role="save-files" style="margin-top:8px">Apply file selection</button>' : ''}
-        <h3>Live connections ${active.length ? `(${active.length})` : ''}</h3>
+        ${files.length > 1 ? '<button class="btn btn-sm" data-role="save-files" style="margin-top:8px">Apply file selection</button>' : ''}
+        <h3>Connections ${active.length ? `· ${active.length}` : ''}</h3>
         <div class="serverlist">
           ${active.map((s) => `
             <div class="filerow">
               <span class="fname" title="${escapeHtml(s.currentUri || s.uri)}">${escapeHtml((s.currentUri || s.uri || '').slice(0, 70))}</span>
               <span class="fsize">${fmtSpeed(s.downloadSpeed)}</span>
-            </div>`).join('') || '<p class="hint">No active connections.</p>'}
+            </div>`).join('') || '<p class="hint">No open connections.</p>'}
         </div>
-        ${(data.uris || []).length ? `<h3>URLs</h3><div class="filelist">${
-          data.uris.map((u) => `<div class="filerow"><span class="fname" title="${escapeHtml(u.uri)}">${escapeHtml(u.uri)}</span><span class="fsize">${u.status}</span></div>`).join('')
+        ${(data.uris || []).length ? `<h3>Links</h3><div class="filelist">${
+          data.uris.map((u) => `<div class="filerow"><span class="fname" title="${escapeHtml(u.uri)}">${escapeHtml(u.uri)}</span><span class="fsize">${escapeHtml(u.status)}</span></div>`).join('')
         }</div>` : ''}
-        ${(data.peers || []).length ? `<h3>Peers (${data.peers.length})</h3><div class="filelist">${
-          data.peers.slice(0, 25).map((p) => `<div class="filerow"><span class="fname">${escapeHtml(p.ip)}:${p.port}</span><span class="fsize">↓${fmtSpeed(p.downloadSpeed)} ↑${fmtSpeed(p.uploadSpeed)}</span></div>`).join('')
+        ${(data.peers || []).length ? `<h3>Peers · ${data.peers.length}</h3><div class="filelist">${
+          data.peers.slice(0, 25).map((p) => `<div class="filerow"><span class="fname">${escapeHtml(p.ip)}:${p.port}</span><span class="fsize">↓ ${fmtSpeed(p.downloadSpeed)} ↑ ${fmtSpeed(p.uploadSpeed)}</span></div>`).join('')
         }</div>` : ''}
       </div>
     </div>`;
 
-  // Rebuilt every two seconds for the live figures, but what the user is in the
-  // middle of editing must survive that: the options block is built once per
-  // expansion and moved into each new render, and file ticks are remembered.
+  // Rebuilt every two seconds for the live figures, but what the user is in
+  // the middle of editing must survive that: the options block is built once
+  // per expansion and moved into each new render, and file ticks are kept.
   const optsHost = $('[data-role="dl-opts"]', host);
   if (!draft.options) draft.options = buildDownloadOptions(gid, opts);
   optsHost.replaceWith(draft.options);
@@ -644,8 +645,8 @@ function renderDetail(host, gid, data) {
   }
   $('[data-role="save-files"]', host)?.addEventListener('click', async () => {
     const indices = $$('[data-file]', host).filter((c) => c.checked).map((c) => Number(c.dataset.file));
-    if (!indices.length) { toast('Select at least one file', 'error'); return; }
-    await act(`/api/download/${gid}/select`, { method: 'POST', body: { indices } }, 'Selection applied');
+    if (!indices.length) { toast('Pick at least one file', 'error'); return; }
+    await act(`/api/download/${gid}/select`, { method: 'POST', body: { indices } }, 'File selection applied');
     draft.files = null;
   });
 }
@@ -661,7 +662,7 @@ function buildDownloadOptions(gid, opts) {
     line.append(lab, control);
     block.append(line);
   };
-  for (const [key, label] of [['split', 'Split (parts)'], ['max-connection-per-server', 'Connections per server']]) {
+  for (const [key, label] of [['split', 'Parts'], ['max-connection-per-server', 'Connections per server']]) {
     const input = document.createElement('input');
     input.type = 'number';
     input.min = '1';
@@ -675,8 +676,8 @@ function buildDownloadOptions(gid, opts) {
     row(label, unitField.el);
   }
   const apply = document.createElement('button');
-  apply.className = 'btn btn-small';
-  apply.textContent = 'Apply to this download';
+  apply.className = 'btn btn-sm';
+  apply.textContent = 'Apply';
   apply.addEventListener('click', async () => {
     const options = {};
     for (const [key, read, original] of fields) {
@@ -684,8 +685,7 @@ function buildDownloadOptions(gid, opts) {
       if (value && !sameOptionValue(value, original)) options[key] = value;
     }
     if (!Object.keys(options).length) { toast('Nothing changed'); return; }
-    await act(`/api/download/${gid}/options`, { method: 'POST', body: { options } }, 'Options applied');
-    // Start from the applied values next time the panel renders.
+    await act(`/api/download/${gid}/options`, { method: 'POST', body: { options } }, 'Applied');
     S.detailDrafts.delete(gid);
   });
   const line = document.createElement('div');
@@ -698,6 +698,13 @@ function buildDownloadOptions(gid, opts) {
 setInterval(() => { for (const gid of S.expanded) refreshDetail(gid); }, 2000);
 
 /* ------------------------------------------------------------ add dialog */
+function setAddMode(mode) {
+  S.addMode = mode;
+  localStorage.setItem('aria.addMode', mode);
+  $('#add-form').classList.toggle('mode-advanced', mode === 'advanced');
+  for (const btn of $$('#add-mode [data-mode]')) btn.setAttribute('aria-pressed', String(btn.dataset.mode === mode));
+}
+
 function openAdd() {
   $('#add-dialog').showModal();
   $('#add-uris').focus();
@@ -727,7 +734,7 @@ function collectAddOptions() {
 async function submitAdd() {
   const file = $('#add-file').files[0];
   const uris = $('#add-uris').value.split('\n').map((l) => l.trim()).filter(Boolean);
-  if (!file && !uris.length) { toast('Give a URL or pick a torrent file', 'error'); return; }
+  if (!file && !uris.length) { toast('Paste a link or pick a torrent file', 'error'); return; }
 
   const options = collectAddOptions();
   const positionRaw = $('#add-position').value.trim();
@@ -739,7 +746,7 @@ async function submitAdd() {
       const data = await new Promise((resolve, reject) => {
         const reader = new FileReader();
         reader.onload = () => resolve(String(reader.result).split(',')[1]);
-        reader.onerror = () => reject(new Error('could not read file'));
+        reader.onerror = () => reject(new Error('could not read the file'));
         reader.readAsDataURL(file);
       });
       const kind = /\.meta(4|link)$/i.test(file.name) ? 'metalink' : 'torrent';
@@ -753,7 +760,7 @@ async function submitAdd() {
         body: { uris, options, position, paused, mirrors: $('#add-mirrors').checked },
       });
     }
-    toast('Queued', 'ok');
+    toast('Added', 'ok');
     $('#add-dialog').close();
     $('#add-uris').value = '';
     $('#add-file').value = '';
@@ -763,58 +770,68 @@ async function submitAdd() {
 }
 
 /* -------------------------------------------------------------- settings */
+/* Simple: what decides how a download behaves. The same seven the DankBar
+   widget shows, so both surfaces teach the same starting point. */
+const SIMPLE_OPTIONS = [
+  ['dir', 'Download folder', 'text', 'Where finished files go.'],
+  ['max-concurrent-downloads', 'Downloads at once', 'number', 'How many run in parallel; the rest wait in the queue.'],
+  ['max-connection-per-server', 'Connections per server', 'number', 'Up to 16. More connections usually means faster downloads from one server.'],
+  ['split', 'Parts per download', 'number', 'A file is fetched in this many pieces at the same time.'],
+  ['max-overall-download-limit', 'Download speed limit', 'text', 'Across every download. Blank means no limit.'],
+  ['max-overall-upload-limit', 'Upload speed limit', 'text', 'For torrents. Blank means no limit.'],
+  ['continue', 'Resume unfinished files', 'bool', 'Pick up a partial file where it stopped instead of starting over.'],
+];
+
 const OPTION_GROUPS = [
-  ['Queue & parallelism', [
-    ["max-concurrent-downloads", "Max concurrent downloads", "number"],
-    ["max-connection-per-server", "Connections per server (max 16)", "number"],
-    ["split", "Split \u2014 parts per download", "number"],
-    ["min-split-size", "Minimum part size", "text"],
-    ["optimize-concurrent-downloads", "Auto-tune concurrency", "bool"],
+  ['Queue and parallelism', [
+    ['max-concurrent-downloads', 'Downloads at once', 'number'],
+    ['max-connection-per-server', 'Connections per server (up to 16)', 'number'],
+    ['split', 'Parts per download', 'number'],
+    ['min-split-size', 'Smallest part', 'text'],
+    ['optimize-concurrent-downloads', 'Tune parallelism automatically', 'bool'],
   ]],
   ['Speed limits', [
-    ["max-overall-download-limit", "Overall download limit", "text"],
-    ["max-download-limit", "Per-download limit", "text"],
-    ["max-overall-upload-limit", "Overall upload limit", "text"],
-    ["max-upload-limit", "Per-download upload limit", "text"],
-    ["lowest-speed-limit", "Abort below this speed", "text"],
+    ['max-overall-download-limit', 'Download limit, all downloads', 'text'],
+    ['max-download-limit', 'Download limit, each download', 'text'],
+    ['max-overall-upload-limit', 'Upload limit, all downloads', 'text'],
+    ['max-upload-limit', 'Upload limit, each download', 'text'],
+    ['lowest-speed-limit', 'Give up below this speed', 'text'],
   ]],
-  ['Retries & timeouts', [
-    ["max-tries", "Max tries (0 = unlimited)", "number"],
-    ["retry-wait", "Retry wait (s)", "number"],
-    ["timeout", "Timeout (s)", "number"],
-    ["connect-timeout", "Connect timeout (s)", "number"],
-    ["max-file-not-found", "Max 404s before giving up", "number"],
+  ['Retries and timeouts', [
+    ['max-tries', 'Attempts (0 = unlimited)', 'number'],
+    ['retry-wait', 'Wait between attempts (s)', 'number'],
+    ['timeout', 'Timeout (s)', 'number'],
+    ['connect-timeout', 'Connect timeout (s)', 'number'],
+    ['max-file-not-found', 'Not-found replies before giving up', 'number'],
   ]],
-  ['Disk & files', [
-    ["dir", "Download directory", "text"],
-    ["file-allocation", "File allocation", "select:none,prealloc,trunc,falloc"],
-    ["disk-cache", "Disk cache", "text"],
-    ["continue", "Resume partial files", "bool"],
-    ["allow-overwrite", "Allow overwrite", "bool"],
-    ["auto-file-renaming", "Auto-rename duplicates", "bool"],
-    ["remote-time", "Use server timestamps", "bool"],
+  ['Disk and files', [
+    ['dir', 'Download folder', 'text'],
+    ['file-allocation', 'File allocation', 'select:none,prealloc,trunc,falloc'],
+    ['disk-cache', 'Disk cache', 'text'],
+    ['continue', 'Resume unfinished files', 'bool'],
+    ['allow-overwrite', 'Overwrite existing files', 'bool'],
+    ['auto-file-renaming', 'Rename duplicates automatically', 'bool'],
+    ['remote-time', 'Keep the server\'s timestamps', 'bool'],
   ]],
   ['HTTP', [
-    ["user-agent", "User-Agent", "text"],
-    ["referer", "Referer", "text"],
-    ["http-accept-gzip", "Accept gzip", "bool"],
-    ["all-proxy", "Proxy (all protocols)", "text"],
-    ["check-certificate", "Verify TLS certificates", "bool"],
+    ['user-agent', 'User agent', 'text'],
+    ['referer', 'Referer', 'text'],
+    ['http-accept-gzip', 'Accept gzip', 'bool'],
+    ['all-proxy', 'Proxy for every protocol', 'text'],
+    ['check-certificate', 'Verify TLS certificates', 'bool'],
   ]],
   ['BitTorrent', [
-    ["follow-torrent", "Auto-start downloaded torrents", "bool"],
-    ["bt-max-peers", "Max peers", "number"],
-    ["seed-ratio", "Seed ratio", "text"],
-    ["seed-time", "Seed time (min)", "text"],
-    ["enable-dht", "Enable DHT", "bool"],
-    ["bt-max-open-files", "Max open files", "number"],
+    ['follow-torrent', 'Start downloaded torrents automatically', 'bool'],
+    ['bt-max-peers', 'Peers per torrent', 'number'],
+    ['seed-ratio', 'Seed until this ratio', 'text'],
+    ['seed-time', 'Seed for this long (min)', 'text'],
+    ['enable-dht', 'Use DHT', 'bool'],
+    ['bt-max-open-files', 'Open files at once', 'number'],
   ]],
 ];
 
-/* A <label>, not a <span>. The checkbox inside is visually hidden (0x0,
-   opacity 0) so the track can be styled, which means the only thing that can
-   deliver a click to it is a label wrapping it — as a span, every switch in the
-   options grid was inert: the track took the click and nothing received it. */
+/* A <label>, not a <span>: the checkbox inside is visually hidden, so only a
+   wrapping label can deliver a click to it. */
 function boolSwitch(checked, unset) {
   const box = document.createElement('label');
   box.className = 'switch' + (unset ? ' unset' : '');
@@ -830,11 +847,8 @@ function boolSwitch(checked, unset) {
   return { box, input };
 }
 
-/* aria2's own option names carry their topic as a prefix, which is the only
-   structure on offer for the ~120 options it reports beyond the curated set.
-   Grouping on it turns one alphabetical wall into the same cards the curated
-   settings use — still unexplained, but at least navigable. Order matters: the
-   first rule that matches wins, so the specific ones come before the general. */
+/* aria2's option names carry their topic as a prefix, the only structure on
+   offer for the ~120 options beyond the curated set. First match wins. */
 const ADVANCED_GROUPS = [
   ['BitTorrent', /^(bt-|dht|peer-|seed-|follow-torrent|listen-port|enable-peer-exchange|max-open-files)/],
   ['Metalink', /^(metalink|follow-metalink)/],
@@ -843,7 +857,7 @@ const ADVANCED_GROUPS = [
   ['Proxy', /proxy/],
   ['RPC', /^rpc/],
   ['Logging', /^(log|console-|quiet|summary-interval|show-|truncate-)/],
-  ['Disk & files', /^(dir|disk-|file-|save-|no-file-|allow-|auto-file|conf-path|netrc|ca-cert|check-|piece-|hash-|realtime-|remove-control|force-save|auto-save)/],
+  ['Disk and files', /^(dir|disk-|file-|save-|no-file-|allow-|auto-file|conf-path|netrc|ca-cert|check-|piece-|hash-|realtime-|remove-control|force-save|auto-save)/],
   ['Transfer', /^(max-|min-|split|timeout|connect-timeout|retry|lowest-|stream-|uri-selector|server-stat|async-dns|conditional-get|always-resume|continue|deferred|reuse-uri|remote-time|parameterized|stop|pause|daemon|human-readable|no-conf|no-netrc|help)/],
 ];
 
@@ -864,10 +878,9 @@ function optionField(key, label, kind, value, desc) {
   if (pending !== undefined) value = pending;
   const lab = document.createElement('label');
   lab.innerHTML = `${escapeHtml(label)}`
-    + (pending !== undefined
-      ? ' <span class="tag tag-pending">restart to apply</span>' : '')
     + (desc ? `<em>${escapeHtml(desc)}</em>` : '')
-    + (label === key ? '' : `<small>${key}</small>`);
+    + (label === key ? '' : `<small>${key}</small>`)
+    + (pending !== undefined ? ' <span class="tag tag-pending">Applies after restart</span>' : '');
   const original = value ?? '';
   let read;
   let control;
@@ -879,7 +892,7 @@ function optionField(key, label, kind, value, desc) {
     const { box, input } = boolSwitch(value === 'true', unset);
     const note = document.createElement('span');
     note.className = 'unset-note';
-    note.textContent = unset ? 'not set' : '';
+    note.textContent = unset ? 'Not set' : '';
     input.addEventListener('change', () => {
       unset = false;
       box.classList.remove('unset');
@@ -894,7 +907,7 @@ function optionField(key, label, kind, value, desc) {
     const input = document.createElement('select');
     const choices = kind.slice(7).split(',');
     const unset = value == null || value === '' || !choices.includes(value);
-    input.innerHTML = (unset ? '<option value="">(unset)</option>' : '')
+    input.innerHTML = (unset ? '<option value="">Not set</option>' : '')
       + choices.map((v) => `<option value="${v}">${v}</option>`).join('');
     input.value = unset ? '' : value;
     input.addEventListener('change', () => wrap.classList.toggle('dirty', input.value !== original));
@@ -921,21 +934,26 @@ function optionField(key, label, kind, value, desc) {
   return wrap;
 }
 
+function setSettingsMode(mode) {
+  S.settingsMode = mode;
+  localStorage.setItem('aria.settingsMode', mode);
+  $('#tab-settings').classList.toggle('mode-advanced', mode === 'advanced');
+  for (const btn of $$('#settings-mode [data-mode]')) btn.setAttribute('aria-pressed', String(btn.dataset.mode === mode));
+  if (S.state) loadGlobalOptions();
+}
+
 async function loadGlobalOptions() {
   try {
     S.globalOptions = await api('/api/global/options');
   } catch (err) {
-    toast(`Could not read aria2 options: ${err.message}`, 'error');
+    toast(`Could not read aria2's options: ${err.message}`, 'error');
     return;
   }
-  /* aria2 refuses to change most of its options while it is running: the RPC
-     answers OK and keeps the old value. Those edits are still written to
-     config.yaml, so the option is set — it just is not live yet. Showing only
-     aria2's live value made a saved edit look like it had been thrown away, so
-     a key whose saved value differs from the running one is shown at its saved
-     value and marked as waiting for a restart. */
+  /* aria2 refuses to change most options while it is running: the RPC answers
+     OK and keeps the old value. Those edits are still written to config.yaml,
+     so a key whose saved value differs from the running one is shown at its
+     saved value and marked as waiting for a restart. */
   S.pendingOptions = {};
-  // The settings tab can be opened before the startup config fetch lands.
   if (!S.config) { try { S.config = await api('/api/config'); } catch (err) { /* ignore */ } }
   const saved = (S.config?.aria2?.options) || {};
   for (const [key, value] of Object.entries(saved)) {
@@ -943,7 +961,24 @@ async function loadGlobalOptions() {
       S.pendingOptions[key] = String(value);
     }
   }
+  const note = $('#options-note');
+  note.textContent = S.config?.config_path
+    ? `Changes apply to the running aria2c right away and are saved to ${S.config.config_path}.`
+    : 'Changes apply to the running aria2c right away.';
+
   S.optInputs.clear();
+
+  // Simple: one card, the essentials.
+  const simple = $('#options-simple');
+  simple.innerHTML = '';
+  if (S.settingsMode !== 'advanced') {
+    for (const [key, label, kind, desc] of SIMPLE_OPTIONS) {
+      simple.append(optionField(key, label, kind, S.globalOptions[key], desc));
+    }
+    return;
+  }
+
+  // Advanced: the curated groups, then everything else aria2 reports.
   const groupsHost = $('#options-groups');
   groupsHost.innerHTML = '';
   const covered = new Set();
@@ -951,37 +986,27 @@ async function loadGlobalOptions() {
     const group = document.createElement('div');
     group.className = 'optgroup';
     group.innerHTML = `<h3>${title}</h3>`;
-    const grid = document.createElement('div');
-    grid.className = 'optgrid';
     for (const [key, label, kind, desc] of opts) {
       covered.add(key);
-      grid.append(optionField(key, label, kind, S.globalOptions[key], desc));
+      group.append(optionField(key, label, kind, S.globalOptions[key], desc));
     }
-    group.append(grid);
     groupsHost.append(group);
   }
   const advanced = $('#options-advanced');
   advanced.innerHTML = '';
   const rest = Object.keys(S.globalOptions).sort().filter((k) => !covered.has(k));
-  // The plugin's fold shows its count, so this one does too — a collapsed
-  // section with no number on it reads as though the options are missing.
   const counter = $('#advanced-count');
-  if (counter) counter.textContent = ` — ${rest.length}`;
+  if (counter) counter.textContent = ` · ${rest.length}`;
   for (const [title, keys] of groupAdvanced(rest)) {
     const group = document.createElement('div');
     group.className = 'optgroup';
     group.innerHTML = `<h3>${title}</h3>`;
-    const grid = document.createElement('div');
-    grid.className = 'optgrid';
     for (const key of keys) {
-      // aria2 reports booleans as the strings "true"/"false"; they get a switch
-      // like every other boolean rather than a text box to type a word into.
       const raw = S.globalOptions[key];
       const kind = (raw === 'true' || raw === 'false') ? 'bool' : 'text';
-      grid.append(optionField(key, key, kind, raw,
+      group.append(optionField(key, key, kind, raw,
         (typeof OPTION_HELP === 'object' && OPTION_HELP[key]) || ''));
     }
-    group.append(grid);
     advanced.append(group);
   }
   applyOptionFilter();
@@ -993,13 +1018,17 @@ function applyOptionFilter() {
     const label = wrap.querySelector('label')?.textContent.toLowerCase() || '';
     wrap.style.display = !needle || key.includes(needle) || label.includes(needle) ? '' : 'none';
   }
+  // A group with nothing left to show folds away with its heading.
+  for (const group of $$('.optgroup')) {
+    const anyVisible = $$('.optfield', group).some((f) => f.style.display !== 'none');
+    group.style.display = anyVisible ? '' : 'none';
+  }
 }
 
 async function saveGlobalOptions() {
   const options = {};
   for (const [key, { read, original }] of S.optInputs) {
     const value = read();
-    // By value: 32M and 33554432 are the same setting.
     if (!sameOptionValue(value, original)) options[key] = value;
   }
   if (!Object.keys(options).length) { toast('Nothing changed'); return; }
@@ -1009,13 +1038,12 @@ async function saveGlobalOptions() {
     const later = Object.keys(res.pending || {}).length;
     if (later) {
       toast(live
-        ? `${live} applied · ${later} saved, needs an aria2c restart`
-        : `${later} saved — aria2c will not change ${later === 1 ? 'it' : 'them'} while running, restart to apply`,
+        ? `${live} applied · ${later} saved, applies after an aria2c restart`
+        : `Saved. aria2c will not change ${later === 1 ? 'this' : 'these'} while running; restart it to apply`,
       'ok');
     } else {
-      toast(`Applied ${live} option(s)`, 'ok');
+      toast(`Applied ${live} change${live === 1 ? '' : 's'}`, 'ok');
     }
-    // Re-read the saved config too, or a pending option loses its marker.
     try { S.config = await api('/api/config'); } catch (err) { /* keep the old copy */ }
     await loadGlobalOptions();
   } catch (err) {
@@ -1026,17 +1054,17 @@ async function saveGlobalOptions() {
 function renderProcInfo() {
   const aria2 = S.state?.aria2 || {};
   $('#proc-info').innerHTML = Object.entries({
-    Managed: aria2.managed ? 'yes (spawned by manager)' : 'no (external)',
-    Running: aria2.running ? 'yes' : 'no',
+    Managed: aria2.managed ? 'Yes, started by the manager' : 'No, external process',
+    Running: aria2.running ? 'Yes' : 'No',
     PID: aria2.pid ?? '—',
     Version: aria2.version || '—',
-    'RPC URL': aria2.rpc_url || '—',
+    'RPC address': aria2.rpc_url || '—',
     Uptime: fmtEta(aria2.uptime),
     Restarts: aria2.restarts ?? 0,
     'Log file': aria2.log_file || '—',
     'Session file': aria2.session_file || '—',
-    'Last error': aria2.last_error || 'none',
-  }).map(([k, v]) => `<div><label>${k}</label><code>${escapeHtml(v)}</code></div>`).join('');
+    'Last error': aria2.last_error || 'None',
+  }).map(([k, v]) => `<label>${k}</label><code>${escapeHtml(v)}</code>`).join('');
 }
 
 /* -------------------------------------------------------------- history */
@@ -1060,28 +1088,29 @@ function renderHistory() {
 
   const s = data.summary || {};
   $('#history-summary').textContent =
-    `${s.count || 0} recorded (${s.completed || 0} completed, ${fmtBytes(s.bytes || 0)}) — kept in ${s.file || ''}`;
+    `${s.count || 0} recorded · ${s.completed || 0} finished · ${fmtBytes(s.bytes || 0)} · kept in ${s.file || ''}`;
 
   const rows = data.entries || [];
   $('#empty').hidden = rows.length > 0;
+  if (!rows.length) setEmpty('No history yet', 'Finished downloads are remembered here, even after a restart.');
   host.innerHTML = rows.map((e) => {
     const tag = e.status === 'complete' ? 'tag-complete'
       : e.status === 'error' ? 'tag-error' : '';
     return `<article class="job state-${e.status}">
       <div class="hist-row">
         <span class="job-name">${escapeHtml(e.name || e.key)}</span>
-        <span class="tag ${tag}">${escapeHtml(e.status)}</span>
+        <span class="tag ${tag}">${statusLabel(e.status)}</span>
         <span class="spacer"></span>
         <span class="job-actions">
-          ${e.url ? `<button class="btn btn-icon" data-hist="readd" data-key="${escapeHtml(e.key)}" title="Download this again" aria-label="Download this again">${icon('retry')}</button>` : ''}
-          <button class="btn btn-icon btn-danger" data-hist="remove" data-key="${escapeHtml(e.key)}" title="Forget this entry" aria-label="Forget this entry">${icon('trash')}</button>
+          ${e.url ? `<button class="btn btn-icon btn-sm" data-hist="readd" data-key="${escapeHtml(e.key)}" title="Download again" aria-label="Download again">${icon('retry')}</button>` : ''}
+          <button class="btn btn-icon btn-sm btn-danger" data-hist="remove" data-key="${escapeHtml(e.key)}" title="Forget this entry" aria-label="Forget this entry">${icon('trash')}</button>
         </span>
       </div>
       <div class="job-meta">
-        <span>${fmtBytes(e.completed)}${e.total && e.total !== e.completed ? ` / ${fmtBytes(e.total)}` : ''}</span>
+        <span>${fmtBytes(e.completed)}${e.total && e.total !== e.completed ? ` of ${fmtBytes(e.total)}` : ''}</span>
         <span>${e.finished_at ? new Date(e.finished_at * 1000).toLocaleString() : ''}</span>
         ${e.path ? `<span title="${escapeHtml(e.path)}">${escapeHtml(e.dir || '')}</span>` : ''}
-        ${e.error ? `<span style="color:var(--err)">${escapeHtml(e.error)}</span>` : ''}
+        ${e.error ? `<span class="err">${escapeHtml(e.error)}</span>` : ''}
       </div>
     </article>`;
   }).join('');
@@ -1090,7 +1119,7 @@ function renderHistory() {
     btn.addEventListener('click', async () => {
       const key = btn.dataset.key;
       if (btn.dataset.hist === 'readd') {
-        await act('/api/history/readd', { method: 'POST', body: { key } }, 'Queued again');
+        await act('/api/history/readd', { method: 'POST', body: { key } }, 'Added again');
       } else {
         await act('/api/history/remove', { method: 'POST', body: { key } });
       }
@@ -1100,31 +1129,30 @@ function renderHistory() {
 }
 
 /* ----------------------------------------------------------------- rules */
-// aria2's own status vocabulary, in the order the filter bar shows it.
 const KNOWN_STATUSES = ['active', 'waiting', 'paused', 'error', 'complete', 'removed'];
 
+// [path, label, kind, placeholder]. The placeholder is an example or what a
+// blank field means, so an empty card still explains itself.
 const RULE_FIELDS = [
-  ['when.speed_below', 'Speed below', 'speed'],
-  ['when.for_seconds', 'Hold for (s)', 'number'],
-  ['when.min_age_seconds', 'Ignore first (s)', 'number'],
-  ['cooldown_seconds', 'Cooldown (s)', 'number'],
-  ['resume_after_seconds', 'Resume after (s)', 'number'],
-  ['max_triggers', 'Max triggers (0 = ∞)', 'number'],
-  ['when.min_progress', 'Only above progress %', 'number'],
-  ['when.max_progress', 'Only below progress %', 'number'],
-  ['when.connections_below', 'Connections below', 'number'],
-  ['when.name_matches', 'Name matches (regex)', 'text'],
+  ['when.speed_below', 'Speed below', 'speed', 'e.g. 50'],
+  ['when.for_seconds', 'For at least (s)', 'number', 'e.g. 3'],
+  ['when.min_age_seconds', 'Ignore the first (s)', 'number', 'Grace after start, e.g. 8'],
+  ['cooldown_seconds', 'Cooldown (s)', 'number', 'Between fires, e.g. 25'],
+  ['resume_after_seconds', 'Resume after (s)', 'number', 'Pause length, e.g. 1.5'],
+  ['max_triggers', 'Max times', 'number', '0 = no limit'],
+  ['when.min_progress', 'Only past (%)', 'number', 'Blank = from the start'],
+  ['when.max_progress', 'Only before (%)', 'number', 'Blank = until the end'],
+  ['when.connections_below', 'Connections below', 'number', 'Blank = any'],
+  ['when.name_matches', 'Name matches (regex)', 'text', 'Blank = every name, e.g. \\.iso$'],
 ];
 
-// value -> what the user reads. The values are the literal config keys, so they
-// stay snake_case in config.yaml and the raw-JSON editor.
 const ACTION_LABEL = {
-  pause_resume: 'Pause + resume',
-  force_pause_resume: 'Force pause + resume',
-  restart: 'Restart (remove and re-add)',
+  pause_resume: 'Pause, then resume',
+  force_pause_resume: 'Force pause, then resume',
+  restart: 'Restart (remove and add again)',
   set_option: 'Change its options',
-  stop: 'Pause and leave paused',
-  log_only: 'Log only (do nothing)',
+  stop: 'Pause and leave it paused',
+  log_only: 'Log only, do nothing',
 };
 const ACTIONS = Object.keys(ACTION_LABEL);
 const actionLabel = (value) => ACTION_LABEL[value] || String(value || '').replace(/_/g, ' ');
@@ -1158,6 +1186,10 @@ function renderRules() {
   host.innerHTML = '';
   $('#rules-badge').textContent = S.rules.filter((r) => r.enabled !== false).length;
 
+  if (!S.rules.length) {
+    host.innerHTML = `<p class="empty">${icon('wand')}<b>No actions yet</b><span>A common one pauses and resumes a download that stalls under 50 KiB/s for 3 seconds. Add one to start.</span></p>`;
+  }
+
   S.rules.forEach((rule, index) => {
     const card = document.createElement('div');
     card.className = `rule${rule.enabled === false ? ' disabled' : ''}`;
@@ -1165,14 +1197,26 @@ function renderRules() {
     const head = document.createElement('div');
     head.className = 'rule-head';
     const { box: toggleBox, input: toggle } = boolSwitch(rule.enabled !== false, false);
-    toggleBox.title = 'Enable this rule';
+    toggleBox.title = 'Action on or off';
     toggle.addEventListener('change', () => { rule.enabled = toggle.checked; renderRules(); });
 
     const name = document.createElement('input');
     name.className = 'rname';
     name.value = rule.name || '';
-    name.placeholder = 'rule-name';
+    name.placeholder = 'Action name';
     name.addEventListener('change', () => { rule.name = name.value.trim(); });
+
+    const del = mkBtn('trash', 'Delete action', () => {
+      S.rules.splice(index, 1);
+      renderRules();
+    }, 'btn btn-icon btn-sm btn-danger');
+
+    head.append(toggleBox, name, del);
+    card.append(head);
+
+    const body = document.createElement('div');
+    body.className = 'rule-body';
+    card.append(body);
 
     const action = document.createElement('select');
     action.innerHTML = ACTIONS
@@ -1180,28 +1224,16 @@ function renderRules() {
     action.value = rule.action || 'pause_resume';
     action.addEventListener('change', () => { rule.action = action.value; renderRules(); });
 
-    const del = mkBtn('trash', 'Delete rule', () => {
-      S.rules.splice(index, 1);
-      renderRules();
-    }, 'btn btn-icon btn-danger');
-
-    head.append(toggleBox, name, del);
-    card.append(head);
-
-    /* The action is the rule's main decision, so it gets a labelled field of
-       its own rather than riding along unlabelled in the title row — which is
-       where the plugin puts it, and it was the only control in the card with no
-       label saying what it sets. */
     const actionField = document.createElement('label');
     actionField.className = 'field rule-action';
     const actionLab = document.createElement('span');
-    actionLab.textContent = 'Action';
+    actionLab.textContent = 'What it does';
     actionField.append(actionLab, action);
-    card.append(actionField);
+    body.append(actionField);
 
     const grid = document.createElement('div');
     grid.className = 'rule-grid';
-    for (const [path, label, kind] of RULE_FIELDS) {
+    for (const [path, label, kind, placeholder] of RULE_FIELDS) {
       const field = document.createElement('label');
       field.className = 'field';
       const span = document.createElement('span');
@@ -1211,13 +1243,14 @@ function renderRules() {
         const unitField = unitInput('speed', current ?? null, () => {
           const value = unitField.read();
           setPath(rule, path, value === '' || !Number.isFinite(Number(value)) ? value : Number(value));
-        });
+        }, placeholder);
         field.append(span, unitField.el);
         grid.append(field);
         continue;
       }
       const input = document.createElement('input');
       if (kind === 'number') input.type = 'number';
+      input.placeholder = placeholder || '';
       input.value = getPath(rule, path) ?? '';
       input.addEventListener('change', () => {
         let value = input.value.trim();
@@ -1228,67 +1261,58 @@ function renderRules() {
       field.append(span, input);
       grid.append(field);
     }
-    card.append(grid);
+    body.append(grid);
 
-    /* aria2's status vocabulary is a fixed, short list, so it is offered as
-       chips you toggle — the same control the filter bar above the download
-       list uses, and the same one the DankBar plugin's rule card uses. It was a
-       text box you typed comma-separated words into, which asked you to know
-       the vocabulary by heart and spell it correctly. Anything already saved in
-       config.yaml is kept in the list even if it is not one of the known names,
-       so a hand-edited rule never silently loses a value it cannot show. */
+    /* aria2's status vocabulary is a short fixed list, so it is offered as
+       chips, the same control the filter bar uses. Anything already saved in
+       config.yaml is kept even if it is not a known name. */
     const statuses = document.createElement('div');
     statuses.className = 'field';
-    statuses.innerHTML = '<span>Applies to statuses</span>';
+    statuses.innerHTML = '<span>Applies to</span>';
     const chosen = ((rule.when || {}).statuses || ['active']).slice();
     const names = KNOWN_STATUSES.concat(chosen.filter((s) => !KNOWN_STATUSES.includes(s)));
     const chipRow = document.createElement('div');
     chipRow.className = 'chiprow';
-    for (const name of names) {
+    for (const st of names) {
       const chip = document.createElement('button');
       chip.type = 'button';
-      chip.className = `chip${chosen.includes(name) ? ' active' : ''}`;
-      // Capitalised, and a check on the ones that are on: these are a
-      // multi-select, so the chosen set has to be readable at a glance rather
-      // than inferred from a background tint alone.
-      chip.innerHTML = `<span class="check" aria-hidden="true">${icon('check')}</span>${escapeHtml(capitalise(name))}`;
+      chip.className = `chip${chosen.includes(st) ? ' active' : ''}`;
+      chip.innerHTML = `<span class="check" aria-hidden="true">${icon('check')}</span>${escapeHtml(statusLabel(st))}`;
       chip.addEventListener('click', () => {
-        const at = chosen.indexOf(name);
-        if (at >= 0) chosen.splice(at, 1); else chosen.push(name);
-        // aria2 needs at least one status and the daemon falls back to active
-        // anyway, so say so rather than saving nothing.
+        const at = chosen.indexOf(st);
+        if (at >= 0) chosen.splice(at, 1); else chosen.push(st);
         const next = chosen.length ? chosen : ['active'];
         setPath(rule, 'when.statuses', next.slice());
-        chip.classList.toggle('active', chosen.includes(name));
+        chip.classList.toggle('active', chosen.includes(st));
         if (!chosen.length) renderRules();
       });
       chipRow.append(chip);
     }
     statuses.append(chipRow);
-    card.append(statuses);
+    body.append(statuses);
 
     const descField = document.createElement('label');
     descField.className = 'field';
     const descLab = document.createElement('span');
-    descLab.textContent = 'Description';
+    descLab.textContent = 'Note';
     const desc = document.createElement('input');
     desc.className = 'rule-desc';
-    desc.placeholder = 'What this rule is for (optional)';
+    desc.placeholder = 'What this action is for (optional)';
     desc.value = rule.description || '';
     desc.addEventListener('change', () => { rule.description = desc.value; });
     descField.append(descLab, desc);
-    card.append(descField);
+    body.append(descField);
 
     if (rule.action === 'set_option') {
       const hint = document.createElement('p');
       hint.className = 'hint';
-      hint.textContent = 'set_option needs an "options" mapping — edit it in the raw JSON below.';
-      card.append(hint);
+      hint.textContent = '"Change its options" needs an "options" mapping. Add it under Raw JSON below.';
+      body.append(hint);
     }
 
     const details = document.createElement('details');
     details.className = 'rule-json';
-    details.innerHTML = '<summary>Raw JSON (full control)</summary>';
+    details.innerHTML = '<summary>Raw JSON</summary>';
     const area = document.createElement('textarea');
     area.rows = 10;
     area.value = JSON.stringify(rule, null, 2);
@@ -1297,11 +1321,11 @@ function renderRules() {
         S.rules[index] = JSON.parse(area.value);
         renderRules();
       } catch (err) {
-        toast(`Invalid JSON: ${err.message}`, 'error');
+        toast(`That is not valid JSON: ${err.message}`, 'error');
       }
     });
     details.append(area);
-    card.append(details);
+    body.append(details);
 
     host.append(card);
   });
@@ -1313,10 +1337,10 @@ function renderTriggers() {
   $('#rule-triggers').innerHTML = S.triggers.length
     ? S.triggers.map((t) => `
         <div class="logline rule">
-          <time>${fmtTime(t.ts)}</time><span class="lvl">rule</span>
-          <span class="msg"><b>${escapeHtml(t.rule)}</b> · ${escapeHtml(actionLabel(t.action))} → ${escapeHtml(t.name)} @ ${fmtSpeed(t.speed)}${t.detail ? ` (${escapeHtml(t.detail)})` : ''}</span>
+          <time>${fmtTime(t.ts)}</time><span class="lvl">action</span>
+          <span class="msg"><b>${escapeHtml(t.rule)}</b> · ${escapeHtml(actionLabel(t.action))} → ${escapeHtml(t.name)} at ${fmtSpeed(t.speed)}${t.detail ? ` (${escapeHtml(t.detail)})` : ''}</span>
         </div>`).join('')
-    : '<p class="hint">No rule has fired yet.</p>';
+    : '<p class="hint">No action has fired yet.</p>';
 }
 
 async function saveRules() {
@@ -1330,7 +1354,7 @@ async function saveRules() {
       },
     });
     S.rules = data.rules;
-    toast('Rules saved', 'ok');
+    toast('Actions saved', 'ok');
     renderRules();
   } catch (err) {
     toast(err.message, 'error');
@@ -1339,7 +1363,7 @@ async function saveRules() {
 
 function addRule() {
   S.rules.push({
-    name: `rule-${S.rules.length + 1}`,
+    name: `action-${S.rules.length + 1}`,
     enabled: true,
     description: '',
     when: { statuses: ['active'], speed_below: 51200, for_seconds: 3, min_age_seconds: 8 },
@@ -1372,6 +1396,7 @@ function setSelecting(on) {
   S.selecting = on;
   if (!on) S.selection.clear();
   $('#btn-select').classList.toggle('btn-primary', on);
+  $('#btn-select').classList.toggle('btn-outline', !on);
   $('#btn-select').textContent = on ? 'Done' : 'Select';
   $('#bulk-confirm').hidden = true;
   renderBulkBar();
@@ -1401,16 +1426,16 @@ async function bulk(action, gids, deleteFiles) {
   });
 }
 
-/* Unfinished downloads are cleaned up without asking — a part file is never
- * worth keeping. Only the finished ones in the selection raise the question. */
+/* Unfinished downloads are cleaned up without asking. Only the finished ones
+   in the selection raise the question. */
 function askBulkRemove() {
   const rows = selectedRows();
   const finished = rows.filter((d) => d.status === 'complete');
   if (!finished.length) { runBulkRemove(false); return; }
   const rest = rows.length - finished.length;
   $('#bulk-question').textContent =
-    `${finished.length} finished — keep the files?`
-    + (rest ? `  (${rest} unfinished will be cleaned up)` : '');
+    `${finished.length} finished. Keep the files?`
+    + (rest ? ` (${rest} unfinished will be cleaned up.)` : '');
   $('#bulk-confirm').hidden = false;
 }
 
@@ -1437,14 +1462,17 @@ function switchTab(name) {
 
 function init() {
   S.addUnits = {
-    minSplit: unitInput('size', null, null, '(default)'),
+    minSplit: unitInput('size', null, null, 'Default'),
     limit: unitInput('speed', null),
   };
   $('#add-minsplit').append(S.addUnits.minSplit.el);
   $('#add-limit').append(S.addUnits.limit.el);
+  setAddMode(S.addMode);
+  setSettingsMode(S.settingsMode);
+
   $$('.tab').forEach((tab) => tab.addEventListener('click', () => switchTab(tab.dataset.tab)));
-  $$('.chip').forEach((chip) => chip.addEventListener('click', () => {
-    $$('.chip').forEach((c) => c.classList.toggle('active', c === chip));
+  $$('.filterbar .chip').forEach((chip) => chip.addEventListener('click', () => {
+    $$('.filterbar .chip').forEach((c) => c.classList.toggle('active', c === chip));
     S.filter = chip.dataset.filter;
     for (const [, row] of S.rows) row.remove();
     S.rows.clear();
@@ -1455,12 +1483,11 @@ function init() {
     else { $('#history-bar').hidden = true; renderDownloads(); }
   }));
   $('#btn-history-clear').addEventListener('click', async () => {
-    if (!confirm('Forget all recorded downloads? Files on disk are untouched.')) return;
-    if (!confirm('Clear the download history?\n\nThis also purges aria2\'s finished '
-      + 'results, so completed and failed rows disappear from the Downloads list.')) return;
+    if (!confirm('Forget every recorded download? Files on disk are untouched.')) return;
+    if (!confirm('This also clears aria2\'s finished results, so finished and failed rows leave the Downloads list. Continue?')) return;
     const out = await act('/api/history-clear', { method: 'POST' });
-    toast(`Cleared ${out.removed} record(s)`
-      + (out.purgedAria2Results ? " and aria2's finished results" : ''), 'ok');
+    toast(`Cleared ${out.removed} record${out.removed === 1 ? '' : 's'}`
+      + (out.purgedAria2Results ? ' and aria2\'s finished results' : ''), 'ok');
     if (out) loadHistory();
   });
   $('#search').addEventListener('input', (e) => { S.search = e.target.value; renderDownloads(); });
@@ -1492,28 +1519,30 @@ function init() {
   $('#add-dialog').addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) submitAdd();
   });
+  for (const btn of $$('#add-mode [data-mode]')) btn.addEventListener('click', () => setAddMode(btn.dataset.mode));
+  for (const btn of $$('#settings-mode [data-mode]')) btn.addEventListener('click', () => setSettingsMode(btn.dataset.mode));
 
-  $('#btn-pause-all').addEventListener('click', () => act('/api/global/pause-all', { method: 'POST' }, 'Paused all'));
-  $('#btn-resume-all').addEventListener('click', () => act('/api/global/resume-all', { method: 'POST' }, 'Resumed all'));
-  $('#btn-purge').addEventListener('click', () => act('/api/global/purge', { method: 'POST' }, 'Purged finished results'));
+  $('#btn-pause-all').addEventListener('click', () => act('/api/global/pause-all', { method: 'POST' }, 'Paused everything'));
+  $('#btn-resume-all').addEventListener('click', () => act('/api/global/resume-all', { method: 'POST' }, 'Resumed everything'));
+  $('#btn-purge').addEventListener('click', () => act('/api/global/purge', { method: 'POST' }, 'Cleared finished and failed'));
 
   $('#btn-opt-reload').addEventListener('click', loadGlobalOptions);
   $('#btn-opt-save').addEventListener('click', saveGlobalOptions);
   $('#opt-search').addEventListener('input', applyOptionFilter);
   $('#btn-restart-aria2').addEventListener('click', async () => {
-    if (!confirm('Restart aria2c? Active downloads pause and resume from the session file.')) return;
+    if (!confirm('Restart aria2c? Active downloads pause and pick up again from the session file.')) return;
     await act('/api/aria2/restart', { method: 'POST' }, 'aria2c restarted');
   });
 
   $('#rules-speed-source').addEventListener('change', async (e) => {
     await act('/api/rules', { method: 'POST', body: { speed_source: e.target.value } },
-      `Rules now judge speed by: ${e.target.selectedOptions[0].textContent}`);
+      `Speed judged by: ${e.target.selectedOptions[0].textContent}`);
   });
   $('#btn-rule-add').addEventListener('click', addRule);
   $('#btn-rules-save').addEventListener('click', saveRules);
   $('#rules-master').addEventListener('change', async (e) => {
     await act('/api/rules', { method: 'POST', body: { enabled: e.target.checked } },
-      e.target.checked ? 'Rules engine on' : 'Rules engine off');
+      e.target.checked ? 'Actions on' : 'Actions off');
   });
   $('#btn-log-clear').addEventListener('click', () => { S.events = []; renderLog(); });
 
@@ -1527,7 +1556,6 @@ function init() {
   api('/api/config').then((cfg) => { S.config = cfg; }).catch(() => {});
   api('/api/global/options').then((opts) => { S.globalOptions = opts; }).catch(() => {});
   api('/api/log').then((data) => { S.triggers = data.triggers || []; pushEvents(data.events || [], true); }).catch(() => {});
-  // Load rules up front so the tab badge is right before the tab is opened.
   loadRules().catch(() => {});
 
   connect();

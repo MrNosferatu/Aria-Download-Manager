@@ -48,35 +48,63 @@ function collect() {
   return patch;
 }
 
+/* Simple / Advanced. Remembered like any other setting, so the page opens the
+   way it was left. */
+function setMode(mode) {
+  document.body.classList.toggle('advanced', mode === 'advanced');
+  for (const btn of document.querySelectorAll('.seg [data-mode]')) {
+    btn.setAttribute('aria-pressed', String(btn.dataset.mode === mode));
+  }
+}
+
+function flash(text) {
+  $('saved').textContent = text;
+  setTimeout(() => { $('saved').textContent = ''; }, 1800);
+}
+
+async function testConnection() {
+  const out = $('test-result');
+  out.textContent = 'Checking…';
+  out.className = 'status';
+  const reply = await api.runtime.sendMessage({ type: 'ping' });
+  if (reply && reply.ok) {
+    const info = reply.info || {};
+    out.textContent = `Connected · ${info.name || 'manager'} ${info.version || ''} · aria2c ${info.aria2 ? 'running' : 'not running'}`;
+    out.className = `status ${info.aria2 ? 'ok' : 'err'}`;
+    out.title = info.socket || '';
+  } else {
+    out.textContent = (reply && reply.error) || 'Could not reach the manager';
+    out.className = 'status err';
+  }
+}
+
 async function init() {
-  fill(await loadSettings());
+  const settings = await loadSettings();
+  fill(settings);
+  const stored = await api.storage.local.get({ settingsMode: 'simple' });
+  setMode(stored.settingsMode);
+
+  for (const btn of document.querySelectorAll('.seg [data-mode]')) {
+    btn.addEventListener('click', async () => {
+      setMode(btn.dataset.mode);
+      await api.storage.local.set({ settingsMode: btn.dataset.mode });
+    });
+  }
 
   $('save').addEventListener('click', async () => {
     await saveSettings(collect());
     api.runtime.sendMessage({ type: 'refreshBadge' });
-    $('saved').textContent = 'saved';
-    setTimeout(() => { $('saved').textContent = ''; }, 1500);
+    flash('Saved');
   });
 
   $('reset').addEventListener('click', async () => {
     await saveSettings(DEFAULTS);
     fill(DEFAULTS);
-    $('saved').textContent = 'back to defaults';
-    setTimeout(() => { $('saved').textContent = ''; }, 1500);
+    flash('Back to defaults');
   });
 
-  $('test').addEventListener('click', async () => {
-    const reply = await api.runtime.sendMessage({ type: 'ping' });
-    const out = $('test-result');
-    if (reply && reply.ok) {
-      const info = reply.info || {};
-      out.textContent = `connected via ${info.socket || 'the socket'} — ${info.name} ${info.version}, aria2 ${info.aria2 ? 'up' : 'down'}`;
-      out.className = 'hint ok';
-    } else {
-      out.textContent = (reply && reply.error) || 'failed';
-      out.className = 'hint err';
-    }
-  });
+  $('test').addEventListener('click', testConnection);
+  testConnection();
 }
 
 init();

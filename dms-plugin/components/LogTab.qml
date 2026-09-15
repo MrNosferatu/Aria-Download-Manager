@@ -38,7 +38,7 @@ Item {
             anchors.left: parent.left
             anchors.verticalCenter: parent.verticalCenter
             visible: !tab.compact
-            text: "Event log — " + (tab.service ? tab.service.events.length : 0) + " entries"
+            text: "Event log · " + (tab.service ? tab.service.events.length : 0)
             font.pixelSize: Theme.fontSizeMedium
             font.weight: Font.Medium
             color: Theme.surfaceText
@@ -120,7 +120,7 @@ Item {
                     cursorShape: Qt.PointingHandCursor
                     onClicked: {
                         Quickshell.execDetached(["dms", "cl", "copy", line.modelData.message])
-                        ToastService.showInfo("Copied", "log line")
+                        tab.service.notice("Copied")
                     }
                 }
             }

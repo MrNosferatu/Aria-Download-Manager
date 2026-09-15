@@ -1,14 +1,15 @@
 import QtQuick
 import qs.Common
+import qs.Widgets
 
-/* The product's yes/no control, at the size the manager page and the browser
-   extension use it (34x20).
+/* The product's yes/no control, drawn the way Material 3 draws a switch and at
+   the size the manager page and the browser extension use it (44×24): the thumb
+   grows and picks up a check when on, so the state reads without colour.
 
-   DMS ships DankToggle, and a plugin would normally just use it — but its track
-   is a readonly 52x30, which towers over the 40px fields it sits beside in the
-   options grid, and it does not match the switch the other two front-ends use.
-   Theme colours and DMS's own animation curve keep it native to the shell; only
-   the proportions are ours. */
+   DMS ships DankToggle, and a plugin would normally just use it, but its track
+   is a readonly 52×30, which towers over the 40px fields it sits beside in the
+   options grid. Theme colours and DMS's own motion keep this native to the
+   shell; only the proportions are ours. */
 Item {
     id: control
 
@@ -17,18 +18,18 @@ Item {
 
     signal toggled(bool value)
 
-    implicitWidth: 34
-    implicitHeight: 20
-    opacity: enabled ? 1 : 0.4
+    implicitWidth: 44
+    implicitHeight: 24
+    opacity: enabled ? 1 : 0.38
 
     Rectangle {
         id: track
 
         anchors.fill: parent
         radius: height / 2
-        color: control.checked ? Theme.primary : Theme.surfaceVariant
-        border.width: 1
-        border.color: control.checked ? Theme.primary : Theme.outline
+        color: control.checked ? Theme.primary : Theme.surfaceContainerHighest
+        border.width: control.checked ? 0 : 2
+        border.color: Theme.outline
 
         Behavior on color {
             ColorAnimation {
@@ -40,14 +41,30 @@ Item {
         Rectangle {
             id: knob
 
-            width: 14
-            height: 14
-            radius: 7
+            readonly property int size: control.checked ? 18 : 14
+
+            width: size
+            height: size
+            radius: size / 2
             anchors.verticalCenter: parent.verticalCenter
-            x: control.checked ? parent.width - width - 2 : 2
-            color: control.checked ? Theme.onPrimary : Theme.surfaceVariantText
+            x: control.checked ? parent.width - width - 3 : 5
+            color: control.checked ? Theme.onPrimary : Theme.outline
 
             Behavior on x {
+                NumberAnimation {
+                    duration: Theme.shortDuration
+                    easing.type: Theme.standardEasing
+                }
+            }
+
+            Behavior on width {
+                NumberAnimation {
+                    duration: Theme.shortDuration
+                    easing.type: Theme.standardEasing
+                }
+            }
+
+            Behavior on height {
                 NumberAnimation {
                     duration: Theme.shortDuration
                     easing.type: Theme.standardEasing
@@ -60,12 +77,27 @@ Item {
                     easing.type: Theme.standardEasing
                 }
             }
+
+            DankIcon {
+                anchors.centerIn: parent
+                name: "check"
+                size: 12
+                color: Theme.primary
+                opacity: control.checked ? 1 : 0
+                visible: opacity > 0
+
+                Behavior on opacity {
+                    NumberAnimation {
+                        duration: Theme.shortDuration
+                    }
+                }
+            }
         }
     }
 
     MouseArea {
         anchors.fill: parent
-        // A 20px-tall control is a small target, so the hit area reaches past it.
+        // A 24px-tall control is a small target, so the hit area reaches past it.
         anchors.margins: -6
         enabled: control.enabled
         cursorShape: Qt.PointingHandCursor

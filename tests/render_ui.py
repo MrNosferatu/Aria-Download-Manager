@@ -62,6 +62,7 @@ def capture(sock_path: str) -> dict:
 
 def build(fixtures: dict, tab: str, expand: bool) -> str:
     html = (STATIC / "index.html").read_text(encoding="utf-8")
+    design = (STATIC.parent / "lib" / "design.css").read_text(encoding="utf-8")
     css = (STATIC / "style.css").read_text(encoding="utf-8")
     js = (STATIC / "app.js").read_text(encoding="utf-8")
     option_help = (STATIC / "option-help.js").read_text(encoding="utf-8")
@@ -80,11 +81,11 @@ window.ManagerLink = {{
     const body = __FIXTURES[path.split('?')[0]];
     return {{ status: body != null ? 200 : 404, body }};
   }},
+  // Delivered synchronously: a headless browser screenshots on the load event,
+  // and a timer would fire after the picture was already taken.
   subscribe(sub) {{
-    setTimeout(() => {{
-      sub.onFrame('state', __FIXTURES['/api/state']);
-      sub.onFrame('backlog', (__FIXTURES['/api/log'] || {{}}).events || []);
-    }}, 30);
+    sub.onFrame('state', __FIXTURES['/api/state']);
+    sub.onFrame('backlog', (__FIXTURES['/api/log'] || {{}}).events || []);
     return () => {{}};
   }},
   errorText: (reply) => (reply.body && reply.body.error) || `HTTP ${{reply.status}}`,
@@ -92,13 +93,15 @@ window.ManagerLink = {{
 """
 
     driver = f"""
-window.addEventListener('load', () => setTimeout(() => {{
+// Registered after app.js, so it runs after init() on the same event.
+document.addEventListener('DOMContentLoaded', () => {{
   const tab = {json.dumps(tab)};
   if (tab && tab !== 'downloads') switchTab(tab);
   if ({json.dumps(bool(expand and first_gid))}) toggleDetail({json.dumps(first_gid)});
-}}, 120));
+}});
 """
 
+    html = html.replace('<link rel="stylesheet" href="../lib/design.css">', f"<style>\n{design}\n</style>")
     html = html.replace('<link rel="stylesheet" href="style.css">', f"<style>\n{css}\n</style>")
     html = html.replace(
         '<script src="../lib/link.js"></script>\n<script src="option-help.js"></script>\n'

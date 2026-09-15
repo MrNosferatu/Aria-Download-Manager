@@ -2,7 +2,7 @@
 
 The manager UI, as a [DankMaterialShell](https://danklinux.com) bar widget: a
 download icon on the DankBar that opens a panel with three tabs — Downloads,
-Rules and Settings. Left-click for the bar popout, right-click for quick
+Actions and Settings. Left-click for the bar popout, right-click for quick
 actions, and the popout's *open in window* button detaches the whole thing into
 an ordinary window that stays put while you work elsewhere.
 
@@ -48,18 +48,18 @@ looked.
 | --- | --- | --- |
 | Manager socket | `$XDG_RUNTIME_DIR/aria-download-manager.sock` | Must match `server.socket` in `config.yaml` (blank on both sides = default) |
 | Bar label | Download speed | Speed, active count, or icon only |
-| Clicking the bar icon | Bar popout | Whether left click opens the bar popout or goes straight to the standalone window |
+| Clicking the bar icon opens | Bar popout | Whether left click opens the bar popout or goes straight to the standalone window |
 | Popout width / content height | 640 / 540 | Size of the bar popout (the window is resized by dragging it) |
 | Bar refresh interval | 3 s | How far behind the pill may lag a download that starts while the panel is closed |
 | Always stream | off | Keep one long-lived event connection open so the pill is never behind at all |
-| Toast on events | off | Toast when a download finishes or the manager logs an error |
+| Notify on events | off | Toast when a download finishes or the manager logs an error |
 
 ## IPC
 
 ```sh
 dms ipc call ariaDownloadManager toggle              # show/hide the bar popout
 dms ipc call ariaDownloadManager toggleWindow        # show/hide the standalone window
-dms ipc call ariaDownloadManager tab rules           # switch tab: downloads rules settings
+dms ipc call ariaDownloadManager tab actions         # switch tab: downloads actions settings (rules = actions)
 dms ipc call ariaDownloadManager tab log             # settings, with the event log unfolded
 dms ipc call ariaDownloadManager add <url>           # queue a URL with default options
 dms ipc call ariaDownloadManager status              # one-line summary
@@ -75,6 +75,14 @@ binds {
     Mod+D { spawn "dms" "ipc" "call" "aria2c" "toggle"; }
 }
 ```
+
+## Feedback
+
+A success ("History cleared", "Actions saved", "Copied") shows as a small pill
+that rises into the bottom of the panel, holds for a moment, and sinks away;
+click it to dismiss early. It never becomes a shell notification. Only errors
+and the optional *Notify on events* toasts go through the shell's
+notifications.
 
 ## The standalone window
 
@@ -121,10 +129,10 @@ window-rule {
 Right-clicking the bar icon opens a menu that does the common things without
 opening the manager at all:
 
-- **Open in window** and **Add URL from clipboard** (needs `wl-clipboard`; the
+- **Open in window** and **Add link from clipboard** (needs `wl-clipboard`; the
   clipboard has to hold an `http`/`https`/`ftp`/`sftp`/`magnet` URL)
-- **Pause all**, **Resume all**, **Purge finished** — each showing its count
-- **Enable/Disable rules**
+- **Pause all**, **Resume all**, **Clear finished** — each showing its count
+- **Turn rules on/off**
 - **Restart aria2c**
 
 Entries that cannot do anything right now are greyed out: purge with nothing
@@ -134,22 +142,27 @@ repeats the pill's status in words.
 ## What each tab does
 
 - **Downloads** — filter chips with live counts (including *All* and
-  *Complete*), name filter, and an inline Add
-  panel (URLs, directory, rename, plus connections/split/referer/cookie/headers
-  and a `.torrent`/`.metalink` path under *More options*). Each row expands into
+  *Done*), a search box, and an inline Add panel with a *Simple / Advanced*
+  switch: Simple is links, folder and *Start paused*; Advanced adds rename,
+  connections, parts, limits, referer, cookies, headers, proxy, checksum, queue
+  position and a `.torrent`/`.metalink` path. Each row expands into
   the same detail the extension's manager page shows: piece map, paths, per-download options,
   file selection, live connections, URLs and peers. The **History** chip lists
   what the manager recorded, with re-add and forget.
 - Speeds and sizes (limits, part size, disk cache, a rule's speed threshold) are
   a number plus a unit picker, shown as `12 MiB/s` rather than bytes — the same
   control as the extension's manager page.
-- **Rules** — the rule cards, editable field by field or as raw JSON, plus the
-  speed-source selector and recent triggers. The master switch is the toggle in
-  the window header.
-- **Settings** — a **Manager** section (*Restart manager*), then
-  the grouped aria2 global options, a filter box, an *All options (advanced)*
-  section built from whatever aria2 reports, the aria2c process card with a
-  restart button, and the event log. Edited fields are dot-marked until saved.
+- **Actions** — one card per automatic action (the `rules` in `config.yaml`),
+  editable field by field or as raw JSON, plus the *Speed by* selector (Hybrid,
+  Write speed, Reported speed) and recent triggers. The master switch is the
+  *Actions* toggle in the window header.
+- **Settings** — the same *Simple / Advanced* switch as the manager page.
+  Simple is one card with the seven options that decide how a download behaves
+  (folder, downloads at once, connections per server, parts, the two speed
+  limits, resume). Advanced adds a search box, the grouped aria2 options, an
+  *Every aria2 option* fold built from whatever aria2 reports, the aria2c
+  process card (with *Restart manager* and *Restart aria2c*), and the event log.
+  Edited fields are dot-marked until saved, and the choice is remembered.
 
 The **event log** is no longer a tab of its own. It is diagnostic material
 rather than something to watch, so it folds away at the bottom of *Settings*,
@@ -162,7 +175,7 @@ it. Same live stream as before: click a line to copy it.
 The chips count what aria2 is currently holding, and **All** is now labelled
 with that total. Worth knowing: aria2 forgets stopped downloads when it is
 purged or restarted, so a file you finished yesterday will not be under *All*
-or *Complete* today — the **History** chip is the durable record, and it
+or *Done* today — the **History** chip is the durable record, and it
 survives restarts because the manager keeps it itself.
 
 ### Moved or deleted files

@@ -168,12 +168,12 @@ PluginComponent {
     ccWidgetPrimaryText: "Downloads"
     ccWidgetSecondaryText: {
         if (!svc.connected)
-            return "manager offline"
+            return "Manager offline"
         if (busy)
             return svc.activeCount + " active · " + Fmt.speed(svc.downloadSpeed)
         if (svc.waitingCount > 0)
             return svc.waitingCount + " queued"
-        return "idle"
+        return "Idle"
     }
     ccWidgetIsActive: busy
     ccWidgetIsToggle: false

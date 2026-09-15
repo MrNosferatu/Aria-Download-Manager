@@ -5,29 +5,27 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Aria Download Manager</title>
 <link rel="icon" href="aria2-logo.png">
+<link rel="stylesheet" href="../lib/design.css">
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
 
-<!-- The header and the tab bar are one masthead and stick as one block. They
-     used to stick separately, which meant the tab bar carried a hand-measured
-     `top: 59px` for the header's height — a number that was wrong the moment the
-     header grew, and wrong again whenever the header wraps on a narrow window.
-     Nesting them removes the measurement instead of re-tuning it. -->
+<!-- Header and tab bar are one masthead and stick as one block, so the tab
+     bar never has to know how tall the header is. -->
 <div class="masthead">
 <header class="topbar">
   <div class="brand">
-    <span class="logo" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M5 20h14v-2H5v2zM19 9h-4V3H9v6H5l7 7 7-7z"/></svg></span>
+    <span class="logo" aria-hidden="true"><svg class="ico" viewBox="0 0 24 24"><path d="M5 20h14v-2H5v2zM19 9h-4V3H9v6H5l7 7 7-7z"/></svg></span>
     <div>
       <h1>Aria Download Manager</h1>
-      <span id="aria2-pill" class="pill pill-idle">connecting…</span>
+      <span id="aria2-pill" class="status">Connecting…</span>
     </div>
   </div>
 
   <!-- The live rate is why the page is open, so it leads. -->
   <div class="throughput">
-    <span class="rate down"><span class="arrow">↓</span><b id="stat-down">–</b></span>
-    <span class="rate up"><span class="arrow">↑</span><b id="stat-up">–</b></span>
+    <div class="rate down"><label>Down</label><b id="stat-down" class="quiet">–</b></div>
+    <div class="rate up"><label>Up</label><b id="stat-up" class="quiet">–</b></div>
   </div>
 
   <div class="stats">
@@ -38,20 +36,20 @@
   </div>
 
   <div class="topactions">
-    <button id="btn-pause-all" class="btn btn-icon btn-ghost" title="Pause every download" aria-label="Pause every download"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg></button>
-    <button id="btn-resume-all" class="btn btn-icon btn-ghost" title="Resume every download" aria-label="Resume every download"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg></button>
-    <button id="btn-purge" class="btn btn-icon btn-ghost" title="Clear finished and failed rows from the list" aria-label="Clear finished rows"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M16 11h-1V3a2 2 0 0 0-4 0v8h-1a5 5 0 0 0-5 5v7h16v-7a5 5 0 0 0-5-5zm2 12h-2v-4h-2v4h-2v-4h-2v4H8v-4H6v-3a3 3 0 0 1 3-3h6a3 3 0 0 1 3 3v7z"/></svg></button>
-    <button id="btn-add" class="btn btn-primary">+ Add download</button>
+    <button id="btn-pause-all" class="btn btn-icon" title="Pause everything" aria-label="Pause everything"><svg class="ico" viewBox="0 0 24 24"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg></button>
+    <button id="btn-resume-all" class="btn btn-icon" title="Resume everything" aria-label="Resume everything"><svg class="ico" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg></button>
+    <button id="btn-purge" class="btn btn-icon" title="Clear finished and failed from the list" aria-label="Clear finished and failed from the list"><svg class="ico" viewBox="0 0 24 24"><path d="M16 11h-1V3a2 2 0 0 0-4 0v8h-1a5 5 0 0 0-5 5v7h16v-7a5 5 0 0 0-5-5zm2 12h-2v-4h-2v4h-2v-4h-2v4H8v-4H6v-3a3 3 0 0 1 3-3h6a3 3 0 0 1 3 3v7z"/></svg></button>
+    <button id="btn-add" class="btn btn-primary"><svg class="ico" viewBox="0 0 24 24"><path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>Add download</button>
   </div>
 </header>
 
 <nav class="tabs">
-  <button class="tab active" data-tab="downloads">Downloads</button>
-  <button class="tab" data-tab="rules">Rules <span id="rules-badge" class="badge">0</span></button>
-  <button class="tab" data-tab="settings">Settings</button>
+  <button class="tab active" data-tab="downloads"><svg class="ico" viewBox="0 0 24 24"><path d="M5 20h14v-2H5v2zM19 9h-4V3H9v6H5l7 7 7-7z"/></svg>Downloads</button>
+  <button class="tab" data-tab="rules"><svg class="ico" viewBox="0 0 24 24"><path d="M7.5 5.6 10 7 8.6 4.5 10 2 7.5 3.4 5 2l1.4 2.5L5 7zm12 9.8L17 14l1.4 2.5L17 19l2.5-1.4L22 19l-1.4-2.5L22 14zM22 2l-2.5 1.4L17 2l1.4 2.5L17 7l2.5-1.4L22 7l-1.4-2.5zm-7.63 5.29a.996.996 0 0 0-1.41 0L1.29 18.96a.996.996 0 0 0 0 1.41l2.34 2.34c.39.39 1.02.39 1.41 0L16.7 11.05a.996.996 0 0 0 0-1.41l-2.33-2.35zm-1.03 5.49-2.12-2.12 2.44-2.44 2.12 2.12-2.44 2.44z"/></svg>Actions <span id="rules-badge" class="badge">0</span></button>
+  <button class="tab" data-tab="settings"><svg class="ico" viewBox="0 0 24 24"><path d="M3 17v2h6v-2H3zM3 5v2h10V5H3zm10 16v-2h8v-2h-8v-2h-2v6h2zM7 9v2H3v2h4v2h2V9H7zm14 4v-2H11v2h10zm-6-4h2V7h4V5h-4V3h-2v6z"/></svg>Settings</button>
   <div class="spacer"></div>
-  <label class="tabtoggle" title="Master switch for all custom download-action rules">
-    <span>Rules engine</span>
+  <label class="tabtoggle" title="Turn every action on or off at once">
+    <span>Actions</span>
     <span class="switch"><input type="checkbox" id="rules-master"><span class="track"><span class="knob"></span></span></span>
   </label>
 </nav>
@@ -61,141 +59,172 @@
   <!-- ---------------- downloads ---------------- -->
   <section id="tab-downloads" class="tabpane active">
     <div class="filterbar">
-      <button class="chip active" data-filter="all">All <span class="n" id="count-all"></span></button>
-      <button class="chip" data-filter="active">Active <span class="n" id="count-active"></span></button>
-      <button class="chip" data-filter="waiting">Queued <span class="n" id="count-waiting"></span></button>
-      <button class="chip" data-filter="paused">Paused <span class="n" id="count-paused"></span></button>
-      <button class="chip" data-filter="complete">Complete <span class="n" id="count-complete"></span></button>
-      <button class="chip" data-filter="error">Error <span class="n" id="count-error"></span></button>
-      <button class="chip chip-history" data-filter="history" title="Finished downloads the manager has recorded, kept across restarts">History</button>
-      <button id="btn-select" class="btn btn-small" title="Select several downloads to act on at once">Select</button>
-      <input id="search" class="search" placeholder="Filter by name…">
+      <div class="chiprow">
+        <button class="chip active" data-filter="all">All <span class="n" id="count-all"></span></button>
+        <button class="chip" data-filter="active">Active <span class="n" id="count-active"></span></button>
+        <button class="chip" data-filter="waiting">Queued <span class="n" id="count-waiting"></span></button>
+        <button class="chip" data-filter="paused">Paused <span class="n" id="count-paused"></span></button>
+        <button class="chip" data-filter="complete">Done <span class="n" id="count-complete"></span></button>
+        <button class="chip" data-filter="error">Failed <span class="n" id="count-error"></span></button>
+        <button class="chip chip-history" data-filter="history" title="Everything the manager has recorded, kept across restarts"><svg class="ico check" viewBox="0 0 24 24"><path d="M13 3a9 9 0 0 0-9 9H1l3.89 3.89.07.14L9 12H6c0-3.87 3.13-7 7-7s7 3.13 7 7-3.13 7-7 7c-1.93 0-3.68-.79-4.94-2.06l-1.42 1.42A8.954 8.954 0 0 0 13 21a9 9 0 0 0 0-18zm-1 5v5l4.28 2.54.72-1.21-3.5-2.08V8H12z"/></svg>History</button>
+      </div>
+      <div class="spacer"></div>
+      <label class="search"><svg class="ico" viewBox="0 0 24 24"><path d="M15.5 14h-.79l-.28-.27A6.47 6.47 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg><input id="search" placeholder="Search by name" aria-label="Search by name"></label>
+      <button id="btn-select" class="btn btn-sm btn-outline" title="Pick several downloads to act on together">Select</button>
     </div>
 
-    <!-- shown only in selection mode -->
     <div id="bulk-bar" class="bulkbar" hidden>
       <span class="count" id="bulk-count">0 selected</span>
-      <button id="bulk-all" class="btn btn-small">All</button>
+      <button id="bulk-all" class="btn btn-sm btn-text">All</button>
       <span class="spacer"></span>
-      <button id="bulk-pause" class="btn btn-small" title="Pause the selected downloads"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg><span>Pause</span></button>
-      <button id="bulk-resume" class="btn btn-small" title="Resume the selected downloads"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg><span>Resume</span></button>
-      <button id="bulk-remove" class="btn btn-small btn-danger" title="Remove the selected downloads"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg><span>Remove</span></button>
+      <button id="bulk-pause" class="btn btn-sm" title="Pause the selected downloads"><svg class="ico" viewBox="0 0 24 24"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>Pause</button>
+      <button id="bulk-resume" class="btn btn-sm" title="Resume the selected downloads"><svg class="ico" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>Resume</button>
+      <button id="bulk-remove" class="btn btn-sm btn-danger" title="Remove the selected downloads"><svg class="ico" viewBox="0 0 24 24"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>Remove</button>
     </div>
     <div id="bulk-confirm" class="bulkbar confirming" hidden>
       <span class="question" id="bulk-question"></span>
       <span class="spacer"></span>
-      <button id="bulk-cancel" class="btn btn-small">Cancel</button>
-      <button id="bulk-keep" class="btn btn-small">Keep files</button>
-      <button id="bulk-delete" class="btn btn-small btn-danger">Delete files</button>
+      <button id="bulk-cancel" class="btn btn-sm btn-text">Cancel</button>
+      <button id="bulk-keep" class="btn btn-sm">Keep files</button>
+      <button id="bulk-delete" class="btn btn-sm btn-danger btn-primary">Delete files</button>
     </div>
 
     <div id="history-bar" class="historybar" hidden>
       <span id="history-summary" class="hint"></span>
-      <button id="btn-history-clear" class="btn btn-small btn-danger">Clear history</button>
+      <button id="btn-history-clear" class="btn btn-sm btn-danger">Clear history</button>
     </div>
     <div id="downloads" class="downloads"></div>
-    <p id="empty" class="empty">No downloads. Hit <b>+ Add download</b> or send one from the browser extension.</p>
+    <p id="empty" class="empty">
+      <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 20h14v-2H5v2zM19 9h-4V3H9v6H5l7 7 7-7z"/></svg>
+      <b>Nothing here yet</b>
+      <span>Add a download, or start one in the browser and it lands here.</span>
+    </p>
   </section>
 
   <!-- ---------------- rules ---------------- -->
   <section id="tab-rules" class="tabpane">
     <div class="panehead">
-      <h2>Custom download actions</h2>
       <div>
-        <label class="inline-field" title="Which speed figure rules judge by">
-          <span>Judge speed by</span>
+        <h2>Actions</h2>
+      </div>
+      <div class="panehead-actions">
+        <label class="inline-field" title="Hybrid: measured write speed, falling back to aria2's figure. Write speed: measured only. Reported speed: aria2's moving average.">
+          <span>Speed by</span>
           <select id="rules-speed-source">
-            <option value="hybrid">measured, else aria2 (default)</option>
-            <option value="measured">measured write speed only</option>
-            <option value="aria2">aria2's reported speed</option>
+            <option value="hybrid">Hybrid</option>
+            <option value="measured">Write speed</option>
+            <option value="aria2">Reported speed</option>
           </select>
         </label>
-        <button id="btn-rule-add" class="btn btn-small">+ New rule</button>
-        <button id="btn-rules-save" class="btn btn-primary btn-small">Save rules</button>
+        <button id="btn-rule-add" class="btn"><svg class="ico" viewBox="0 0 24 24"><path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>New action</button>
+        <button id="btn-rules-save" class="btn btn-primary">Save actions</button>
       </div>
     </div>
-    <div id="rules-list"></div>
+    <div id="rules-list" class="stack"></div>
     <div class="panehead"><h2>Recent triggers</h2></div>
-    <div id="rule-triggers" class="loglist"></div>
+    <div id="rule-triggers" class="loglist card"></div>
   </section>
 
   <!-- ---------------- settings ---------------- -->
   <section id="tab-settings" class="tabpane">
     <div class="panehead">
-      <h2>Global aria2 options</h2>
       <div>
-        <input id="opt-search" class="search" placeholder="Filter options…">
-        <button id="btn-opt-reload" class="btn btn-small">Reload</button>
-        <button id="btn-opt-save" class="btn btn-primary btn-small">Save changed</button>
+        <h2>Settings</h2>
+        <p class="hint" id="settings-lead">Simple shows what most people tune. Advanced shows every aria2 option, the process, and the event log.</p>
+      </div>
+      <div class="panehead-actions">
+        <div class="seg" role="group" aria-label="Detail level" id="settings-mode">
+          <button type="button" data-mode="simple" aria-pressed="true"><svg class="ico" viewBox="0 0 24 24"><path d="M9 16.17 4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>Simple</button>
+          <button type="button" data-mode="advanced" aria-pressed="false"><svg class="ico" viewBox="0 0 24 24"><path d="M9 16.17 4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>Advanced</button>
+        </div>
+        <label class="search" data-level="advanced"><svg class="ico" viewBox="0 0 24 24"><path d="M15.5 14h-.79l-.28-.27A6.47 6.47 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg><input id="opt-search" placeholder="Find an option" aria-label="Find an option"></label>
+        <button id="btn-opt-reload" class="btn btn-icon" title="Reload from aria2" aria-label="Reload from aria2"><svg class="ico" viewBox="0 0 24 24"><path d="M17.65 6.35A7.96 7.96 0 0 0 12 4a8 8 0 1 0 7.73 10h-2.08A6 6 0 1 1 12 6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/></svg></button>
+        <button id="btn-opt-save" class="btn btn-primary">Save changes</button>
       </div>
     </div>
-    <div id="options-groups"></div>
-    <details id="options-advanced-wrap" open>
-      <summary>All options (advanced)<span id="advanced-count" class="count"></span></summary>
-      <div id="options-advanced" class="optgrid"></div>
+
+    <p id="options-note" class="hint options-note"></p>
+
+    <!-- Simple: the handful of options that decide how downloads behave. -->
+    <div id="options-simple" class="card" data-level="simple"></div>
+
+    <!-- Advanced: the curated groups, then every option aria2 reports. -->
+    <div id="options-groups" class="stack" data-level="advanced"></div>
+    <details id="options-advanced-wrap" class="card fold" data-level="advanced" open>
+      <summary>Every aria2 option<span id="advanced-count" class="count"></span></summary>
+      <div id="options-advanced" class="stack"></div>
     </details>
 
-    <div class="panehead"><h2>aria2c process</h2></div>
-    <div class="optgroup">
-      <div id="proc-info" class="kv"></div>
-      <div class="group-actions">
-        <button id="btn-restart-aria2" class="btn btn-danger btn-small">Restart aria2c</button>
+    <div class="card" data-level="advanced">
+      <div class="card-head">
+        <h2>aria2c process</h2>
+        <button id="btn-restart-aria2" class="btn btn-sm btn-danger">Restart aria2c</button>
       </div>
+      <div id="proc-info" class="kv"></div>
     </div>
 
-    <!-- The log is diagnostic material, not a view to watch, so it folds away
-         here rather than holding a tab of its own. -->
-    <div class="panehead">
-      <h2>Event log</h2>
-      <div><button id="btn-log-clear" class="btn btn-small">Clear view</button></div>
+    <!-- The log is diagnostic material, not a view to watch, so it lives here
+         rather than holding a tab of its own. -->
+    <div class="card" data-level="advanced">
+      <div class="card-head">
+        <h2>Event log</h2>
+        <button id="btn-log-clear" class="btn btn-sm btn-text">Clear view</button>
+      </div>
+      <div id="loglist" class="loglist"></div>
     </div>
-    <div id="loglist" class="loglist"></div>
   </section>
-
 </main>
 
 <!-- ---------------- add dialog ---------------- -->
 <dialog id="add-dialog">
   <form id="add-form" method="dialog">
-    <h2>Add download</h2>
-
-    <label class="field">
-      <span>URLs <small>one per line — http(s), ftp, magnet:</small></span>
-      <textarea id="add-uris" rows="4" placeholder="https://example.com/file.iso&#10;magnet:?xt=urn:btih:…"></textarea>
-    </label>
-
-    <label class="field">
-      <span>…or a .torrent / .metalink file</span>
-      <input type="file" id="add-file" accept=".torrent,.meta4,.metalink">
-    </label>
-
-    <div class="grid2">
-      <label class="field"><span>Save to directory</span><input id="add-dir" placeholder="(default)"></label>
-      <label class="field"><span>Rename to <small>single file only</small></span><input id="add-out" placeholder="(from server)"></label>
-      <label class="field"><span>Connections per server <small>max-connection-per-server</small></span><input id="add-conn" type="number" min="1" max="16" placeholder="16"></label>
-      <label class="field"><span>Parts / split <small>split</small></span><input id="add-split" type="number" min="1" placeholder="16"></label>
-      <label class="field"><span>Min part size <small>min-split-size</small></span><span id="add-minsplit"></span></label>
-      <label class="field"><span>Speed limit <small>max-download-limit</small></span><span id="add-limit"></span></label>
-      <label class="field"><span>Referer</span><input id="add-referer" placeholder="(none)"></label>
-      <label class="field"><span>User-Agent</span><input id="add-ua" placeholder="(default)"></label>
-      <label class="field"><span>Cookie header</span><input id="add-cookie" placeholder="k=v; k2=v2"></label>
-      <label class="field"><span>Proxy <small>all-proxy</small></span><input id="add-proxy" placeholder="(none)"></label>
-      <label class="field"><span>Checksum <small>e.g. sha-256=…</small></span><input id="add-checksum" placeholder="(none)"></label>
-      <label class="field"><span>Queue position <small>blank = end</small></span><input id="add-position" type="number" min="0" placeholder="end"></label>
+    <div class="dialog-head">
+      <h2>Add download</h2>
+      <div class="seg seg-sm" role="group" aria-label="Detail level" id="add-mode">
+        <button type="button" data-mode="simple" aria-pressed="true"><svg class="ico" viewBox="0 0 24 24"><path d="M9 16.17 4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>Simple</button>
+        <button type="button" data-mode="advanced" aria-pressed="false"><svg class="ico" viewBox="0 0 24 24"><path d="M9 16.17 4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>Advanced</button>
+      </div>
     </div>
 
-    <label class="field"><span>Extra headers <small>one per line, <code>Name: value</code></small></span>
-      <textarea id="add-headers" rows="2" placeholder="Authorization: Bearer …"></textarea></label>
+    <div class="dialog-body">
+      <label class="field">
+        <span>Links <small>one per line: http, ftp, or magnet</small></span>
+        <textarea id="add-uris" rows="4" placeholder="https://example.com/file.iso&#10;magnet:?xt=urn:btih:…"></textarea>
+      </label>
 
-    <div class="checkrow">
-      <label class="boolopt"><span>Add paused</span>
-        <span class="switch"><input type="checkbox" id="add-paused"><span class="track"><span class="knob"></span></span></span></label>
-      <label class="boolopt"><span>Treat all URLs as mirrors of one file</span>
-        <span class="switch"><input type="checkbox" id="add-mirrors"><span class="track"><span class="knob"></span></span></span></label>
+      <label class="field">
+        <span>Or a torrent or metalink file</span>
+        <input type="file" id="add-file" accept=".torrent,.meta4,.metalink">
+      </label>
+
+      <div class="grid2">
+        <label class="field"><span>Save to</span><input id="add-dir" placeholder="Manager's download folder"></label>
+        <label class="field" data-level="advanced"><span>Save as <small>single file only</small></span><input id="add-out" placeholder="Name from the server"></label>
+        <label class="field" data-level="advanced"><span>Connections per server</span><input id="add-conn" type="number" min="1" max="16" placeholder="16"></label>
+        <label class="field" data-level="advanced"><span>Parts per download</span><input id="add-split" type="number" min="1" placeholder="16"></label>
+        <label class="field" data-level="advanced"><span>Smallest part</span><span id="add-minsplit"></span></label>
+        <label class="field" data-level="advanced"><span>Speed limit</span><span id="add-limit"></span></label>
+        <label class="field" data-level="advanced"><span>Referer</span><input id="add-referer" placeholder="None"></label>
+        <label class="field" data-level="advanced"><span>User agent</span><input id="add-ua" placeholder="Default"></label>
+        <label class="field" data-level="advanced"><span>Cookies</span><input id="add-cookie" placeholder="name=value; other=value"></label>
+        <label class="field" data-level="advanced"><span>Proxy</span><input id="add-proxy" placeholder="None"></label>
+        <label class="field" data-level="advanced"><span>Checksum</span><input id="add-checksum" placeholder="sha-256=…"></label>
+        <label class="field" data-level="advanced"><span>Queue position <small>blank adds at the end</small></span><input id="add-position" type="number" min="0" placeholder="End"></label>
+      </div>
+
+      <label class="field" data-level="advanced"><span>Extra headers <small>one per line, <code>Name: value</code></small></span>
+        <textarea id="add-headers" rows="2" placeholder="Authorization: Bearer …"></textarea></label>
+
+      <div class="checkrow">
+        <label class="setting"><span class="text"><span class="label">Start paused</span></span>
+          <span class="switch"><input type="checkbox" id="add-paused"><span class="track"><span class="knob"></span></span></span></label>
+        <label class="setting" data-level="advanced"><span class="text"><span class="label">Links are mirrors of one file</span></span>
+          <span class="switch"><input type="checkbox" id="add-mirrors"><span class="track"><span class="knob"></span></span></span></label>
+      </div>
     </div>
 
     <div class="dialog-actions">
-      <button type="button" id="add-cancel" class="btn">Cancel</button>
+      <button type="button" id="add-cancel" class="btn btn-text">Cancel</button>
       <button type="button" id="add-submit" class="btn btn-primary">Add</button>
     </div>
   </form>
@@ -205,20 +234,20 @@
 <template id="row-template">
   <article class="dl">
     <div class="dl-main">
-      <input type="checkbox" class="dl-pick" hidden>
-      <button class="chev" title="Details" aria-label="Details"></button>
+      <input type="checkbox" class="dl-pick" hidden aria-label="Select">
+      <button class="chev btn btn-icon btn-sm" title="Details" aria-label="Details"></button>
       <div class="dl-body">
         <div class="dl-title">
           <span class="dl-name"></span>
           <span class="dl-badges"></span>
         </div>
+        <div class="progress"><i class="bar-fill"></i></div>
         <div class="dl-meta"></div>
       </div>
       <div class="dl-actions"></div>
     </div>
     <div class="dl-confirm" hidden></div>
     <div class="dl-detail" hidden></div>
-    <div class="bar"><div class="bar-fill"></div></div>
   </article>
 </template>
 

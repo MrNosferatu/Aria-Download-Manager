@@ -68,7 +68,7 @@ Column {
     StyledText {
         width: parent.width
         visible: detail.pieces.length > 0
-        text: "Parts — " + (detail.statusInfo.numPieces || 0) + " pieces × " + Fmt.bytes(detail.statusInfo.pieceLength || 0)
+        text: "Pieces · " + (detail.statusInfo.numPieces || 0) + " × " + Fmt.bytes(detail.statusInfo.pieceLength || 0)
         font.pixelSize: Theme.fontSizeSmall
         font.weight: Font.Medium
         color: Theme.surfaceVariantText
@@ -99,11 +99,11 @@ Column {
     Repeater {
         model: [
             {
-                "label": "GID",
+                "label": "ID",
                 "value": detail.gid
             },
             {
-                "label": "Directory",
+                "label": "Folder",
                 "value": detail.statusInfo.dir || ""
             },
             {
@@ -112,7 +112,7 @@ Column {
             },
             {
                 "label": "Size",
-                "value": Fmt.bytes(detail.statusInfo.completedLength) + " / " + Fmt.bytes(detail.statusInfo.totalLength)
+                "value": Fmt.bytes(detail.statusInfo.completedLength) + " of " + Fmt.bytes(detail.statusInfo.totalLength)
             },
             {
                 "label": "Connections",
@@ -157,7 +157,7 @@ Column {
                     cursorShape: Qt.PointingHandCursor
                     onClicked: {
                         Quickshell.execDetached(["dms", "cl", "copy", String(kv.modelData.value)])
-                        ToastService.showInfo("Copied", kv.modelData.label)
+                        detail.service.notice("Copied " + kv.modelData.label.toLowerCase())
                     }
                 }
             }
@@ -187,7 +187,7 @@ Column {
             spacing: 1
 
             StyledText {
-                text: "Split (parts)"
+                text: "Parts"
                 font.pixelSize: Theme.fontSizeSmall
                 color: Theme.surfaceVariantText
             }
@@ -223,7 +223,7 @@ Column {
             spacing: 1
 
             StyledText {
-                text: "Download limit (max-download-limit)"
+                text: "Download limit"
                 font.pixelSize: Theme.fontSizeSmall
                 color: Theme.surfaceVariantText
             }
@@ -240,7 +240,7 @@ Column {
             spacing: 1
 
             StyledText {
-                text: "Upload limit (max-upload-limit)"
+                text: "Upload limit"
                 font.pixelSize: Theme.fontSizeSmall
                 color: Theme.surfaceVariantText
             }
@@ -254,7 +254,7 @@ Column {
     }
 
     DankButton {
-        text: "Apply to this download"
+        text: "Apply"
         buttonHeight: 40
         iconName: "check"
         onClicked: {
@@ -269,7 +269,7 @@ Column {
                 options["max-upload-limit"] = upField.value
             detail.service.post("/api/download/" + detail.gid + "/options", {
                                     "options": options
-                                }, "Options applied")
+                                }, "Applied")
         }
     }
 
@@ -277,7 +277,7 @@ Column {
     StyledText {
         width: parent.width
         visible: detail.files.length > 0
-        text: "Files" + (detail.files.length > 1 ? " (" + detail.files.length + ")" : "")
+        text: "Files" + (detail.files.length > 1 ? " · " + detail.files.length : "")
         font.pixelSize: Theme.fontSizeSmall
         font.weight: Font.Medium
         color: Theme.surfaceVariantText
@@ -344,12 +344,12 @@ Column {
         iconName: "checklist"
         onClicked: {
             if (!detail.selectedFiles.length) {
-                ToastService.showError("aria2c", "Select at least one file")
+                ToastService.showError("Aria", "Pick at least one file")
                 return
             }
             detail.service.post("/api/download/" + detail.gid + "/select", {
                                     "indices": detail.selectedFiles
-                                }, "Selection applied")
+                                }, "File selection applied")
         }
     }
 
@@ -357,7 +357,7 @@ Column {
     StyledText {
         width: parent.width
         visible: detail.servers.length > 0
-        text: "Live connections (" + detail.servers.length + ")"
+        text: "Connections · " + detail.servers.length
         font.pixelSize: Theme.fontSizeSmall
         font.weight: Font.Medium
         color: Theme.surfaceVariantText
@@ -396,7 +396,7 @@ Column {
     StyledText {
         width: parent.width
         visible: detail.uris.length > 0
-        text: "URLs (" + detail.uris.length + ")"
+        text: "Links · " + detail.uris.length
         font.pixelSize: Theme.fontSizeSmall
         font.weight: Font.Medium
         color: Theme.surfaceVariantText
@@ -435,7 +435,7 @@ Column {
     StyledText {
         width: parent.width
         visible: detail.peers.length > 0
-        text: "Peers (" + detail.peers.length + ")"
+        text: "Peers · " + detail.peers.length
         font.pixelSize: Theme.fontSizeSmall
         font.weight: Font.Medium
         color: Theme.surfaceVariantText

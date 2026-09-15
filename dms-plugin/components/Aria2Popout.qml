@@ -72,11 +72,11 @@ PopoutComponent {
         if (!service)
             return ""
         if (!service.connected)
-            return "manager offline — " + service.socketPath
+            return "Manager offline · " + service.socketPath
         const aria2 = service.aria2
         if (!aria2.running)
-            return "aria2c not running — " + (aria2.last_error || "see the Log tab")
-        return "aria2c " + (aria2.version || "") + " · pid " + (aria2.pid !== undefined && aria2.pid !== null ? aria2.pid : "ext")
+            return "aria2c is not running · " + (aria2.last_error || "see the event log under Settings")
+        return (service.activeCount > 0 ? "Downloading · " : "Ready · ") + "aria2c " + (aria2.version || "")
     }
     showCloseButton: !inWindow
 
@@ -115,12 +115,12 @@ PopoutComponent {
             Repeater {
                 model: [
                     {
-                        "label": "Down",
+                        "label": "Downloading",
                         "value": popout.service ? Fmt.speed(popout.service.downloadSpeed) : "–",
                         "accent": true
                     },
                     {
-                        "label": "Up",
+                        "label": "Uploading",
                         "value": popout.service ? Fmt.speed(popout.service.uploadSpeed) : "–",
                         "accent": false
                     },
@@ -135,7 +135,7 @@ PopoutComponent {
                         "accent": false
                     },
                     {
-                        "label": "Stopped",
+                        "label": "Finished",
                         "value": popout.service ? String(popout.service.stoppedCount) : "0",
                         "accent": false
                     }
@@ -174,7 +174,7 @@ PopoutComponent {
 
             StyledText {
                 anchors.verticalCenter: parent.verticalCenter
-                text: "Rules"
+                text: "Actions"
                 font.pixelSize: Theme.fontSizeSmall
                 color: Theme.surfaceVariantText
             }
@@ -205,8 +205,8 @@ PopoutComponent {
                 "icon": "download"
             },
             {
-                "text": "Rules",
-                "icon": "bolt"
+                "text": "Actions",
+                "icon": "auto_fix_high"
             },
             {
                 "text": "Settings",
@@ -230,6 +230,15 @@ PopoutComponent {
 
         width: parent.width
         height: popout.contentHeight
+
+        //: Sits over the bottom of whichever tab is showing; see Feedback.qml.
+        Feedback {
+            service: popout.service
+            anchors.horizontalCenter: parent.horizontalCenter
+            anchors.bottom: parent.bottom
+            anchors.bottomMargin: Theme.spacingM
+            z: 10
+        }
 
         Loader {
             anchors.fill: parent

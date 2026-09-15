@@ -13,7 +13,7 @@ Item {
     //: "speed" or "size".
     property string kind: "speed"
     property string raw: ""
-    property string placeholderText: kind === "speed" ? "no limit" : "0"
+    property string placeholderText: kind === "speed" ? "No limit" : "0"
 
     property string _startAmount: ""
     property int _startUnit: Units.DEFAULT_UNIT

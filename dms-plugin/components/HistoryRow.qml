@@ -60,7 +60,7 @@ Rectangle {
                     id: statusLabel
 
                     anchors.centerIn: parent
-                    text: Fmt.label(row.entry.status || "")
+                    text: Fmt.statusLabel(row.entry.status || "")
                     font.pixelSize: Theme.fontSizeSmall
                     font.weight: Font.Medium
                     color: row.statusColor
@@ -100,7 +100,7 @@ Rectangle {
                 if (row.entry.dir)
                     bits.push(row.entry.dir)
                 if (row.fileMissing)
-                    bits.push("file is no longer there")
+                    bits.push("No longer on disk")
                 if (row.entry.error)
                     bits.push(row.entry.error)
                 return bits.join("  ·  ")
@@ -134,7 +134,7 @@ Rectangle {
             buttonSize: 28
             iconSize: Theme.iconSizeSmall
             iconName: "folder_open"
-            tooltipText: "Open containing folder"
+            tooltipText: "Open folder"
             onClicked: {
                 const dir = row.entry.dir || row.entry.path.replace(/\/[^/]*$/, "")
                 Quickshell.execDetached(["xdg-open", dir])
@@ -149,7 +149,7 @@ Rectangle {
             tooltipText: "Download this again"
             onClicked: row.service.post("/api/history/readd", {
                                             "key": row.entry.key
-                                        }, "Queued again", () => row.service.loadHistory())
+                                        }, "Added again", () => row.service.loadHistory())
         }
 
         DankActionButton {

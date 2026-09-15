@@ -7,7 +7,7 @@ same unpacked directory loads in both Firefox and Chromium.
 
 The extension watches each tab's traffic for HLS/DASH manifests and media files
 (`webRequest`, observation only — MV3 has no blocking form and none is needed).
-When it sees one, a small **Download** button appears over the player; clicking
+When it sees one, a small **Download video** button appears over the player; clicking
 it asks the manager to read the manifest and lists the qualities the site
 offers.
 
@@ -37,7 +37,7 @@ Then register the native-messaging host once and restart the browser:
 python3 -m aria_download_manager --install-native-host
 ```
 
-Settings → *Test connection* confirms it and shows the socket it reached.
+The settings page checks the connection on its own when it opens; *Test connection* runs it again.
 
 ## How it works
 
@@ -72,10 +72,11 @@ clicks, draws toasts and harvests links for the context menus.
 | `background.js` | download interception, context menus, notifications, badge, all manager requests |
 | `content.js` | click capture, in-page toasts, link harvesting |
 | `lib/link.js` | the connection to the manager over native messaging (requests and the live event stream); shared by the background and the manager page |
+| `lib/design.css` | the design system every page shares: Material 3 tonal surfaces in OKLCH, `light-dark()` for both colour schemes, and the controls (switch, chips, segmented Simple/Advanced, cards). The DankBar widget draws the same language with the shell's own widgets |
 | `manager/` | the full manager UI, opened from the popup |
 | `popup.html/js` | toolbar popup: live status, quick add, per-site switch, opens the full manager |
 | `options.html/js` | settings page |
-| `ui.css` | shared styling for popup + options |
+| `ui.css` | layout for the popup and the settings page (controls come from `lib/design.css`) |
 
 ## Notes
 

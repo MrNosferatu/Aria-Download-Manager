@@ -197,12 +197,12 @@ Item {
                     "count": c.paused || 0
                 },
                 {
-                    "label": "Complete",
+                    "label": "Done",
                     "value": "complete",
                     "count": c.complete || 0
                 },
                 {
-                    "label": "Error",
+                    "label": "Failed",
                     "value": "error",
                     "count": c.error || 0
                 },
@@ -236,7 +236,7 @@ Item {
                                 - (clearHistoryButton.visible ? clearHistoryButton.width + Theme.spacingS : 0))
             height: 40
             leftIconName: "search"
-            placeholderText: tab.historyMode ? "History is filtered on the server" : "Filter by name…"
+            placeholderText: tab.historyMode ? "Search is not available in history" : "Search by name"
             showClearButton: true
             onTextChanged: tab.search = text
         }
@@ -325,7 +325,7 @@ Item {
                 anchors.left: parent.left
                 anchors.leftMargin: Theme.spacingS
                 anchors.verticalCenter: parent.verticalCenter
-                text: tab.selectedCount > 0 ? tab.selectedCount + " selected" : "Select downloads"
+                text: tab.selectedCount > 0 ? tab.selectedCount + " selected" : "Pick downloads"
                 font.pixelSize: Theme.fontSizeSmall
                 font.weight: Font.Medium
                 color: Theme.surfaceText
@@ -401,9 +401,9 @@ Item {
                 text: {
                     const done = tab.selectedFinished.length
                     const rest = tab.selectedUnfinished.length
-                    let line = done + " finished — keep the files?"
+                    let line = done + " finished. Keep the files?"
                     if (rest > 0)
-                        line += "  (" + rest + " unfinished will be cleaned up)"
+                        line += "  (" + rest + " unfinished will be cleaned up.)"
                     return line
                 }
                 font.pixelSize: Theme.fontSizeSmall
@@ -459,7 +459,7 @@ Item {
             if (!tab.service || !tab.service.history)
                 return ""
             const s = tab.service.history.summary || ({})
-            return (s.count || 0) + " recorded · " + (s.completed || 0) + " completed · " + Fmt.bytes(s.bytes || 0)
+            return (s.count || 0) + " recorded · " + (s.completed || 0) + " finished · " + Fmt.bytes(s.bytes || 0)
         }
         font.pixelSize: Theme.fontSizeSmall
         color: Theme.surfaceVariantText
@@ -523,10 +523,10 @@ Item {
         visible: tab.historyMode ? historyList.count === 0 : list.count === 0
         text: {
             if (!tab.service || !tab.service.connected)
-                return "Can't reach Aria Download Manager at " + (tab.service ? tab.service.socketPath : "") + ".\nStart it with run.sh or the systemd unit."
+                return "Can't reach the manager at " + (tab.service ? tab.service.socketPath : "") + ".\nStart it with run.sh or the systemd unit."
             if (tab.historyMode)
-                return "Nothing recorded yet."
-            return tab.filter === "all" && !tab.search ? "No downloads. Hit Add, or send one from the browser extension." : "Nothing matches this filter."
+                return "No history yet. Finished downloads are remembered here, even after a restart."
+            return tab.filter === "all" && !tab.search ? "Nothing here yet. Add a download, or start one in the browser and it lands here." : "Nothing matches."
         }
         font.pixelSize: Theme.fontSizeMedium
         color: Theme.surfaceVariantText

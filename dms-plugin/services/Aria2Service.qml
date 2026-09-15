@@ -67,6 +67,17 @@ Singleton {
     signal optionsLoaded
     signal historyLoaded
 
+    //: Confirmation that something worked ("History cleared", "Rules saved").
+    //: Shown inside the panel as a brief animated pill, never as a shell
+    //: notification: a success needs a glance, not a popup to dismiss. Errors
+    //: still go through ToastService, because they need attention.
+    signal feedback(string message)
+
+    function notice(message) {
+        if (message)
+            root.feedback(message)
+    }
+
     //: Bar widgets listen for this so `dms ipc call ariaDownloadManager toggle` (or a
     //: compositor keybind) opens the manager window without a click.
     signal popoutToggleRequested
@@ -421,9 +432,9 @@ Singleton {
         if (!root.cfg.notify)
             return
         if (event.level === "error")
-            ToastService.showError("aria2c", event.message)
+            ToastService.showError("Aria", event.message)
         else if (event.level === "info" && /finished|complete/i.test(event.message || ""))
-            ToastService.showInfo("aria2c", event.message)
+            ToastService.showInfo("Aria", event.message)
     }
 
     // ---- API calls -------------------------------------------------------
@@ -447,11 +458,10 @@ Singleton {
     function act(method, path, body, okMessage, callback) {
         request(method, path, body, (data, error) => {
             if (error) {
-                ToastService.showError("aria2c", error)
+                ToastService.showError("Aria", error)
                 return
             }
-            if (okMessage)
-                ToastService.showInfo("aria2c", okMessage)
+            root.notice(okMessage)
             if (callback)
                 callback(data)
         })
@@ -473,7 +483,7 @@ Singleton {
         const query = "?force=true&purge=true" + (deleteFiles ? "&delete_files=true" : "")
         root.del("/api/download/" + gid + query,
                  okMessage !== undefined ? okMessage
-                                         : (deleteFiles ? "Removed and deleted the file" : "Removed"))
+                                         : (deleteFiles ? "Removed with its file" : "Removed"))
     }
 
     //: One action across a chosen set. The server reports per-gid failures
@@ -490,7 +500,7 @@ Singleton {
                       // act() only calls back on success and toasts failures
                       // itself, so the server's summary is the whole story here.
                       if (data && data.message)
-                          ToastService.showInfo("aria2c", data.message)
+                          root.notice(data.message)
                       if (callback)
                           callback(data)
                   })
@@ -507,7 +517,7 @@ Singleton {
     // ---- manager ---------------------------------------------------------
     //: Exit and let systemd bring the manager back, rereading config.yaml.
     function restartManager() {
-        post("/api/restart", null, "Restarting the manager…", () => {
+        post("/api/restart", null, "Restarting the manager", () => {
                  root.connected = false
                  restartSettle.restart()
              })
@@ -555,7 +565,7 @@ Singleton {
                  "rules": rules,
                  "enabled": enabled,
                  "speed_source": speedSource
-             }, "Rules saved", data => {
+             }, "Actions saved", data => {
                  if (data && data.rules)
                      root.rules = data.rules
                  root.rulesLoaded()
@@ -566,14 +576,14 @@ Singleton {
         root.rulesEnabled = enabled
         post("/api/rules", {
                  "enabled": enabled
-             }, enabled ? "Rules engine on" : "Rules engine off")
+             }, enabled ? "Actions on" : "Actions off")
     }
 
     function setSpeedSource(source) {
         root.speedSource = source
         post("/api/rules", {
                  "speed_source": source
-             }, "Rules now judge speed by: " + source)
+             }, "Speed judged by: " + ({"hybrid": "Hybrid", "measured": "Write speed", "aria2": "Reported speed"}[source] || source))
     }
 
     function loadOptions() {
@@ -588,13 +598,13 @@ Singleton {
     function saveOptions(options, okMessage) {
         post("/api/global/options", {
                  "options": options
-             }, okMessage || "Options applied", () => root.loadOptions())
+             }, okMessage || "Applied", () => root.loadOptions())
     }
 
     function loadHistory() {
         get("/api/history?limit=300", (data, error) => {
             if (error) {
-                ToastService.showError("aria2c history", error)
+                ToastService.showError("Aria", error)
                 return
             }
             if (!data)
@@ -639,7 +649,9 @@ Singleton {
                 root.requestedTab = root.settingsTabIndex
                 return "showing the event log under settings"
             }
-            const at = root.tabNames.indexOf(wanted)
+            // "Actions" is what the tab says; "rules" is what config.yaml and the
+            // API say, and what was documented, so both open the same tab.
+            const at = root.tabNames.indexOf(wanted === "actions" ? "rules" : wanted)
             if (at < 0)
                 return "unknown tab, try: " + root.tabNames.concat(["log"]).join(", ")
             root.requestedLog = false
@@ -652,7 +664,7 @@ Singleton {
                 return "usage: dms ipc call ariaDownloadManager add <url>"
             root.post("/api/downloads", {
                           "uris": [url]
-                      }, "Queued")
+                      }, "Added")
             return "queued " + url
         }
 
@@ -664,12 +676,12 @@ Singleton {
         }
 
         function pauseAll(): string {
-            root.post("/api/global/pause-all", null, "Paused all")
+            root.post("/api/global/pause-all", null, "Paused everything")
             return "paused"
         }
 
         function resumeAll(): string {
-            root.post("/api/global/resume-all", null, "Resumed all")
+            root.post("/api/global/resume-all", null, "Resumed everything")
             return "resumed"
         }
     }

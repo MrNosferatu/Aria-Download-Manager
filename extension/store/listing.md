@@ -34,11 +34,13 @@ What it does:
   the page's cookies, referer and user-agent attached, so files behind a login
   still work.
 • Toolbar popup with live speed, active and queued counts, per-download
-  progress, and a box to paste a URL or magnet link.
+  progress, and a box to paste a link or magnet.
 • Right-click a link, image, video, audio file, page or text selection to send it.
 • Click capture for magnet links and for files the browser would open in a
   viewer instead of downloading. Alt+click sends any link.
-• Filters: minimum file size, which extensions count, and a per-site blocklist.
+• Settings with a Simple view for the few choices most people make, and an
+  Advanced view for everything else: minimum file size, which file types count,
+  and sites to leave alone.
 
 blob: and data: downloads are left to the browser, since aria2 cannot fetch them.
 

@@ -16,9 +16,11 @@ Rectangle {
     // value -> label. The values are the literal config keys, so they stay
     // snake_case in config.yaml and in the raw JSON editor.
     readonly property var actionValues: ["pause_resume", "force_pause_resume", "restart", "set_option", "stop", "log_only"]
-    readonly property var actionLabels: ["Pause + resume", "Force pause + resume", "Restart (remove and re-add)", "Change its options", "Pause and leave paused", "Log only (do nothing)"]
+    readonly property var actionLabels: ["Pause, then resume", "Force pause, then resume", "Restart (remove and add again)", "Change its options", "Pause and leave it paused", "Log only, do nothing"]
 
-    readonly property var fields: [["when.speed_below", "Speed below", "speed"], ["when.for_seconds", "Hold for (s)", "number"], ["when.min_age_seconds", "Ignore first (s)", "number"], ["cooldown_seconds", "Cooldown (s)", "number"], ["resume_after_seconds", "Resume after (s)", "number"], ["max_triggers", "Max triggers (0 = ∞)", "number"], ["when.min_progress", "Only above progress %", "number"], ["when.max_progress", "Only below progress %", "number"], ["when.connections_below", "Connections below", "number"], ["when.name_matches", "Name matches (regex)", "text"]]
+    //: [path, label, kind, placeholder]. The placeholder is an example or the
+    //: meaning of leaving the field blank, so an empty card still explains itself.
+    readonly property var fields: [["when.speed_below", "Speed below", "speed", "e.g. 50"], ["when.for_seconds", "For at least (s)", "number", "e.g. 3"], ["when.min_age_seconds", "Ignore the first (s)", "number", "Grace after start, e.g. 8"], ["cooldown_seconds", "Cooldown (s)", "number", "Between fires, e.g. 25"], ["resume_after_seconds", "Resume after (s)", "number", "Pause length, e.g. 1.5"], ["max_triggers", "Max times", "number", "0 = no limit"], ["when.min_progress", "Only past (%)", "number", "Blank = from the start"], ["when.max_progress", "Only before (%)", "number", "Blank = until the end"], ["when.connections_below", "Connections below", "number", "Blank = any"], ["when.name_matches", "Name matches (regex)", "text", "Blank = every name, e.g. \\.iso$"]]
 
     //: aria2's own status vocabulary. Anything already saved in the rule is
     //: kept, so a hand-edited config never loses a value it cannot show.
@@ -63,19 +65,12 @@ Rectangle {
             width: parent.width
             spacing: Theme.spacingXS
 
-            DankIcon {
+            BoolSwitch {
                 anchors.verticalCenter: parent.verticalCenter
-                name: card.rule.enabled === false ? "toggle_off" : "toggle_on"
-                size: Theme.iconSize
-                color: card.rule.enabled === false ? Theme.surfaceVariantText : Theme.primary
-
-                MouseArea {
-                    anchors.fill: parent
-                    cursorShape: Qt.PointingHandCursor
-                    onClicked: {
-                        card.rule.enabled = card.rule.enabled === false
-                        card.edited()
-                    }
+                checked: card.rule.enabled !== false
+                onToggled: value => {
+                    card.rule.enabled = value
+                    card.edited()
                 }
             }
 
@@ -83,11 +78,11 @@ Rectangle {
                 id: nameField
 
                 anchors.verticalCenter: parent.verticalCenter
-                width: Math.max(0, parent.width - Theme.iconSize - deleteButton.width - Theme.spacingXS * 2)
+                width: Math.max(0, parent.width - 44 - deleteButton.width - Theme.spacingXS * 2)
                 height: card.fieldHeight
                 font.pixelSize: Theme.fontSizeMedium
                 text: card.rule.name || ""
-                placeholderText: "Rule name"
+                placeholderText: "Action name"
                 Component.onCompleted: cursorPosition = 0
                 onTextChanged: {
                     card.rule.name = text.trim()
@@ -104,7 +99,7 @@ Rectangle {
                 iconName: "delete"
                 iconColor: Theme.error
                 circular: false
-                tooltipText: "Delete rule"
+                tooltipText: "Delete action"
                 onClicked: card.removed()
             }
         }
@@ -115,7 +110,7 @@ Rectangle {
 
             StyledText {
                 width: parent.width
-                text: "Action"
+                text: "What it does"
                 font.pixelSize: Theme.fontSizeSmall
                 color: Theme.surfaceVariantText
             }
@@ -166,6 +161,7 @@ Rectangle {
                         visible: fieldCell.modelData[2] === "speed"
                         height: visible ? card.fieldHeight : 0
                         kind: "speed"
+                        placeholderText: fieldCell.modelData[3] || ""
                         raw: {
                             const current = Fmt.getPath(card.rule, fieldCell.modelData[0])
                             return current === undefined || current === null ? "" : String(current)
@@ -183,6 +179,7 @@ Rectangle {
                         visible: fieldCell.modelData[2] !== "speed"
                         height: visible ? card.fieldHeight : 0
                         font.pixelSize: Theme.fontSizeSmall
+                        placeholderText: fieldCell.modelData[3] || ""
                         text: {
                             const raw = Fmt.getPath(card.rule, fieldCell.modelData[0])
                             return raw === undefined || raw === null ? "" : String(raw)
@@ -210,7 +207,7 @@ Rectangle {
 
             StyledText {
                 width: parent.width
-                text: "Applies to statuses"
+                text: "Applies to"
                 font.pixelSize: Theme.fontSizeSmall
                 color: Theme.surfaceVariantText
             }
@@ -221,7 +218,7 @@ Rectangle {
                 multiSelect: true
                 showCounts: false
                 model: card.statusOptions.map(name => ({
-                                                           "label": Fmt.label(name),
+                                                           "label": Fmt.statusLabel(name),
                                                            "value": name
                                                        }))
                 selectedValues: card.statuses
@@ -246,7 +243,7 @@ Rectangle {
 
             StyledText {
                 width: parent.width
-                text: "Description"
+                text: "Note"
                 font.pixelSize: Theme.fontSizeSmall
                 color: Theme.surfaceVariantText
             }
@@ -255,7 +252,7 @@ Rectangle {
                 width: parent.width
                 height: card.fieldHeight
                 font.pixelSize: Theme.fontSizeSmall
-                placeholderText: "What this rule is for (optional)"
+                placeholderText: "What this action is for (optional)"
                 text: card.rule.description || ""
                 Component.onCompleted: cursorPosition = 0
                 onTextChanged: {
@@ -268,7 +265,7 @@ Rectangle {
         StyledText {
             width: parent.width
             visible: card.rule.action === "set_option"
-            text: "The set_option action needs an \"options\" mapping — edit it in the raw JSON below."
+            text: "\"Change its options\" needs an \"options\" mapping. Add it under Raw JSON below."
             font.pixelSize: Theme.fontSizeSmall
             color: Theme.warning
             wrapMode: Text.WordWrap
@@ -286,7 +283,7 @@ Rectangle {
 
             StyledText {
                 anchors.verticalCenter: parent.verticalCenter
-                text: "Raw JSON (full control)"
+                text: "Raw JSON"
                 font.pixelSize: Theme.fontSizeSmall
                 color: Theme.surfaceVariantText
             }
@@ -326,7 +323,7 @@ Rectangle {
                         card.rule[key] = parsed[key]
                     card.edited()
                 } catch (e) {
-                    ToastService.showError("aria2c", "Invalid JSON: " + e.message)
+                    ToastService.showError("Aria", "That is not valid JSON: " + e.message)
                 }
             }
         }

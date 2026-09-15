@@ -153,14 +153,14 @@ On top of that:
 
 | Surface | What it does |
 | --- | --- |
-| Toolbar popup | live speed, active/queued counts, progress of what is running, a box to paste a URL or magnet, and a per-site *skip auto-capture* switch, and the button that opens the full manager (§5) |
+| Toolbar popup | live download speed, active and queued counts, progress of what is running, a box to paste a link or magnet, the *Send downloads to Aria* switch with a per-site exception under it, and the button that opens the full manager (§5) |
 | Badge | number of active downloads, `!` when the manager is unreachable |
 | Right-click a link / image / video / audio | send just that one |
 | Right-click a page | send the page URL, or every downloadable link on it |
 | Right-click a selection | send every link inside it |
 | Click capture | left-click on a magnet, or on a link the browser would *render* rather than download, sends it here instead |
 | Alt+click | sends any link, even with capture off |
-| Settings page | connection test, save directory, add-paused, minimum size, which extensions count, per-host blocklist, notification style |
+| Settings page | *Simple* shows the connection test, the save folder, add-paused and notifications; *Advanced* adds what gets caught (browser downloads, file links, magnets, Alt+click, the video button), minimum size, file types, sites to leave alone, and in-page toasts |
 
 ## 4. Custom download actions (the rules engine)
 
@@ -225,7 +225,7 @@ seconds. The window spans a few samples rather than one tick, because aria2
 completes data in piece-sized chunks and a merely-slow download can add nothing
 for a single second without being stalled.
 
-Which figure rules use is your choice — **Rules tab → "Judge speed by"**, or
+Which figure rules use is your choice — **Actions tab → "Speed by"** (Hybrid, Write speed, Reported speed), or
 `rules_speed_source` in the config, or `when.speed_source` on one rule:
 
 | Value | Behaviour |
@@ -258,7 +258,7 @@ gets its full grace period once it actually starts, and a pause/resume restarts
 that period too.
 
 `cooldown_seconds` and `max_triggers` are the safety valves that stop a rule from
-thrashing a download. The **Rules engine** switch in the header disables all
+thrashing a download. The **Actions** switch in the header disables all
 rules at once, and each download's row shows a live countdown badge
 (`stall-recovery 2.1/3s`) plus a trigger count, so you can see a rule building up
 before it fires. Every trigger is written to the **Log** tab.
@@ -287,11 +287,12 @@ per-download options (split, connections per server, speed limits).
 per server, split, minimum part size, speed limit, referer, user-agent, cookie,
 extra headers, proxy, checksum, queue position, and add-paused.
 
-**Settings** — every global aria2 option, grouped (queue & parallelism, speed
-limits, retries, disk, HTTP, BitTorrent) with an "all options" section for the
-rest. Edits apply to the running aria2c immediately *and* are written to
-`config.yaml`, so they survive a restart. Also shows the aria2c process state
-(pid, version, uptime, restarts, log path) with a restart button.
+**Settings** — *Simple* shows the seven options that decide how a download
+behaves (folder, downloads at once, connections per server, parts, the two
+speed limits, resume). *Advanced* shows every aria2 option, grouped, with a
+search box, then the aria2c process card and the event log. An option aria2
+cannot change while running is saved to `config.yaml` and marked *Applies
+after restart*.
 
 **History** — the last filter chip on the Downloads tab. aria2's session file only
 keeps *unfinished* downloads, so completed ones would vanish on the next restart.
@@ -344,7 +345,7 @@ Emptied folders left by a multi-file torrent are pruned.
 
 If you run [DankMaterialShell](https://danklinux.com), `dms-plugin/` is the same
 manager as a DMS plugin: a download icon on the bar showing live speed, clicked to
-open a panel with Downloads, Rules and Settings (the event log folds away at the
+open a panel with Downloads, Actions and Settings (the event log folds away at the
 bottom of Settings). It is a second front-end onto this daemon over the same
 socket, so the extension's manager page and the bar can be open at once. Right-clicking the icon gives quick actions (pause/resume all,
 purge, add from clipboard), and the panel can be detached into an ordinary

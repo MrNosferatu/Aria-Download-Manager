@@ -2,51 +2,57 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
+<link rel="stylesheet" href="lib/design.css">
 <link rel="stylesheet" href="ui.css">
 <title>Aria Download Manager</title>
 </head>
 <body class="popup">
 
 <header>
-  <div>
-    <h1>Aria Download Manager</h1>
-    <span id="status" class="pill">Connecting…</span>
+  <div class="brand">
+    <span class="logo" aria-hidden="true"><svg class="ico" viewBox="0 0 24 24"><path d="M5 20h14v-2H5v2zM19 9h-4V3H9v6H5l7 7 7-7z"/></svg></span>
+    <div>
+      <h1>Aria Download Manager</h1>
+      <span id="status" class="status">Connecting…</span>
+    </div>
   </div>
   <div class="chrome">
-    <button id="open-ui" class="icon" title="Open the full manager" aria-label="Open the full manager">
-      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19 19H5V5h7V3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14c1.1 0 2-.9 2-2v-7h-2v7zM14 3v2h3.59l-9.83 9.83 1.41 1.41L19 6.41V10h2V3h-7z"/></svg>
+    <button id="open-ui" class="btn btn-icon" title="Open the manager" aria-label="Open the manager">
+      <svg class="ico" viewBox="0 0 24 24"><path d="M19 19H5V5h7V3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14c1.1 0 2-.9 2-2v-7h-2v7zM14 3v2h3.59l-9.83 9.83 1.41 1.41L19 6.41V10h2V3h-7z"/></svg>
     </button>
-    <button id="options" class="icon" title="Extension settings" aria-label="Extension settings">
-      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19.14 12.94a7.5 7.5 0 0 0 .05-.94 7.5 7.5 0 0 0-.05-.94l2.03-1.58a.5.5 0 0 0 .12-.61l-1.92-3.32a.5.5 0 0 0-.6-.22l-2.39.96a7 7 0 0 0-1.62-.94l-.36-2.54a.5.5 0 0 0-.5-.42h-3.84a.5.5 0 0 0-.5.42l-.36 2.54c-.59.24-1.13.56-1.62.94l-2.39-.96a.5.5 0 0 0-.6.22L2.67 8.87a.5.5 0 0 0 .12.61l2.03 1.58c-.04.31-.05.62-.05.94s.01.63.05.94l-2.03 1.58a.5.5 0 0 0-.12.61l1.92 3.32c.13.22.39.3.6.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.04.24.25.42.5.42h3.84c.25 0 .46-.18.5-.42l.36-2.54c.59-.24 1.12-.56 1.62-.94l2.39.96c.22.08.47 0 .6-.22l1.92-3.32a.5.5 0 0 0-.12-.61l-2.03-1.58zM12 15.5A3.5 3.5 0 1 1 15.5 12 3.5 3.5 0 0 1 12 15.5z"/></svg>
+    <button id="options" class="btn btn-icon" title="Extension settings" aria-label="Extension settings">
+      <svg class="ico" viewBox="0 0 24 24"><path d="M19.14 12.94a7.5 7.5 0 0 0 .05-.94 7.5 7.5 0 0 0-.05-.94l2.03-1.58a.5.5 0 0 0 .12-.61l-1.92-3.32a.5.5 0 0 0-.6-.22l-2.39.96a7 7 0 0 0-1.62-.94l-.36-2.54a.5.5 0 0 0-.5-.42h-3.84a.5.5 0 0 0-.5.42l-.36 2.54c-.59.24-1.13.56-1.62.94l-2.39-.96a.5.5 0 0 0-.6.22L2.67 8.87a.5.5 0 0 0 .12.61l2.03 1.58c-.04.31-.05.62-.05.94s.01.63.05.94l-2.03 1.58a.5.5 0 0 0-.12.61l1.92 3.32c.13.22.39.3.6.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.04.24.25.42.5.42h3.84c.25 0 .46-.18.5-.42l.36-2.54c.59-.24 1.12-.56 1.62-.94l2.39.96c.22.08.47 0 .6-.22l1.92-3.32a.5.5 0 0 0-.12-.61l-2.03-1.58zM12 15.5A3.5 3.5 0 1 1 15.5 12 3.5 3.5 0 0 1 12 15.5z"/></svg>
     </button>
   </div>
 </header>
 
-<div class="stats">
-  <div><label>Down</label><b id="down">–</b></div>
-  <div><label>Up</label><b id="up">–</b></div>
-  <div><label>Active</label><b id="active">0</b></div>
-  <div><label>Queued</label><b id="queued">0</b></div>
-</div>
+<section class="hero" aria-label="Live totals">
+  <div class="rate"><label>Downloading</label><b id="down" class="quiet">–</b></div>
+  <div class="stat"><label>Active</label><b id="active">0</b></div>
+  <div class="stat"><label>Queued</label><b id="queued">0</b></div>
+</section>
 
 <form id="add" class="addrow">
-  <input id="url" placeholder="URL or magnet…" autocomplete="off">
-  <button type="submit" class="primary">Add</button>
+  <input id="url" placeholder="Paste a link or magnet" autocomplete="off" aria-label="Link to download">
+  <button type="submit" class="btn btn-primary">Add</button>
 </form>
 
 <div id="list" class="list"></div>
-<p id="empty" class="empty">Nothing downloading.</p>
+<p id="empty" class="empty">
+  <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 20h14v-2H5v2zM19 9h-4V3H9v6H5l7 7 7-7z"/></svg>
+  <span id="empty-text">Nothing downloading right now.</span>
+</p>
 
 <footer>
-  <!-- The same rows as the settings page, so a switch means the same thing in
+  <!-- Same rows as the settings page, so a switch means the same thing in
        both places. The per-site rule is an exception to the one above it, so it
        is indented and quieter rather than being a peer. -->
   <label class="setting" for="enabled">
-    <span class="text"><span class="label">Capture downloads</span></span>
+    <span class="text"><span class="label">Send downloads to Aria</span></span>
     <span class="switch"><input type="checkbox" id="enabled"><span class="track"><span class="knob"></span></span></span>
   </label>
   <label class="setting sub" for="site-block">
-    <span class="text"><span class="label">Skip <span id="host">this site</span></span></span>
+    <span class="text"><span class="label">Except on <span id="host">this site</span></span></span>
     <span class="switch"><input type="checkbox" id="site-block"><span class="track"><span class="knob"></span></span></span>
   </label>
 </footer>

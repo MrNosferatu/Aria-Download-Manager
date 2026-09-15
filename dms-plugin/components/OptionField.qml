@@ -155,7 +155,7 @@ Item {
                 StyledText {
                     anchors.verticalCenter: parent.verticalCenter
                     visible: field.value === ""
-                    text: "not set"
+                    text: "Not set"
                     font.pixelSize: Theme.fontSizeSmall - 1
                     color: Theme.surfaceVariantText
                 }
@@ -168,10 +168,10 @@ Item {
 
         DankDropdown {
             height: 40
-            currentValue: field.value === "" ? "(unset)" : field.value
-            options: ["(unset)"].concat(field.choices)
+            currentValue: field.value === "" ? "Not set" : field.value
+            options: ["Not set"].concat(field.choices)
             compactMode: true
-            onValueChanged: newValue => field.value = (newValue === "(unset)" ? "" : newValue)
+            onValueChanged: newValue => field.value = (newValue === "Not set" ? "" : newValue)
         }
     }
 }
