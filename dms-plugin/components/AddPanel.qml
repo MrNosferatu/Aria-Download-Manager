@@ -13,6 +13,11 @@ Column {
     property bool advanced: false
     property bool paused: false
     property bool mirrors: false
+    //: Starts at the global setting; sent only when it differs from it.
+    property bool downloadOnly: service ? service.downloadOnly : false
+    //: A .torrent is added paused; a magnet or .torrent link fetches its file
+    //: list and its real download waits paused, so files can be chosen first.
+    property bool pickFiles: false
 
     signal submitted
 
@@ -28,6 +33,10 @@ Column {
         put("split", splitField.text)
         put("min-split-size", minSplitField.value)
         put("max-download-limit", limitField.value)
+        if (pickFiles)
+            options["pause-metadata"] = "true"
+        if (service && downloadOnly !== service.downloadOnly)
+            options["download-only"] = downloadOnly ? "true" : "false"
         put("referer", refererField.text)
         put("user-agent", uaField.text)
         put("all-proxy", proxyField.text)
@@ -68,8 +77,9 @@ Column {
                                                        "uris": uris,
                                                        "options": panel.optionsPayload(),
                                                        "position": position,
-                                                       "paused": panel.paused
-                                                   }, "Added", () => panel.reset())
+                                                       "paused": panel.paused || panel.pickFiles
+                                                   }, panel.pickFiles ? "Added paused. Open it to choose files, then resume." : "Added",
+                                                   () => panel.reset())
                             }, 0)
             return
         }
@@ -80,7 +90,8 @@ Column {
                          "position": position,
                          "paused": paused,
                          "mirrors": mirrors
-                     }, "Added", () => panel.reset())
+                     }, pickFiles ? "Fetching the file list. Open the download to choose files, then resume." : "Added",
+                     () => panel.reset())
     }
 
     function reset() {
@@ -239,6 +250,47 @@ Column {
         visible: panel.advanced
         minimumHeight: 48
         placeholderText: "Extra headers, one per line: Name: value"
+    }
+
+    //: The torrent-specific choices, on their own line so the row below
+    //: keeps room for the Add button at the panel's default width.
+    Row {
+        spacing: Theme.spacingL
+
+        Row {
+            spacing: Theme.spacingS
+
+            BoolSwitch {
+                anchors.verticalCenter: parent.verticalCenter
+                checked: panel.pickFiles
+                onToggled: value => panel.pickFiles = value
+            }
+
+            StyledText {
+                anchors.verticalCenter: parent.verticalCenter
+                text: "Choose torrent files first"
+                font.pixelSize: Theme.fontSizeSmall
+                color: Theme.surfaceText
+            }
+        }
+
+        Row {
+            visible: panel.advanced
+            spacing: Theme.spacingS
+
+            BoolSwitch {
+                anchors.verticalCenter: parent.verticalCenter
+                checked: panel.downloadOnly
+                onToggled: value => panel.downloadOnly = value
+            }
+
+            StyledText {
+                anchors.verticalCenter: parent.verticalCenter
+                text: "Download only, never seed"
+                font.pixelSize: Theme.fontSizeSmall
+                color: Theme.surfaceText
+            }
+        }
     }
 
     Item {

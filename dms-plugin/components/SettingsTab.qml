@@ -41,6 +41,7 @@ Item {
         ["split", "Parts per download", "number", "A file is fetched in this many pieces at the same time."],
         ["max-overall-download-limit", "Download speed limit", "text", "Across every download. Blank means no limit."],
         ["max-overall-upload-limit", "Upload speed limit", "text", "For torrents. Blank means no limit."],
+        ["download-only", "Torrents: download only", "bool", "Never seed. While a torrent downloads it uploads at most 1 B/s, and it stops the moment it finishes. Overrides the upload limit."],
         ["continue", "Resume unfinished files", "bool", "Pick up a partial file where it stopped instead of starting over."]
     ]
 
@@ -69,7 +70,7 @@ Item {
         },
         {
             "title": "BitTorrent",
-            "options": [["follow-torrent", "Start downloaded torrents automatically", "bool"], ["bt-max-peers", "Peers per torrent", "number"], ["seed-ratio", "Seed until this ratio", "text"], ["seed-time", "Seed for this long (min)", "text"], ["enable-dht", "Use DHT", "bool"], ["bt-max-open-files", "Open files at once", "number"]]
+            "options": [["download-only", "Download only, never seed", "bool"], ["follow-torrent", "Start downloaded torrents automatically", "bool"], ["bt-max-peers", "Peers per torrent", "number"], ["seed-ratio", "Seed until this ratio", "text"], ["seed-time", "Seed for this long (min)", "text"], ["enable-dht", "Use DHT", "bool"], ["bt-max-open-files", "Open files at once", "number"]]
         }
     ]
 
@@ -150,10 +151,19 @@ Item {
                 changed++
             }
         }
-        if (!changed) {
+        if (tab.routingDirty) {
+            service.saveRouting({
+                                    "enabled": tab.routingEnabled,
+                                    "folders": tab.routingFolders,
+                                    "extensions": tab.routingExtensions
+                                }, changed ? undefined : "Sorting saved")
+            tab.routingDirty = false
+        } else if (!changed) {
             service.notice("Nothing changed")
             return
         }
+        if (!changed)
+            return
         service.saveOptions(options, "Applied " + changed + " change" + (changed === 1 ? "" : "s"))
         edits = ({})
     }
@@ -182,8 +192,56 @@ Item {
         if (!service)
             return
         service.loadOptions()
+        service.loadRouting()
+        seedRouting()
         if (service.requestedLog)
             revealLog()
+    }
+
+    //: Where downloads go by file type. Held here while it is edited, saved
+    //: with everything else by the page's Save button.
+    property bool routingEnabled: false
+    property var routingFolders: ({})
+    property var routingExtensions: ({})
+    property bool routingDirty: false
+    readonly property var routingCategories: ["archive", "music", "video", "image", "other"]
+    readonly property var routingLabels: ({
+            "archive": "Archives",
+            "music": "Music",
+            "video": "Video",
+            "image": "Images",
+            "other": "Everything else"
+        })
+
+    function seedRouting() {
+        const data = service ? service.routing : null
+        if (!data)
+            return
+        routingEnabled = data.enabled === true
+        routingFolders = Object.assign({}, data.folders || ({}))
+        routingExtensions = Object.assign({}, data.extensions || ({}))
+        routingDirty = false
+    }
+
+    function setRoutingFolder(category, value) {
+        const next = Object.assign({}, routingFolders)
+        next[category] = value
+        routingFolders = next
+        routingDirty = true
+    }
+
+    function setRoutingExtensions(category, text) {
+        const next = Object.assign({}, routingExtensions)
+        next[category] = text.split(/[\s,]+/).filter(part => part.length > 0)
+        routingExtensions = next
+        routingDirty = true
+    }
+
+    Connections {
+        target: tab.service
+        function onRoutingChanged() {
+            tab.seedRouting()
+        }
     }
 
     Connections {
@@ -318,6 +376,140 @@ Item {
                 }
             }
 
+            // ---- where downloads go, by what they are -------------------
+            Rectangle {
+                width: content.width
+                height: routingColumn.implicitHeight + Theme.spacingM * 2
+                radius: Theme.cornerRadius
+                color: Theme.surfaceContainer
+
+                Column {
+                    id: routingColumn
+
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.top: parent.top
+                    anchors.margins: Theme.spacingM
+                    spacing: Theme.spacingS
+
+                    Item {
+                        width: parent.width
+                        height: 28
+
+                        StyledText {
+                            anchors.left: parent.left
+                            anchors.verticalCenter: parent.verticalCenter
+                            text: "Sort into folders by type"
+                            font.pixelSize: Theme.fontSizeMedium
+                            font.weight: Font.Medium
+                            color: Theme.surfaceText
+                        }
+
+                        BoolSwitch {
+                            anchors.right: parent.right
+                            anchors.verticalCenter: parent.verticalCenter
+                            checked: tab.routingEnabled
+                            onToggled: value => {
+                                tab.routingEnabled = value
+                                tab.routingDirty = true
+                            }
+                        }
+                    }
+
+                    StyledText {
+                        width: parent.width
+                        text: "Each download goes to a subfolder of the download folder, picked from its file type. Blank means the download folder itself. An absolute path is used as it is."
+                        font.pixelSize: Theme.fontSizeSmall
+                        color: Theme.surfaceVariantText
+                        wrapMode: Text.WordWrap
+                    }
+
+                    Repeater {
+                        model: tab.routingCategories
+
+                        Item {
+                            id: folderRow
+
+                            required property var modelData
+
+                            width: routingColumn.width
+                            height: 44
+
+                            StyledText {
+                                anchors.left: parent.left
+                                anchors.verticalCenter: parent.verticalCenter
+                                width: 140
+                                text: tab.routingLabels[folderRow.modelData]
+                                font.pixelSize: Theme.fontSizeSmall
+                                color: Theme.surfaceVariantText
+                                elide: Text.ElideRight
+                            }
+
+                            DankTextField {
+                                anchors.right: parent.right
+                                anchors.verticalCenter: parent.verticalCenter
+                                width: Math.max(0, parent.width - 150)
+                                height: 40
+                                font.pixelSize: Theme.fontSizeSmall
+                                placeholderText: "Download folder"
+                                text: tab.routingFolders[folderRow.modelData] || ""
+                                onTextChanged: {
+                                    if (text !== (tab.routingFolders[folderRow.modelData] || ""))
+                                        tab.setRoutingFolder(folderRow.modelData, text)
+                                }
+                            }
+                        }
+                    }
+
+                    StyledText {
+                        width: parent.width
+                        visible: tab.advanced
+                        text: "Which extensions count as what"
+                        font.pixelSize: Theme.fontSizeSmall
+                        font.weight: Font.Medium
+                        color: Theme.surfaceVariantText
+                        topPadding: Theme.spacingS
+                    }
+
+                    Repeater {
+                        //: "other" is whatever no list claims, so it has none.
+                        model: tab.advanced ? tab.routingCategories.slice(0, 4) : []
+
+                        Item {
+                            id: extRow
+
+                            required property var modelData
+
+                            width: routingColumn.width
+                            height: 44
+
+                            StyledText {
+                                anchors.left: parent.left
+                                anchors.verticalCenter: parent.verticalCenter
+                                width: 140
+                                text: tab.routingLabels[extRow.modelData]
+                                font.pixelSize: Theme.fontSizeSmall
+                                color: Theme.surfaceVariantText
+                                elide: Text.ElideRight
+                            }
+
+                            DankTextField {
+                                anchors.right: parent.right
+                                anchors.verticalCenter: parent.verticalCenter
+                                width: Math.max(0, parent.width - 150)
+                                height: 40
+                                font.pixelSize: Theme.fontSizeSmall
+                                text: (tab.routingExtensions[extRow.modelData] || []).join(" ")
+                                onTextChanged: {
+                                    if (text !== (tab.routingExtensions[extRow.modelData] || []).join(" "))
+                                        tab.setRoutingExtensions(extRow.modelData, text)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
             // ---- advanced: curated groups -------------------------------
             Repeater {
                 model: tab.advanced ? tab.groups : []
@@ -364,7 +556,10 @@ Item {
                             id: groupGrid
 
                             width: parent.width
-                            columns: 2
+                            //: Two columns whenever each still gets a usable
+                            //: width — the popout manages that; only a window
+                            //: narrower than that falls back to one.
+                            columns: Math.max(1, Math.min(2, Math.floor(width / 240)))
                             columnSpacing: Theme.spacingM
                             rowSpacing: Theme.spacingXS
 
@@ -376,7 +571,7 @@ Item {
 
                                     required property var modelData
 
-                                    width: (groupGrid.width - Theme.spacingM) / 2
+                                    width: (groupGrid.width - (groupGrid.columns - 1) * Theme.spacingM) / groupGrid.columns
                                     optionKey: option.modelData[0]
                                     label: option.modelData[1]
                                     kind: option.modelData[2]
@@ -412,7 +607,16 @@ Item {
 
                         required property var modelData
 
-                        width: content.width - Theme.spacingM * 2
+                        //: A DankCollapsibleSection hands its children to a
+                        //: ColumnLayout, which sizes a child it is not told to
+                        //: fill down to its implicit width — and the grid below
+                        //: takes its width from here, so the pair collapsed to
+                        //: a couple of crushed columns. Measured against that
+                        //: layout instead, which already allows for its own
+                        //: margins. (Its attached Layout.fillWidth is out of
+                        //: reach here: this file imports lib/Layout.js under
+                        //: that same name.)
+                        width: parent ? parent.width : 0
                         spacing: Theme.spacingXS
                         visible: {
                             if (!tab.search)
@@ -435,8 +639,12 @@ Item {
                         }
 
                         Grid {
-                            width: parent.width
-                            columns: 2
+                            id: advGrid
+
+                            //: From the same place the column above measures,
+                            //: so a layout-driven resize cannot shrink it.
+                            width: advGroup.parent ? advGroup.parent.width : 0
+                            columns: Math.max(1, Math.min(2, Math.floor(width / 240)))
                             columnSpacing: Theme.spacingM
                             rowSpacing: Theme.spacingXS
 
@@ -448,7 +656,7 @@ Item {
 
                                     required property var modelData
 
-                                    width: (parent.width - Theme.spacingM) / 2
+                                    width: (advGrid.width - (advGrid.columns - 1) * Theme.spacingM) / advGrid.columns
                                     optionKey: advancedOption.modelData
                                     label: advancedOption.modelData
                                     kind: (original === "true" || original === "false") ? "bool" : "text"

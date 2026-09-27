@@ -13,7 +13,21 @@ Column {
     property var dl: ({})
     property var detailData: null
     property bool optionsInitialized: false
-    property var selectedFiles: []
+    //: file index -> priority level, as edited; applied with the button.
+    property var filePriorities: ({})
+    //: qBittorrent's four levels, in the order the manager uses (0..3).
+    readonly property var priorityLabels: ["Do not download", "Normal", "High", "Maximum"]
+
+    function setPriority(index, level) {
+        const next = Object.assign({}, filePriorities)
+        next[index] = level
+        filePriorities = next
+    }
+    //: This torrent's own download-only state, as last loaded or toggled.
+    property bool downloadOnly: false
+    readonly property bool isTorrent: !!statusInfo.bittorrent
+    //: The global setting covers every torrent; the switch then just says so.
+    readonly property bool downloadOnlyEverywhere: service ? service.downloadOnly : false
 
     readonly property var statusInfo: (detailData && detailData.status) || ({})
     readonly property var options: (detailData && detailData.options) || ({})
@@ -47,7 +61,11 @@ Column {
                             connField.text = opts["max-connection-per-server"] || ""
                             downField.raw = opts["max-download-limit"] || ""
                             upField.raw = opts["max-upload-limit"] || ""
-                            detail.selectedFiles = (payload.files || []).filter(f => f.selected === "true").map(f => Number(f.index))
+                            detail.downloadOnly = opts["download-only"] === "true"
+                            const levels = ({})
+                            for (const f of (payload.files || []))
+                                levels[f.index] = f.priority !== undefined ? f.priority : (f.selected === "true" ? 1 : 0)
+                            detail.filePriorities = levels
                             detail.optionsInitialized = true
                         }
                     })
@@ -117,6 +135,14 @@ Column {
             {
                 "label": "Connections",
                 "value": String(detail.statusInfo.connections || 0)
+            },
+            {
+                "label": "Added",
+                "value": Fmt.dateTime(detail.dl.addedAt)
+            },
+            {
+                "label": "Finished",
+                "value": Fmt.dateTime(detail.dl.finishedAt)
             },
             {
                 "label": "Info hash",
@@ -238,6 +264,8 @@ Column {
         Column {
             width: (optionGrid.width - Theme.spacingS) / 2
             spacing: 1
+            //: With download-only on the upload limit is the floor, not a choice.
+            visible: !(detail.isTorrent && (detail.downloadOnly || detail.downloadOnlyEverywhere))
 
             StyledText {
                 text: "Upload limit"
@@ -253,6 +281,26 @@ Column {
         }
     }
 
+    Row {
+        visible: detail.isTorrent
+        spacing: Theme.spacingS
+
+        BoolSwitch {
+            anchors.verticalCenter: parent.verticalCenter
+            checked: detail.downloadOnly || detail.downloadOnlyEverywhere
+            enabled: !detail.downloadOnlyEverywhere
+            onToggled: value => detail.downloadOnly = value
+        }
+
+        StyledText {
+            anchors.verticalCenter: parent.verticalCenter
+            text: detail.downloadOnlyEverywhere ? "Download only, never seed · on for every torrent in Settings"
+                                                : "Download only, never seed"
+            font.pixelSize: Theme.fontSizeSmall
+            color: Theme.surfaceText
+        }
+    }
+
     DankButton {
         text: "Apply"
         buttonHeight: 40
@@ -265,8 +313,11 @@ Column {
                 options["max-connection-per-server"] = connField.text.trim()
             if (downField.value)
                 options["max-download-limit"] = downField.value
-            if (upField.value)
+            const noUpload = detail.isTorrent && (detail.downloadOnly || detail.downloadOnlyEverywhere)
+            if (upField.value && !noUpload)
                 options["max-upload-limit"] = upField.value
+            if (detail.isTorrent && !detail.downloadOnlyEverywhere)
+                options["download-only"] = detail.downloadOnly ? "true" : "false"
             detail.service.post("/api/download/" + detail.gid + "/options", {
                                     "options": options
                                 }, "Applied")
@@ -284,6 +335,41 @@ Column {
         topPadding: Theme.spacingXS
     }
 
+    Row {
+        visible: detail.files.length > 1
+        width: detail.width
+        spacing: Theme.spacingS
+
+        StyledText {
+            anchors.verticalCenter: parent.verticalCenter
+            width: Math.max(0, parent.width - setAll.width - Theme.spacingS)
+            text: "Higher priorities finish before lower ones start."
+            font.pixelSize: Theme.fontSizeSmall
+            color: Theme.surfaceVariantText
+            elide: Text.ElideRight
+        }
+
+        DankDropdown {
+            id: setAll
+
+            width: 170
+            height: 36
+            compactMode: true
+            currentValue: "Set all…"
+            options: ["Set all…"].concat(detail.priorityLabels)
+            onValueChanged: label => {
+                const level = detail.priorityLabels.indexOf(label)
+                if (level < 0)
+                    return
+                const next = ({})
+                for (const f of detail.files)
+                    next[f.index] = level
+                detail.filePriorities = next
+                currentValue = "Set all…"
+            }
+        }
+    }
+
     Repeater {
         model: detail.files
 
@@ -291,65 +377,75 @@ Column {
             id: fileRow
 
             required property var modelData
+            readonly property int level: {
+                const v = detail.filePriorities[fileRow.modelData.index]
+                return v === undefined ? 1 : v
+            }
 
             width: detail.width
-            height: 22
+            height: detail.files.length > 1 ? 36 : 22
             spacing: Theme.spacingXS
-
-            DankIcon {
-                anchors.verticalCenter: parent.verticalCenter
-                visible: detail.files.length > 1
-                name: detail.selectedFiles.indexOf(Number(fileRow.modelData.index)) >= 0 ? "check_box" : "check_box_outline_blank"
-                size: Theme.iconSizeSmall - 2
-                color: Theme.primary
-
-                MouseArea {
-                    anchors.fill: parent
-                    cursorShape: Qt.PointingHandCursor
-                    onClicked: {
-                        const index = Number(fileRow.modelData.index)
-                        const next = detail.selectedFiles.slice()
-                        const at = next.indexOf(index)
-                        if (at >= 0)
-                            next.splice(at, 1)
-                        else
-                            next.push(index)
-                        detail.selectedFiles = next
-                    }
-                }
-            }
 
             StyledText {
                 anchors.verticalCenter: parent.verticalCenter
-                width: Math.max(0, parent.width - 130)
+                width: Math.max(0, parent.width - sizeText.width - (prio.visible ? prio.width : 0) - Theme.spacingXS * 2)
                 text: Fmt.basename(fileRow.modelData.path)
                 font.pixelSize: Theme.fontSizeSmall
-                color: Theme.surfaceText
+                font.strikeout: fileRow.level === 0 && detail.files.length > 1
+                color: fileRow.level === 0 ? Theme.surfaceVariantText : Theme.surfaceText
                 elide: Text.ElideMiddle
             }
 
             StyledText {
+                id: sizeText
+
                 anchors.verticalCenter: parent.verticalCenter
                 text: Fmt.bytes(fileRow.modelData.completedLength) + " / " + Fmt.bytes(fileRow.modelData.length)
+                      + (fileRow.modelData.waitingForTier ? " · after higher priority" : "")
                 font.pixelSize: Theme.fontSizeSmall
                 color: Theme.surfaceVariantText
+            }
+
+            DankDropdown {
+                id: prio
+
+                anchors.verticalCenter: parent.verticalCenter
+                visible: detail.files.length > 1
+                width: 170
+                height: 32
+                compactMode: true
+                currentValue: detail.priorityLabels[fileRow.level]
+                options: detail.priorityLabels
+                onValueChanged: label => {
+                    const level = detail.priorityLabels.indexOf(label)
+                    if (level >= 0 && level !== fileRow.level)
+                        detail.setPriority(fileRow.modelData.index, level)
+                }
             }
         }
     }
 
     DankButton {
         visible: detail.files.length > 1
-        text: "Apply file selection"
+        text: "Apply file choices"
         buttonHeight: 40
         iconName: "checklist"
         onClicked: {
-            if (!detail.selectedFiles.length) {
-                ToastService.showError("Aria", "Pick at least one file")
+            const levels = ({})
+            let any = false
+            for (const f of detail.files) {
+                const v = detail.filePriorities[f.index]
+                levels[f.index] = v === undefined ? 1 : v
+                if (levels[f.index] > 0)
+                    any = true
+            }
+            if (!any) {
+                ToastService.showError("Aria", "Pick at least one file to download")
                 return
             }
-            detail.service.post("/api/download/" + detail.gid + "/select", {
-                                    "indices": detail.selectedFiles
-                                }, "File selection applied")
+            detail.service.post("/api/download/" + detail.gid + "/files", {
+                                    "levels": levels
+                                }, "File choices applied")
         }
     }
 

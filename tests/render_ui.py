@@ -50,6 +50,7 @@ def capture(sock_path: str) -> dict:
         "/api/config": fetch(sock_path, "/api/config"),
         "/api/global/options": fetch(sock_path, "/api/global/options"),
         "/api/rules": fetch(sock_path, "/api/rules"),
+        "/api/routing": fetch(sock_path, "/api/routing"),
     }
     state = fixtures.get("/api/state") or {}
     for download in state.get("downloads", []):

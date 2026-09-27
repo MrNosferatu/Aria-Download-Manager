@@ -83,6 +83,10 @@ const MANIFEST_TYPES = new Set([
 ]);
 const DIRECT_TYPES = /^video\/(mp4|webm|x-matroska|quicktime|x-flv)/i;
 
+// A progressive file this small is page furniture — a loading spinner, an
+// animated logo, a looping background — never a video anyone came for.
+const DIRECT_MIN_BYTES = 2 * 1024 * 1024;
+
 const CANDIDATES_PER_TAB = 12;
 // A webRequest listener cannot await, so the settings it needs are kept warm.
 let snifferSettings = null;
@@ -101,6 +105,20 @@ function classify(url, contentType) {
   return '';
 }
 
+// Full size of the resource, or 0 when unknown. A player that only probes the
+// first bytes gets a 206 whose Content-Length is the slice, not the file, so the
+// total after the slash in Content-Range is the number that counts.
+function resourceSize(details, headers) {
+  const get = (name) => {
+    const h = headers.find((x) => x.name.toLowerCase() === name);
+    return h ? h.value : '';
+  };
+  const range = /\/(\d+)\s*$/.exec(get('content-range'));
+  if (range) return Number(range[1]);
+  if (details.statusCode === 206) return 0;
+  return Number(get('content-length')) || 0;
+}
+
 function noteMedia(tabId, url, contentType, kind) {
   if (tabId === undefined || tabId < 0) return;
   let jar = seenMedia.get(tabId);
@@ -111,11 +129,14 @@ function noteMedia(tabId, url, contentType, kind) {
     jar.set(url, { url, contentType: contentType || '', kind, ts: Date.now() });
     while (jar.size > CANDIDATES_PER_TAB) jar.delete(jar.keys().next().value);
   }
-  updateVideoBadge(tabId, jar.size);
+  updateVideoBadge(tabId, jar);
 }
 
-function updateVideoBadge(tabId, count) {
-  api.tabs.sendMessage(tabId, { type: 'videoFound', count })
+// The page gets the URLs, not just a count, so it can tell a <video> playing
+// one of them apart from an unrelated one that happens to be on screen.
+function updateVideoBadge(tabId, jar) {
+  const candidates = [...jar.values()].map(({ url, kind }) => ({ url, kind }));
+  api.tabs.sendMessage(tabId, { type: 'videoFound', count: jar.size, candidates })
     .catch(() => { /* no content script in that tab */ });
 }
 
@@ -133,10 +154,15 @@ function startSniffer() {
       // exclusion by domain is really about — the stream itself usually comes
       // from a CDN on an unrelated host.
       if (isBlocked(snifferSettings, details.url, details.documentUrl || details.originUrl)) return;
-      const header = (details.responseHeaders || [])
-        .find((h) => h.name.toLowerCase() === 'content-type');
+      const headers = details.responseHeaders || [];
+      const header = headers.find((h) => h.name.toLowerCase() === 'content-type');
       const kind = classify(details.url, header && header.value);
-      if (kind) noteMedia(details.tabId, details.url, header && header.value, kind);
+      if (!kind) return;
+      if (kind === 'direct') {
+        const size = resourceSize(details, headers);
+        if (size && size < DIRECT_MIN_BYTES) return;
+      }
+      noteMedia(details.tabId, details.url, header && header.value, kind);
     },
     { urls: ['http://*/*', 'https://*/*'] },
     ['responseHeaders'],

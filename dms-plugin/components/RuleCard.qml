@@ -35,6 +35,41 @@ Rectangle {
         return out
     }
 
+    //: Torrents and plain downloads fail in different ways, so a rule can be
+    //: aimed at one of them. Kept in the flags the engine already understood;
+    //: both on means either.
+    property bool kindTorrent: !((rule.when || ({})).http_only)
+    property bool kindNormal: !((rule.when || ({})).torrent_only)
+    readonly property var kindValues: ["torrent", "normal"]
+    readonly property var kindSelection: {
+        const out = []
+        if (kindTorrent)
+            out.push("torrent")
+        if (kindNormal)
+            out.push("normal")
+        return out
+    }
+
+    function setKind(which, on) {
+        let torrent = kindTorrent
+        let normal = kindNormal
+        if (which === "torrent")
+            torrent = on
+        else
+            normal = on
+        //: Neither would be a rule that can never fire, so the last one off
+        //: puts it back to both — the same way the statuses behave.
+        if (!torrent && !normal) {
+            torrent = true
+            normal = true
+        }
+        Fmt.setPath(rule, "when.torrent_only", torrent && !normal ? true : "")
+        Fmt.setPath(rule, "when.http_only", normal && !torrent ? true : "")
+        kindTorrent = torrent
+        kindNormal = normal
+        edited()
+    }
+
     signal removed
     signal edited
 
@@ -234,6 +269,38 @@ Rectangle {
                     card.statuses = next.length ? next : ["active"]
                     card.edited()
                 }
+            }
+        }
+
+        Column {
+            width: parent.width
+            spacing: 2
+
+            StyledText {
+                width: parent.width
+                text: "Download type"
+                font.pixelSize: Theme.fontSizeSmall
+                color: Theme.surfaceVariantText
+            }
+
+            DankFilterChips {
+                width: parent.width
+                chipHeight: 30
+                multiSelect: true
+                showCounts: false
+                model: [
+                    {
+                        "label": "Torrents",
+                        "value": "torrent"
+                    },
+                    {
+                        "label": "Normal downloads",
+                        "value": "normal"
+                    }
+                ]
+                selectedValues: card.kindSelection
+
+                onSelectionToggled: (index, selected) => card.setKind(card.kindValues[index], selected)
             }
         }
 

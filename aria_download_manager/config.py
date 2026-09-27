@@ -85,6 +85,18 @@ DEFAULTS: dict[str, Any] = {
         "file": str(DEFAULT_STATE_DIR / "history.json"),
         "max_entries": 2000,
     },
+    # Torrents: never seed, and upload as little as aria2 allows while
+    # downloading. Managed by the manager (see seeding.py), not an aria2 option.
+    "torrent": {
+        "download_only": False,
+    },
+    # Sort finished-and-in-progress downloads into subfolders by file type.
+    # Manager-side (see routing.py): aria2 has one download folder.
+    "routing": {
+        "enabled": False,
+        "folders": {},
+        "extensions": {},
+    },
     "rules_enabled": True,
     # Which speed figure rules judge by. Per-rule override: when.speed_source.
     #   aria2    - aria2's own downloadSpeed (a moving average; lags a stall)
@@ -185,6 +197,24 @@ class Config:
         if history.get("file"):
             history["file"] = str(expand(history["file"]))
         options = aria2["options"]
+        # "download-only" is the manager's own setting, never an aria2c flag:
+        # aria2c aborts on an unknown option, so one saved in here (by a build
+        # that did not know better, or by hand) would stop it from starting.
+        # Move it where it belongs and clean the file.
+        stray = options.pop("download-only", None)
+        user_options = self._user.get("aria2", {}).get("options", {})
+        if isinstance(user_options, dict) and "download-only" in user_options:
+            if str(user_options.pop("download-only")).strip().lower() in ("true", "1", "yes", "on"):
+                stray = True
+            torrent = self.data.get("torrent")
+            if not isinstance(torrent, dict):
+                torrent = self.data["torrent"] = {}
+            torrent["download_only"] = bool(stray) or bool(torrent.get("download_only"))
+            self._user.setdefault("torrent", {})["download_only"] = torrent["download_only"]
+            try:
+                self.save()
+            except OSError:
+                pass  # running on a read-only config is not fatal
         if options.get("dir"):
             options["dir"] = str(expand(options["dir"]))
         # aria2 RPC and aria2c CLI both want plain strings.

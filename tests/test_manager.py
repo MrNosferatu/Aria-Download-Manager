@@ -831,6 +831,37 @@ def test_history(tmp_dir: Path) -> None:
           reloaded.summary()["dismissed"] >= 1, str(reloaded.summary()))
 
 
+def test_timeline(tmp_dir: Path) -> None:
+    """Added / finished times are stamped on rows and survive a restart."""
+    print("\nunit: timeline")
+    from aria_download_manager import timeline as tl
+
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    path = tmp_dir / "timeline.json"
+    line = tl.Timeline(path)
+    snap = {"downloads": [{"gid": "g1", "status": "active"}, {"gid": "g2", "status": "waiting"}]}
+    line.observe(snap)
+    added = snap["downloads"][0]["addedAt"]
+    check("rows get an added time", added and snap["downloads"][1]["addedAt"])
+    check("unfinished rows have no finished time", snap["downloads"][0]["finishedAt"] is None)
+
+    snap = {"downloads": [{"gid": "g1", "status": "complete"}, {"gid": "g2", "status": "waiting"}]}
+    line.observe(snap)
+    check("the added time does not move", snap["downloads"][0]["addedAt"] == added)
+    check("a finished row gets a finished time", snap["downloads"][0]["finishedAt"])
+
+    line.save(force=True)
+    again = tl.Timeline(path)
+    snap = {"downloads": [{"gid": "g2", "status": "waiting"}]}
+    again.observe(snap)
+    check("times persist across a restart", again.entries["g1"]["finished"]
+          and snap["downloads"][0]["addedAt"] == line.entries["g2"]["added"])
+
+    again.entries["g1"]["seen"] -= tl.FORGET_AFTER + 1
+    again.observe(snap)
+    check("long-gone gids are forgotten", "g1" not in again.entries)
+
+
 async def test_slot_preservation(tmp_dir: Path) -> None:
     """With one concurrency slot, a stall fix must not hand the slot away.
 
@@ -960,6 +991,308 @@ async def test_history_clear_purges(tmp_dir: Path) -> None:
         gone = await wait_for(lambda: _no_finished_downloads(http, base), 10)
         check("the finished rows disappear from the downloads list as well", gone,
               json.dumps((await get("/api/state"))["downloads"]))
+
+    server.stop()
+    with contextlib.suppress(asyncio.TimeoutError):
+        await asyncio.wait_for(task, timeout=10)
+    httpd.shutdown()
+    fake.stop()
+
+
+def test_download_only_migration(tmp_dir: Path) -> None:
+    """A "download-only" saved among aria2's options must never reach aria2c.
+
+    aria2c aborts on an option it does not know, so a config written by a build
+    that treated this as an aria2 option would stop it from starting at all.
+    """
+    print("\nunit: download-only migration")
+    from aria_download_manager.supervisor import Aria2Supervisor
+
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    path = tmp_dir / "stray.yaml"
+    path.write_text(yaml.safe_dump({
+        "aria2": {"managed": True, "options": {"download-only": "true", "dir": str(tmp_dir)}},
+    }))
+    cfg = Config(path)
+    check("the stray option is taken out of aria2's options",
+          "download-only" not in cfg.get("aria2.options"), json.dumps(cfg.get("aria2.options")))
+    check("and becomes the manager's own setting", cfg.get("torrent.download_only") is True)
+    argv = Aria2Supervisor(cfg, None, lambda *a, **k: None).build_argv()
+    check("so aria2c is never given it", not any("download-only" in a for a in argv))
+    check("and starts with uploads at the floor", "--max-overall-upload-limit=1" in argv, str(argv))
+    rewritten = yaml.safe_load(path.read_text())
+    check("the config file itself is repaired",
+          "download-only" not in rewritten["aria2"]["options"]
+          and rewritten["torrent"]["download_only"] is True, json.dumps(rewritten))
+
+
+def test_rule_download_type() -> None:
+    """A rule can be aimed at torrents, at plain downloads, or at both."""
+    print("\nunit: rule download type")
+    from aria_download_manager.rules import RuleEngine, Tracker
+
+    engine = RuleEngine.__new__(RuleEngine)
+    engine.cfg = type("C", (), {"get": lambda self, key, default=None: default})()
+    tracker = Tracker(first_seen=0.0)
+    torrent = {"status": "active", "isTorrent": True, "connections": 8, "progress": 10.0,
+               "total": 100, "name": "a.torrent", "downloadSpeed": 0, "measuredSpeed": 0}
+    plain = dict(torrent, isTorrent=False, name="a.bin")
+
+    both = {"statuses": ["active"]}
+    check("by default a rule judges either kind",
+          engine._matches(both, torrent, tracker, 1e6) and engine._matches(both, plain, tracker, 1e6))
+
+    only_torrents = {"statuses": ["active"], "torrent_only": True}
+    check("torrents only skips a plain download",
+          engine._matches(only_torrents, torrent, tracker, 1e6)
+          and not engine._matches(only_torrents, plain, tracker, 1e6))
+
+    only_plain = {"statuses": ["active"], "http_only": True}
+    check("normal downloads only skips a torrent",
+          engine._matches(only_plain, plain, tracker, 1e6)
+          and not engine._matches(only_plain, torrent, tracker, 1e6))
+
+
+def test_routing(tmp_dir: Path) -> None:
+    """Downloads land in a folder that matches what they are."""
+    print("\nunit: sorting by file type")
+    from aria_download_manager.routing import Router, torrent_files
+
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    path = tmp_dir / "routing.yaml"
+    path.write_text(yaml.safe_dump({
+        "aria2": {"options": {"dir": "/dl"}},
+        "routing": {"enabled": True},
+    }))
+    cfg = Config(path)
+    router = Router(cfg, None, lambda *a, **k: None)
+
+    check("an archive is recognised", router.category_of("pack.tar.gz") == "archive")
+    check("music is recognised", router.category_of("song.FLAC") == "music")
+    check("video is recognised", router.category_of("film.mkv") == "video")
+    check("an image is recognised", router.category_of("shot.jpeg") == "image")
+    check("anything else falls to other", router.category_of("notes.xyz") == "other")
+
+    got = router.apply({}, uris=["https://host/path/film.mkv?token=abc"])
+    check("a plain URL goes to its folder", got.get("dir") == "/dl/Video", json.dumps(got))
+    got = router.apply({}, uris=["https://host/get?id=9"], )
+    check("a URL with no filename is left alone", "dir" not in got, json.dumps(got))
+    got = router.apply({"out": "renamed.mp3"}, uris=["https://host/get?id=9"])
+    check("the chosen output name decides", got.get("dir") == "/dl/Music", json.dumps(got))
+    got = router.apply({"dir": "/elsewhere"}, uris=["https://host/film.mkv"])
+    check("a folder chosen by hand always wins", got["dir"] == "/elsewhere")
+    got = router.apply({}, uris=["magnet:?xt=urn:btih:abc"])
+    check("a magnet is left for its metadata", "dir" not in got, json.dumps(got))
+    check("and the add holds it until then",
+          router.wants_paused_metadata({}, ["magnet:?xt=urn:btih:abc"]) is True)
+    check("but not when the folder was chosen",
+          router.wants_paused_metadata({"dir": "/x"}, ["magnet:?xt=urn:btih:abc"]) is False)
+
+    # A .torrent is read here, and the biggest file decides.
+    def bencode(value):
+        if isinstance(value, int):
+            return b"i%de" % value
+        if isinstance(value, str):
+            value = value.encode()
+        if isinstance(value, bytes):
+            return b"%d:" % len(value) + value
+        if isinstance(value, list):
+            return b"l" + b"".join(bencode(v) for v in value) + b"e"
+        return b"d" + b"".join(bencode(k) + bencode(v) for k, v in sorted(value.items())) + b"e"
+
+    payload = bencode({"info": {"name": "pack", "piece length": 16384, "pieces": b"",
+                                "files": [{"length": 50, "path": ["readme.nfo"]},
+                                          {"length": 9000, "path": ["show", "ep1.mkv"]}]}})
+    check("a torrent's file list is read", len(torrent_files(payload)) == 2)
+    got = router.apply({}, torrent=base64.b64encode(payload).decode())
+    check("a torrent goes by its largest file", got.get("dir") == "/dl/Video", json.dumps(got))
+    check("an unreadable torrent does not break the add",
+          "dir" not in router.apply({}, torrent=base64.b64encode(b"not a torrent").decode()),
+          "it counts as other, which has no folder of its own by default")
+
+    router.save(enabled=True, folders={**router.folders(), "other": "Misc", "video": "/mnt/films"},
+                extensions={**router.extensions(), "archive": ["zip", ".7Z "]})
+    check("a folder can be absolute", router.folder_for("video") == "/mnt/films")
+    check("other can be given a folder too", router.folder_for("other") == "/dl/Misc")
+    check("extensions are cleaned up when saved",
+          Config(path).get("routing.extensions")["archive"] == ["7z", "zip"],
+          json.dumps(Config(path).get("routing.extensions")["archive"]))
+    check("sorting is remembered", Config(path).get("routing.enabled") is True)
+
+
+def test_metadata_rows() -> None:
+    """A magnet's metadata fetch is not a download anyone asked for."""
+    print("\nunit: magnet metadata rows")
+    from aria_download_manager.history import History
+    from aria_download_manager.rules import RuleEngine
+    from aria_download_manager.state import normalize
+
+    meta = normalize({
+        "gid": "m1", "status": "complete", "totalLength": "12361", "completedLength": "12361",
+        "infoHash": "abc", "followedBy": ["r1"],
+        "bittorrent": {"info": {"name": "[METADATA]Some.Release.mkv"}},
+        "files": [{"path": "[METADATA]Some.Release.mkv", "uris": []}],
+    })
+    check("the metadata fetch is recognised", meta["isMetadata"] is True)
+    check("and shown as the torrent it is fetching", meta["name"] == "Some.Release.mkv", meta["name"])
+
+    # What aria2 actually reports once the fetch has finished: a bittorrent
+    # object with only the announce list, no info at all, and the prefix left
+    # on the file path. Detecting it by the info name alone missed these.
+    finished = normalize({
+        "gid": "m2", "status": "complete", "totalLength": "12361", "completedLength": "12361",
+        "infoHash": "abc", "followedBy": ["r2"],
+        "bittorrent": {"announceList": [["http://tracker.example/announce"]]},
+        "files": [{"path": "[METADATA][Group] Some Release (Multi-Subs)", "uris": []}],
+    })
+    check("a finished fetch with no torrent info is still recognised",
+          finished["isMetadata"] is True, json.dumps(finished))
+
+    named = normalize({
+        "gid": "r3", "status": "complete", "totalLength": "10", "completedLength": "10",
+        "bittorrent": {"info": {"name": "[METADATA]weird.but.real"}},
+        "files": [{"path": "/home/me/Downloads/[METADATA]weird.but.real", "uris": []}],
+    })
+    check("a real file that happens to carry the prefix is left alone",
+          named["isMetadata"] is False, json.dumps(named))
+
+    real = normalize({
+        "gid": "r1", "status": "active", "totalLength": "10", "completedLength": "1",
+        "infoHash": "abc", "following": "m1",
+        "bittorrent": {"info": {"name": "Some.Release.mkv"}},
+        "files": [{"path": "/dl/Some.Release.mkv", "uris": []}],
+    })
+    check("the torrent itself is not", real["isMetadata"] is False)
+
+    snapshot = {"downloads": [meta, real]}
+    history = History.__new__(History)  # no config needed for the filter itself
+    history.entries, history.dismissed, history._dirty = {}, {}, False
+    history.cfg = type("C", (), {"get": lambda self, key, default=None: True})()
+    history.save = lambda force=False: None
+    history.observe(snapshot)
+    check("history does not record it", list(history.entries) == [], str(history.entries))
+
+    engine = RuleEngine.__new__(RuleEngine)
+    engine.tracked = {}
+    # rules_enabled False: the tracking is what this checks, not any action.
+    engine.cfg = type("C", (), {"get": lambda self, key, default=None: False})()
+    asyncio.run(engine.evaluate(snapshot, 1.0))
+    check("rules skip it, so a stall rule cannot act on it",
+          list(engine.tracked) == ["r1"], str(list(engine.tracked)))
+
+
+def test_file_plan() -> None:
+    """Priority tiers: the highest unfinished tier runs, lower ones wait."""
+    print("\nunit: file priority plan")
+    from aria_download_manager.priorities import plan
+
+    files = [{"index": str(i), "length": "10", "completedLength": "0"} for i in (1, 2, 3, 4)]
+    levels = {"1": 1, "2": 3, "3": 0, "4": 2}
+    check("only the top tier is selected first", plan(files, levels) == ([2], True))
+    files[1]["completedLength"] = "10"
+    check("the next tier joins once it is done", plan(files, levels) == ([2, 4], True))
+    files[3]["completedLength"] = "10"
+    check("Normal comes last, and nothing waits after it", plan(files, levels) == ([1, 2, 4], False))
+    check("'Do not download' is never selected", 3 not in plan(files, levels)[0])
+
+
+async def test_torrent_controls(tmp_dir: Path) -> None:
+    """Download-only and per-file priorities against a fake multi-file torrent."""
+    print("\ne2e: download-only torrents and file priorities")
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    rpc_port = free_port()
+    httpd, fake = serve(rpc_port, secret="bt-secret", seed=False)
+    config_path = tmp_dir / "bt.yaml"
+    config_path.write_text(yaml.safe_dump({
+        "server": {"socket": str(tmp_dir / "manager.sock")},
+        "poll_interval": 0.3,
+        "aria2": {"managed": False,
+                  "rpc": {"host": "127.0.0.1", "port": rpc_port, "secret": "bt-secret"},
+                  "options": {"max-overall-upload-limit": "512K"}},
+        "history": {"enabled": True, "file": str(tmp_dir / "history.json")},
+        "rules_enabled": False, "rules": [],
+    }))
+    cfg = Config(config_path)
+    app = create_app(cfg)
+    server = ManagerRunner(app)
+    task = asyncio.create_task(server.serve())
+    mib = 1024 * 1024
+
+    def torrent(files):
+        return base64.b64encode(json.dumps({"name": "pack", "files": files}).encode()).decode()
+
+    async with IPCSession(cfg.get("server.socket")) as http:
+        async def get(path):
+            async with http.get(path) as res:
+                return res.status, await res.json()
+
+        async def post(path, body=None):
+            async with http.post(path, json=body) as res:
+                return res.status, await res.json()
+
+        await wait_for(lambda: server.started, 15)
+
+        # --- a torrent seeding before download-only is switched on
+        _, added = await post("/api/downloads/file", {"data": torrent([mib]), "kind": "torrent"})
+        seeder = fake.downloads[added["gids"][0]]
+        check("without download-only a finished torrent seeds",
+              await wait_for(lambda: seeder.seeding, 5))
+
+        # --- global switch
+        status, _ = await post("/api/global/options", {"options": {"download-only": "true"}})
+        check("download-only is accepted as a global option", status == 200)
+        check("it caps aria2's overall upload at the floor",
+              fake.global_options["max-overall-upload-limit"] == "1")
+        persisted = yaml.safe_load(config_path.read_text())
+        check("it is saved as a manager setting, not an aria2 option",
+              persisted["torrent"]["download_only"] is True
+              and "download-only" not in persisted["aria2"]["options"], json.dumps(persisted))
+        _, opts = await get("/api/global/options")
+        check("the settings form reads it back, with the configured upload limit",
+              opts["download-only"] == "true" and opts["max-overall-upload-limit"] == "512K",
+              json.dumps({k: opts.get(k) for k in ("download-only", "max-overall-upload-limit")}))
+        check("a torrent that was already seeding is stopped",
+              await wait_for(lambda: seeder.status == "complete", 5), seeder.status)
+
+        _, added = await post("/api/downloads", {"uris": ["magnet:?xt=urn:btih:abc"]})
+        opts = fake.downloads[added["gids"][0]].options
+        check("new downloads get seed-time=0 and the upload floor",
+              opts.get("seed-time") == "0" and opts.get("max-upload-limit") == "1", json.dumps(opts))
+
+        # --- file priorities on a 3-file torrent, slowed so tiers can be seen
+        _, added = await post("/api/downloads/file", {
+            "data": torrent([mib, mib, mib]), "kind": "torrent", "paused": True,
+            "options": {"max-download-limit": str(2 * mib)}})
+        gid = added["gids"][0]
+        pack = fake.downloads[gid]
+        _, detail = await get(f"/api/download/{gid}")
+        check("detail reports a priority per file",
+              [f["priority"] for f in detail["files"]] == [1, 1, 1], json.dumps(detail["files"]))
+        status, _ = await post(f"/api/download/{gid}/files", {"levels": {"1": 1, "2": 3, "3": 0}})
+        check("file priorities are accepted", status == 200)
+        check("only the Maximum file is selected first", pack.options.get("select-file") == "2",
+              pack.options.get("select-file"))
+        check("and the torrent is held open for the next tier",
+              pack.options.get("seed-ratio") == "0.0" and pack.options.get("seed-time") != "0",
+              json.dumps(pack.options))
+        status, _ = await post(f"/api/download/{gid}/files", {"levels": {"1": 0, "2": 0, "3": 0}})
+        check("choosing no file at all is refused", status == 400)
+
+        await post(f"/api/download/{gid}/resume")
+        check("the Normal file follows once Maximum is done",
+              await wait_for(lambda: pack.options.get("select-file") == "1,2", 10),
+              pack.options.get("select-file"))
+        check("download-only applies to the last tier and the torrent ends",
+              await wait_for(lambda: pack.status == "complete", 10),
+              f"{pack.status} {json.dumps(pack.options)}")
+        check("the skipped file was never fetched", pack.file_done[2] == 0, str(pack.file_done))
+        check("both wanted files are complete", pack.file_done[:2] == [mib, mib], str(pack.file_done))
+
+        # --- switching it off restores the configured upload limit
+        await post("/api/global/options", {"options": {"download-only": "false"}})
+        check("switching off restores the configured upload limit",
+              fake.global_options["max-overall-upload-limit"] == "512K",
+              fake.global_options["max-overall-upload-limit"])
 
     server.stop()
     with contextlib.suppress(asyncio.TimeoutError):
@@ -1260,12 +1593,19 @@ def main() -> int:
         test_measured_speed()
         test_idle_backoff()
         test_history(tmp_dir / "c7")
+        test_timeline(tmp_dir / "c7")
+        test_file_plan()
+        test_metadata_rows()
+        test_rule_download_type()
+        test_routing(tmp_dir / "c12")
+        test_download_only_migration(tmp_dir / "c11")
         test_config(tmp_dir / "c1")
         test_supervisor_argv(tmp_dir / "c2")
         asyncio.run(test_e2e(tmp_dir / "c3"))
         asyncio.run(test_managed(tmp_dir / "c4"))
         asyncio.run(test_slot_preservation(tmp_dir / "c8"))
         asyncio.run(test_history_clear_purges(tmp_dir / "c9"))
+        asyncio.run(test_torrent_controls(tmp_dir / "c10"))
         asyncio.run(test_orphan_handling(tmp_dir / "c6"))
 
     return summary()

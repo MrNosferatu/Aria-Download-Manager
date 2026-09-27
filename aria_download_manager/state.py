@@ -24,6 +24,10 @@ def _int(value: Any, default: int = 0) -> int:
         return default
 
 
+#: aria2 names a magnet's metadata fetch after the torrent, with this in front.
+METADATA_PREFIX = "[METADATA]"
+
+
 def derive_name(item: dict) -> str:
     bt = item.get("bittorrent") or {}
     info = bt.get("info") or {}
@@ -42,6 +46,27 @@ def derive_name(item: dict) -> str:
     return item.get("gid", "?")
 
 
+def is_metadata(item: dict) -> bool:
+    """A magnet's metadata fetch: the throwaway download aria2 runs first.
+
+    It is a real download to aria2 — it finishes, lands in the stopped list and
+    reports a path that is not a file — but to a person it is just the wait
+    before the torrent itself starts.
+
+    aria2 marks it by the name, but where that name appears varies: a finished
+    one reports `bittorrent` with only the announce list and no `info` at all,
+    and the prefix is left on the file path alone. The path is also the tell
+    that this is not a file: a real download's is absolute, this one is just
+    the name.
+    """
+    files = item.get("files") or []
+    path = str((files[0].get("path") if files else "") or "")
+    name = str(((item.get("bittorrent") or {}).get("info") or {}).get("name") or "")
+    if not (name.startswith(METADATA_PREFIX) or path.startswith(METADATA_PREFIX)):
+        return False
+    return not os.path.isabs(path)
+
+
 def normalize(item: dict) -> dict:
     total = _int(item.get("totalLength"))
     done = _int(item.get("completedLength"))
@@ -51,10 +76,16 @@ def normalize(item: dict) -> dict:
     eta = None
     if speed > 0 and total > done:
         eta = round((total - done) / speed)
+    metadata = is_metadata(item)
+    name = derive_name(item)
+    if metadata:
+        # Shown as the torrent it is fetching, not as aria2's internal name.
+        name = name[len(METADATA_PREFIX):].strip() or name
     return {
         "gid": item.get("gid", ""),
         "status": item.get("status", "unknown"),
-        "name": derive_name(item),
+        "name": name,
+        "isMetadata": metadata,
         "total": total,
         "completed": done,
         "uploaded": _int(item.get("uploadLength")),
@@ -319,7 +350,9 @@ class Poller:
         # file obviously exists, and this runs every tick.
         for row in downloads:
             path = row.get("path") or ""
-            if path and row.get("status") in ("complete", "error"):
+            # A metadata fetch's "path" is its own name, never a file on disk:
+            # checking it only ever produced a false "File missing".
+            if path and not row.get("isMetadata") and row.get("status") in ("complete", "error"):
                 row["fileExists"] = os.path.exists(path)
         stat = stat or {}
         counts = {

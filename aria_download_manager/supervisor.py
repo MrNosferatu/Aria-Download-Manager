@@ -115,6 +115,10 @@ class Aria2Supervisor:
             argv.append(f"--input-file={session}")
 
         options: dict = self.cfg.get("aria2.options", {}) or {}
+        if self.cfg.get("torrent.download_only"):
+            # Download-only torrents: hold uploads at the floor from the start.
+            from .seeding import UPLOAD_FLOOR
+            options = {**options, "max-overall-upload-limit": UPLOAD_FLOOR}
         for key, value in options.items():
             if isinstance(value, (list, tuple)):
                 argv.extend(f"--{key}={item}" for item in value)

@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import itertools
 import json
-from typing import Any, Iterable, Sequence
+from typing import Any, Callable, Iterable, Sequence
 
 import aiohttp
 
@@ -55,6 +55,16 @@ class Aria2RPC:
         self._ids = itertools.count(1)
         self._session: aiohttp.ClientSession | None = None
         self._lock = asyncio.Lock()
+        #: Applied to the options of every download added through this client,
+        #: whichever part of the manager adds it (see seeding.DownloadOnly).
+        #: (options, uris, torrent) -> options
+        self.prepare_add: Callable[..., dict] | None = None
+
+    def _prepared(self, options: dict | None, uris: Any = None, torrent: Any = None) -> dict:
+        options = dict(options or {})
+        if not self.prepare_add:
+            return options
+        return self.prepare_add(options, uris=uris, torrent=torrent)
 
     @property
     def url(self) -> str:
@@ -149,7 +159,7 @@ class Aria2RPC:
         options: dict | None = None,
         position: int | None = None,
     ) -> str:
-        params: list[Any] = [list(uris), options or {}]
+        params: list[Any] = [list(uris), self._prepared(options, uris=list(uris))]
         if position is not None:
             params.append(int(position))
         return await self.call("aria2.addUri", *params)
@@ -161,7 +171,8 @@ class Aria2RPC:
         options: dict | None = None,
         position: int | None = None,
     ) -> str:
-        params: list[Any] = [torrent_b64, list(uris or []), options or {}]
+        params: list[Any] = [torrent_b64, list(uris or []),
+                             self._prepared(options, torrent=torrent_b64)]
         if position is not None:
             params.append(int(position))
         return await self.call("aria2.addTorrent", *params)
@@ -169,7 +180,7 @@ class Aria2RPC:
     async def add_metalink(
         self, metalink_b64: str, options: dict | None = None, position: int | None = None
     ) -> list[str]:
-        params: list[Any] = [metalink_b64, options or {}]
+        params: list[Any] = [metalink_b64, self._prepared(options)]
         if position is not None:
             params.append(int(position))
         return await self.call("aria2.addMetalink", *params)

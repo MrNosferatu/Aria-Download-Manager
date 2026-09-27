@@ -22,13 +22,24 @@ const S = {
   rulesEnabled: true,
   config: null,
   history: null,
+  // The "sort into folders" card: what the manager holds, and the edits made
+  // here that the page's Save changes will send.
+  routing: null,
+  routingDirty: false,
   // gid -> true, for the bulk selection mode.
   selection: new Set(),
   selecting: false,
+  // gids added with "choose files first": their row (or the row they turn
+  // into once a magnet has its metadata) opens by itself.
+  openWhenListed: new Set(),
   // Simple shows the few options most people tune; Advanced shows everything.
   // Remembered per surface so each opens the way it was left.
   settingsMode: localStorage.getItem('aria.settingsMode') || 'simple',
   addMode: localStorage.getItem('aria.addMode') || 'simple',
+  // How the download list is ordered: 'queue', 'added' or 'finished', and
+  // whether that runs forwards. Remembered like the modes above.
+  sort: localStorage.getItem('aria.sort') || 'queue',
+  sortDesc: localStorage.getItem('aria.sortDesc') === 'true',
 };
 
 const $ = (sel, root = document) => root.querySelector(sel);
@@ -54,6 +65,7 @@ function fmtEta(seconds) {
   return `${Math.floor(s / 86400)}d ${Math.floor((s % 86400) / 3600)}h`;
 }
 const fmtTime = (ts) => new Date(ts * 1000).toLocaleTimeString();
+const fmtDate = (ts) => new Date(ts * 1000).toLocaleString();
 
 function parseSize(value) {
   const text = String(value ?? '').trim();
@@ -311,11 +323,20 @@ function visibleDownloads() {
       .map(([gid]) => gid)
   );
   const rankOf = (d) => (acting.has(d.gid) ? 0 : (rank[d.status] ?? 9));
-  all.sort((a, b) => {
-    const d = rankOf(a) - rankOf(b);
-    if (d) return d;
-    return (a.queuePosition ?? 0) - (b.queuePosition ?? 0);
-  });
+  const byQueue = (a, b) => (rankOf(a) - rankOf(b)) || ((a.queuePosition ?? 0) - (b.queuePosition ?? 0));
+  const dir = S.sortDesc ? -1 : 1;
+  if (S.sort === 'queue') {
+    all.sort((a, b) => dir * byQueue(a, b));
+  } else {
+    const key = S.sort === 'added' ? 'addedAt' : 'finishedAt';
+    all.sort((a, b) => {
+      // Nothing to order by (not finished yet) sinks to the end either way,
+      // in queue order, rather than flipping to the top when reversed.
+      const x = a[key], y = b[key];
+      if (x == null || y == null) return (x == null) - (y == null) || byQueue(a, b);
+      return dir * (x - y) || byQueue(a, b);
+    });
+  }
   const needle = S.search.toLowerCase();
   return all.filter((d) => {
     if (S.filter !== 'all' && d.status !== S.filter) return false;
@@ -356,6 +377,12 @@ function renderDownloads() {
   for (const [gid, row] of S.rows) {
     if (!seen.has(gid)) { row.remove(); S.rows.delete(gid); S.expanded.delete(gid); }
   }
+  for (const dl of list) {
+    const origin = S.openWhenListed.has(dl.gid) ? dl.gid : dl.following;
+    if (!origin || !S.openWhenListed.has(origin) || dl.numFiles < 2) continue;
+    S.openWhenListed.delete(origin);
+    if (!S.expanded.has(dl.gid)) toggleDetail(dl.gid);
+  }
 }
 
 function buildRow(gid) {
@@ -395,7 +422,10 @@ function updateRow(row, dl) {
 
   const tags = [`<span class="tag ${STATUS_TAG[dl.status] || ''}">${statusLabel(dl.status)}</span>`];
   if (dl.fileExists === false) tags.push('<span class="tag tag-missing">File missing</span>');
-  if (dl.isTorrent) tags.push('<span class="tag">Torrent</span>');
+  // The metadata fetch disappears by itself once the torrent it describes
+  // starts, so it is labelled for the wait rather than as a download.
+  if (dl.isMetadata) tags.push('<span class="tag">Fetching details</span>');
+  else if (dl.isTorrent) tags.push('<span class="tag">Torrent</span>');
   if (dl.seeder) tags.push('<span class="tag tag-complete">Seeding</span>');
   const ruleState = S.state?.rules?.downloads?.[dl.gid] || {};
   for (const [name, info] of Object.entries(ruleState)) {
@@ -571,9 +601,14 @@ async function refreshDetail(gid) {
 }
 
 function renderDetail(host, gid, data) {
+  // The panel is rebuilt every two seconds; doing that under an open
+  // dropdown (a file's priority) would snap it shut mid-choice.
+  if (document.activeElement?.tagName === 'SELECT' && host.contains(document.activeElement)) return;
   if (!S.detailDrafts.has(gid)) S.detailDrafts.set(gid, {});
   const draft = S.detailDrafts.get(gid);
   const st = data.status || {};
+  // aria2 keeps no timestamps; the manager's own record rides on the snapshot.
+  const live = (S.state?.downloads || []).find((d) => d.gid === gid);
   const opts = data.options || {};
   const files = data.files || [];
   const active = (data.servers || []).flatMap((s) => (s.servers || []).map((x) => ({ index: s.index, ...x })));
@@ -597,6 +632,8 @@ function renderDetail(host, gid, data) {
           <label>Path</label><code>${escapeHtml(files[0]?.path || '')}</code>
           <label>Size</label><span>${fmtBytes(st.completedLength)} of ${fmtBytes(st.totalLength)}</span>
           <label>Connections</label><span>${st.connections || 0}</span>
+          ${live?.addedAt ? `<label>Added</label><span>${fmtDate(live.addedAt)}</span>` : ''}
+          ${live?.finishedAt ? `<label>Finished</label><span>${fmtDate(live.finishedAt)}</span>` : ''}
           ${st.infoHash ? `<label>Info hash</label><code>${st.infoHash}</code>` : ''}
           ${st.errorMessage ? `<label>Error</label><span class="err">${escapeHtml(st.errorMessage)} (${st.errorCode})</span>` : ''}
         </div>
@@ -605,15 +642,19 @@ function renderDetail(host, gid, data) {
       </div>
       <div>
         <h3>Files ${files.length > 1 ? `· ${files.length}` : ''}</h3>
+        ${files.length > 1 ? `<div class="filehead">
+          <span class="hint">Higher priorities finish before lower ones start.</span>
+          <label>Set all ${prioritySelect('all', '')}</label>
+        </div>` : ''}
         <div class="filelist">
           ${files.map((f) => `
-            <div class="filerow">
-              ${files.length > 1 ? `<input type="checkbox" data-file="${f.index}" ${(draft.files?.[f.index] ?? f.selected === 'true') ? 'checked' : ''}>` : ''}
+            <div class="filerow${(draft.files?.[f.index] ?? f.priority) === 0 ? ' is-skipped' : ''}">
               <span class="fname" title="${escapeHtml(f.path)}">${escapeHtml(f.path.split('/').pop() || f.path)}</span>
-              <span class="fsize">${fmtBytes(f.completedLength)} / ${fmtBytes(f.length)}</span>
+              <span class="fsize">${fmtBytes(f.completedLength)} / ${fmtBytes(f.length)}${f.waitingForTier ? ' · after higher priority' : ''}</span>
+              ${files.length > 1 ? prioritySelect(f.index, draft.files?.[f.index] ?? f.priority) : ''}
             </div>`).join('') || '<p class="hint">No file information yet.</p>'}
         </div>
-        ${files.length > 1 ? '<button class="btn btn-sm" data-role="save-files" style="margin-top:8px">Apply file selection</button>' : ''}
+        ${files.length > 1 ? '<button class="btn btn-sm" data-role="save-files" style="margin-top:8px">Apply file choices</button>' : ''}
         <h3>Connections ${active.length ? `· ${active.length}` : ''}</h3>
         <div class="serverlist">
           ${active.map((s) => `
@@ -635,23 +676,39 @@ function renderDetail(host, gid, data) {
   // the middle of editing must survive that: the options block is built once
   // per expansion and moved into each new render, and file ticks are kept.
   const optsHost = $('[data-role="dl-opts"]', host);
-  if (!draft.options) draft.options = buildDownloadOptions(gid, opts);
+  if (!draft.options) draft.options = buildDownloadOptions(gid, opts, Boolean(st.bittorrent));
   optsHost.replaceWith(draft.options);
-  for (const box of $$('[data-file]', host)) {
-    box.addEventListener('change', () => {
-      draft.files = draft.files || {};
-      draft.files[box.dataset.file] = box.checked;
-    });
-  }
+  const pickers = $$('[data-file]', host).filter((s) => s.dataset.file !== 'all');
+  const remember = (sel) => {
+    draft.files = draft.files || {};
+    draft.files[sel.dataset.file] = Number(sel.value);
+    sel.closest('.filerow').classList.toggle('is-skipped', sel.value === '0');
+  };
+  for (const sel of pickers) sel.addEventListener('change', () => remember(sel));
+  $('[data-file="all"]', host)?.addEventListener('change', (e) => {
+    if (e.target.value === '') return;
+    for (const sel of pickers) { sel.value = e.target.value; remember(sel); }
+    e.target.value = '';
+  });
   $('[data-role="save-files"]', host)?.addEventListener('click', async () => {
-    const indices = $$('[data-file]', host).filter((c) => c.checked).map((c) => Number(c.dataset.file));
-    if (!indices.length) { toast('Pick at least one file', 'error'); return; }
-    await act(`/api/download/${gid}/select`, { method: 'POST', body: { indices } }, 'File selection applied');
+    const levels = Object.fromEntries(pickers.map((s) => [s.dataset.file, Number(s.value)]));
+    if (!Object.values(levels).some((v) => v > 0)) { toast('Pick at least one file to download', 'error'); return; }
+    await act(`/api/download/${gid}/files`, { method: 'POST', body: { levels } }, 'File choices applied');
     draft.files = null;
   });
 }
 
-function buildDownloadOptions(gid, opts) {
+// qBittorrent's four levels, which is what people coming from it expect.
+const PRIORITIES = [[0, 'Do not download'], [1, 'Normal'], [2, 'High'], [3, 'Maximum']];
+
+function prioritySelect(index, value) {
+  const blank = value === '' ? '<option value="">Choose…</option>' : '';
+  return `<select class="prio" data-file="${index}" aria-label="Priority">${blank}${
+    PRIORITIES.map(([v, label]) => `<option value="${v}"${v === value ? ' selected' : ''}>${label}</option>`).join('')
+  }</select>`;
+}
+
+function buildDownloadOptions(gid, opts, isTorrent) {
   const block = document.createElement('div');
   const fields = [];
   const row = (label, control) => {
@@ -670,10 +727,31 @@ function buildDownloadOptions(gid, opts) {
     fields.push([key, () => input.value.trim(), opts[key] || '']);
     row(label, input);
   }
+  const unitRows = {};
   for (const [key, label] of [['max-download-limit', 'Download limit'], ['max-upload-limit', 'Upload limit']]) {
     const unitField = unitInput('speed', opts[key] ?? null);
     fields.push([key, unitField.read, opts[key] || '']);
     row(label, unitField.el);
+    unitRows[key] = block.lastElementChild;
+  }
+  if (isTorrent) {
+    // With download-only on, the upload limit is the floor and not the
+    // user's to set, so its row goes away rather than showing "1 B/s".
+    const everyTorrent = Boolean(S.state?.torrent?.downloadOnly);
+    const on = everyTorrent || opts['download-only'] === 'true';
+    const { box, input } = boolSwitch(on, false);
+    input.disabled = everyTorrent;
+    row('Download only, never seed', box);
+    if (everyTorrent) {
+      const note = document.createElement('small');
+      note.className = 'hint';
+      note.textContent = 'On for every torrent in Settings';
+      block.lastElementChild.querySelector('label').append(document.createElement('br'), note);
+    }
+    const sync = () => { unitRows['max-upload-limit'].hidden = input.checked; };
+    input.addEventListener('change', sync);
+    sync();
+    if (!everyTorrent) fields.push(['download-only', () => String(input.checked), opts['download-only'] || 'false']);
   }
   const apply = document.createElement('button');
   apply.className = 'btn btn-sm';
@@ -706,6 +784,7 @@ function setAddMode(mode) {
 }
 
 function openAdd() {
+  $('#add-download-only').checked = Boolean(S.state?.torrent?.downloadOnly);
   $('#add-dialog').showModal();
   $('#add-uris').focus();
 }
@@ -719,6 +798,10 @@ function collectAddOptions() {
   put('split', $('#add-split').value);
   put('min-split-size', S.addUnits.minSplit.read());
   put('max-download-limit', S.addUnits.limit.read());
+  // Only sent when it differs from the global setting, which applies anyway.
+  if ($('#add-download-only').checked !== Boolean(S.state?.torrent?.downloadOnly)) {
+    options['download-only'] = String($('#add-download-only').checked);
+  }
   put('referer', $('#add-referer').value);
   put('user-agent', $('#add-ua').value);
   put('all-proxy', $('#add-proxy').value);
@@ -739,8 +822,13 @@ async function submitAdd() {
   const options = collectAddOptions();
   const positionRaw = $('#add-position').value.trim();
   const position = positionRaw === '' ? null : Number(positionRaw);
-  const paused = $('#add-paused').checked;
+  // Choosing files: a .torrent is added paused; a magnet (or a .torrent
+  // link) fetches its file list first and its real download waits paused.
+  const pickFiles = $('#add-pick-files').checked;
+  if (pickFiles) options['pause-metadata'] = 'true';
+  const paused = $('#add-paused').checked || (pickFiles && Boolean(file));
 
+  let added = null;
   try {
     if (file) {
       const data = await new Promise((resolve, reject) => {
@@ -750,17 +838,25 @@ async function submitAdd() {
         reader.readAsDataURL(file);
       });
       const kind = /\.meta(4|link)$/i.test(file.name) ? 'metalink' : 'torrent';
-      await api('/api/downloads/file', {
+      added = await api('/api/downloads/file', {
         method: 'POST',
         body: { data, kind, filename: file.name, uris, options, position, paused },
       });
     } else {
-      await api('/api/downloads', {
+      added = await api('/api/downloads', {
         method: 'POST',
         body: { uris, options, position, paused, mirrors: $('#add-mirrors').checked },
       });
     }
-    toast('Added', 'ok');
+    if (pickFiles) {
+      // Open the new row's files as soon as it (or, for a magnet, the
+      // download its metadata turns into) shows up.
+      for (const gid of added?.gids || []) S.openWhenListed.add(gid);
+      toast(file ? 'Added paused. Choose its files, then resume.'
+        : 'Fetching the file list. The torrent will wait paused for your choice.', 'ok');
+    } else {
+      toast('Added', 'ok');
+    }
     $('#add-dialog').close();
     $('#add-uris').value = '';
     $('#add-file').value = '';
@@ -770,7 +866,7 @@ async function submitAdd() {
 }
 
 /* -------------------------------------------------------------- settings */
-/* Simple: what decides how a download behaves. The same seven the DankBar
+/* Simple: what decides how a download behaves. The same eight the DankBar
    widget shows, so both surfaces teach the same starting point. */
 const SIMPLE_OPTIONS = [
   ['dir', 'Download folder', 'text', 'Where finished files go.'],
@@ -779,6 +875,7 @@ const SIMPLE_OPTIONS = [
   ['split', 'Parts per download', 'number', 'A file is fetched in this many pieces at the same time.'],
   ['max-overall-download-limit', 'Download speed limit', 'text', 'Across every download. Blank means no limit.'],
   ['max-overall-upload-limit', 'Upload speed limit', 'text', 'For torrents. Blank means no limit.'],
+  ['download-only', 'Torrents: download only', 'bool', 'Never seed. While a torrent downloads it uploads at most 1 B/s, and it stops the moment it finishes. Overrides the upload limit.'],
   ['continue', 'Resume unfinished files', 'bool', 'Pick up a partial file where it stopped instead of starting over.'],
 ];
 
@@ -821,6 +918,7 @@ const OPTION_GROUPS = [
     ['check-certificate', 'Verify TLS certificates', 'bool'],
   ]],
   ['BitTorrent', [
+    ['download-only', 'Download only, never seed', 'bool', 'Never seed. While a torrent downloads it uploads at most 1 B/s, and it stops the moment it finishes. Overrides the upload limit.'],
     ['follow-torrent', 'Start downloaded torrents automatically', 'bool'],
     ['bt-max-peers', 'Peers per torrent', 'number'],
     ['seed-ratio', 'Seed until this ratio', 'text'],
@@ -1031,7 +1129,25 @@ async function saveGlobalOptions() {
     const value = read();
     if (!sameOptionValue(value, original)) options[key] = value;
   }
-  if (!Object.keys(options).length) { toast('Nothing changed'); return; }
+  // One Save button for the page, so the folder card goes with it.
+  const routingChanged = S.routingDirty;
+  if (!Object.keys(options).length) {
+    if (!routingChanged) { toast('Nothing changed'); return; }
+    try {
+      await saveRouting();
+      toast('Sorting saved', 'ok');
+    } catch (err) {
+      toast(err.message, 'error');
+    }
+    return;
+  }
+  if (routingChanged) {
+    try {
+      await saveRouting();
+    } catch (err) {
+      toast(err.message, 'error');
+    }
+  }
   try {
     const res = await api('/api/global/options', { method: 'POST', body: { options } });
     const live = Object.keys(res.applied || {}).length;
@@ -1067,6 +1183,127 @@ function renderProcInfo() {
   }).map(([k, v]) => `<label>${k}</label><code>${escapeHtml(v)}</code>`).join('');
 }
 
+/* ----------------------------------------------------------------- sort */
+// Each field starts in the direction people expect of it: the queue from the
+// front, dates newest first.
+const SORT_DEFAULT_DESC = { queue: false, added: true, finished: true };
+const SORT_ICON = {
+  up: 'M4 12l1.41 1.41L11 7.83V20h2V7.83l5.58 5.59L20 12l-8-8-8 8z',
+  down: 'M20 12l-1.41-1.41L13 16.17V4h-2v12.17l-5.58-5.59L4 12l8 8 8-8z',
+};
+
+function setSort(field, desc = SORT_DEFAULT_DESC[field]) {
+  S.sort = field in SORT_DEFAULT_DESC ? field : 'queue';
+  S.sortDesc = Boolean(desc);
+  try {
+    localStorage.setItem('aria.sort', S.sort);
+    localStorage.setItem('aria.sortDesc', String(S.sortDesc));
+  } catch { /* remembered or not, the list still sorts */ }
+  renderSortControl();
+  if (S.filter === 'history') renderHistory();
+  else renderDownloads();
+}
+
+function renderSortControl() {
+  const history = S.filter === 'history';
+  const select = $('#sort-field');
+  // History has no queue: it is ordered by when things finished instead.
+  select.querySelector('[value="queue"]').disabled = history;
+  const field = history && S.sort === 'queue' ? 'finished' : S.sort;
+  const desc = history && S.sort === 'queue' ? true : S.sortDesc;
+  select.value = field;
+  const btn = $('#sort-dir');
+  const words = field === 'queue'
+    ? (desc ? 'Back of the queue first' : 'Front of the queue first')
+    : (desc ? 'Newest first' : 'Oldest first');
+  btn.title = `${words} — click to reverse`;
+  btn.setAttribute('aria-label', words);
+  $('path', btn).setAttribute('d', desc ? SORT_ICON.down : SORT_ICON.up);
+}
+
+function sortHistory(entries) {
+  const key = S.sort === 'added' ? 'added_at' : 'finished_at';
+  const dir = S.sort === 'queue' || S.sortDesc ? -1 : 1;
+  const at = (e) => e[key] ?? e.first_seen ?? 0;
+  return entries.slice().sort((a, b) => dir * (at(a) - at(b)));
+}
+
+/* --------------------------------------------------------------- routing */
+const CATEGORY_LABELS = {
+  archive: 'Archives', music: 'Music', video: 'Video', image: 'Images', other: 'Everything else',
+};
+
+async function loadRouting() {
+  try {
+    S.routing = await api('/api/routing');
+  } catch (err) {
+    return;  // the card stays as it was; the options above still work
+  }
+  S.routingDirty = false;
+  renderRouting();
+}
+
+function renderRouting() {
+  const data = S.routing;
+  if (!data) return;
+  $('#route-enabled').checked = Boolean(data.enabled);
+  $('#route-enabled').onchange = (e) => {
+    data.enabled = e.target.checked;
+    S.routingDirty = true;
+  };
+
+  const host = $('#route-folders');
+  host.innerHTML = '';
+  for (const category of data.categories) {
+    const field = optionFieldShell(CATEGORY_LABELS[category] || capitalise(category),
+      category === 'other' ? 'Anything no other folder claims' : '');
+    const input = document.createElement('input');
+    input.value = data.folders[category] ?? '';
+    input.placeholder = 'Download folder';
+    input.addEventListener('input', () => {
+      data.folders[category] = input.value.trim();
+      S.routingDirty = true;
+    });
+    field.append(input);
+    host.append(field);
+  }
+
+  const extHost = $('#route-extensions');
+  extHost.innerHTML = '';
+  for (const [category, values] of Object.entries(data.extensions)) {
+    const field = optionFieldShell(CATEGORY_LABELS[category] || capitalise(category), '');
+    const input = document.createElement('input');
+    input.value = values.join(' ');
+    input.placeholder = data.defaults.extensions[category].join(' ');
+    input.addEventListener('input', () => {
+      data.extensions[category] = input.value.split(/[\s,]+/).filter(Boolean);
+      S.routingDirty = true;
+    });
+    field.append(input);
+    extHost.append(field);
+  }
+}
+
+/* The same two-column row the option lists use, without an aria2 key behind it. */
+function optionFieldShell(label, desc) {
+  const wrap = document.createElement('div');
+  wrap.className = 'optfield';
+  const lab = document.createElement('label');
+  lab.innerHTML = escapeHtml(label) + (desc ? `<em>${escapeHtml(desc)}</em>` : '');
+  wrap.append(lab);
+  return wrap;
+}
+
+async function saveRouting() {
+  if (!S.routingDirty || !S.routing) return null;
+  const { enabled, folders, extensions } = S.routing;
+  const saved = await api('/api/routing', { method: 'POST', body: { enabled, folders, extensions } });
+  S.routing = saved;
+  S.routingDirty = false;
+  renderRouting();
+  return saved;
+}
+
 /* -------------------------------------------------------------- history */
 async function loadHistory() {
   try {
@@ -1090,7 +1327,7 @@ function renderHistory() {
   $('#history-summary').textContent =
     `${s.count || 0} recorded · ${s.completed || 0} finished · ${fmtBytes(s.bytes || 0)} · kept in ${s.file || ''}`;
 
-  const rows = data.entries || [];
+  const rows = sortHistory(data.entries || []);
   $('#empty').hidden = rows.length > 0;
   if (!rows.length) setEmpty('No history yet', 'Finished downloads are remembered here, even after a restart.');
   host.innerHTML = rows.map((e) => {
@@ -1291,6 +1528,38 @@ function renderRules() {
     statuses.append(chipRow);
     body.append(statuses);
 
+    /* Torrents and plain downloads fail in different ways, so a rule can be
+       aimed at one of them. Stored as aria2-side flags the engine already
+       understood (torrent_only / http_only); both chips on means either. */
+    const kinds = document.createElement('div');
+    kinds.className = 'field';
+    kinds.innerHTML = '<span>Download type</span>';
+    const kindRow = document.createElement('div');
+    kindRow.className = 'chiprow';
+    const kindState = () => {
+      const when = rule.when || {};
+      return { torrent: !when.http_only, normal: !when.torrent_only };
+    };
+    for (const [key, label] of [['torrent', 'Torrents'], ['normal', 'Normal downloads']]) {
+      const chip = document.createElement('button');
+      chip.type = 'button';
+      chip.className = `chip${kindState()[key] ? ' active' : ''}`;
+      chip.innerHTML = `<span class="check" aria-hidden="true">${icon('check')}</span>${label}`;
+      chip.addEventListener('click', () => {
+        const state = kindState();
+        state[key] = !state[key];
+        // Neither one selected would mean a rule that can never fire; turning
+        // the last one off puts it back to both, as the statuses do.
+        if (!state.torrent && !state.normal) { state.torrent = state.normal = true; }
+        setPath(rule, 'when.torrent_only', state.torrent && !state.normal ? true : '');
+        setPath(rule, 'when.http_only', state.normal && !state.torrent ? true : '');
+        renderRules();
+      });
+      kindRow.append(chip);
+    }
+    kinds.append(kindRow);
+    body.append(kinds);
+
     const descField = document.createElement('label');
     descField.className = 'field';
     const descLab = document.createElement('span');
@@ -1456,7 +1725,7 @@ async function runBulkRemove(keepFinishedFiles) {
 function switchTab(name) {
   $$('.tab').forEach((t) => t.classList.toggle('active', t.dataset.tab === name));
   $$('.tabpane').forEach((p) => p.classList.toggle('active', p.id === `tab-${name}`));
-  if (name === 'settings') loadGlobalOptions();
+  if (name === 'settings') { loadGlobalOptions(); loadRouting(); }
   if (name === 'rules') loadRules();
 }
 
@@ -1479,9 +1748,17 @@ function init() {
     $('#downloads').innerHTML = '';
     S.selection.clear();
     renderBulkBar();
+    renderSortControl();
     if (S.filter === 'history') loadHistory();
     else { $('#history-bar').hidden = true; renderDownloads(); }
   }));
+  $('#sort-field').addEventListener('change', (e) => setSort(e.target.value));
+  $('#sort-dir').addEventListener('click', () => {
+    const field = $('#sort-field').value;
+    const desc = S.filter === 'history' && S.sort === 'queue' ? true : S.sortDesc;
+    setSort(field, !desc);
+  });
+  renderSortControl();
   $('#btn-history-clear').addEventListener('click', async () => {
     if (!confirm('Forget every recorded download? Files on disk are untouched.')) return;
     if (!confirm('This also clears aria2\'s finished results, so finished and failed rows leave the Downloads list. Continue?')) return;

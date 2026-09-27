@@ -194,6 +194,11 @@ class RuleEngine:
 
         for dl in snapshot["downloads"]:
             gid = dl["gid"]
+            # A magnet's metadata fetch is tiny and often slow; it is not a
+            # download anyone means to act on, and a stall rule would keep
+            # restarting it for nothing.
+            if dl.get("isMetadata"):
+                continue
             seen.add(gid)
             tracker = self.tracked.setdefault(gid, Tracker(first_seen=now))
             if dl["status"] == "active":

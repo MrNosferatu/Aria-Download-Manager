@@ -12,6 +12,7 @@ Run standalone:
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import os
 import threading
@@ -39,19 +40,62 @@ class FakeDownload:
         self.resume_count = 0
         self.error_code = "0"
         self.error_message = ""
+        #: A multi-file torrent: per-file sizes and bytes done. Files download
+        #: in index order among the selected ones, like one stream of pieces.
+        self.file_sizes: list[int] | None = None
+        self.file_done: list[int] = []
+        self.torrent = False
+        self.seeding = False
+
+    # ---- multi-file torrents -------------------------------------------
+    def selected(self) -> list[int]:
+        """0-based indices of the selected files (select-file is 1-based)."""
+        raw = str(self.options.get("select-file") or "")
+        if not raw:
+            return list(range(len(self.file_sizes or [])))
+        return sorted(int(i) - 1 for i in raw.split(",") if i.strip())
+
+    def selection_done(self) -> bool:
+        return all(self.file_done[i] >= self.file_sizes[i] for i in self.selected())
+
+    def settle(self) -> None:
+        """After finishing the selection: seed, or stop if told not to."""
+        if not self.selection_done():
+            self.seeding = False
+            return
+        if str(self.options.get("seed-time")) == "0":
+            self.seeding = False
+            self.status = "complete"
+        else:
+            self.seeding = True
 
     # ---- simulation ----------------------------------------------------
     @property
     def speed(self) -> int:
         if self.status != "active":
             return 0
+        if self.seeding:
+            return 0
+        try:
+            limit = int(self.options.get("max-download-limit") or 0)
+        except ValueError:
+            limit = 0
         if self.stall_after is None:
-            return NORMAL_SPEED
+            return min(NORMAL_SPEED, limit) if limit else NORMAL_SPEED
         age = time.time() - (self.stalled_since or self.created)
         return STALL_SPEED if age >= self.stall_after else NORMAL_SPEED
 
     def tick(self, dt: float) -> None:
         if self.status != "active":
+            return
+        if self.file_sizes is not None:
+            budget = int(self.speed * dt)
+            for i in self.selected():
+                take = min(budget, self.file_sizes[i] - self.file_done[i])
+                self.file_done[i] += take
+                budget -= take
+            self.completed = sum(self.file_done)
+            self.settle()
             return
         self.completed = min(self.total, self.completed + int(self.speed * dt))
         if self.completed >= self.total:
@@ -89,7 +133,7 @@ class FakeDownload:
             "uploadSpeed": "0",
             "connections": "8" if self.status == "active" else "0",
             "numSeeders": "0",
-            "seeder": "false",
+            "seeder": "true" if self.seeding else "false",
             "dir": self.dir,
             "numPieces": str(pieces),
             "pieceLength": str(1024 * 1024),
@@ -107,6 +151,24 @@ class FakeDownload:
                 }
             ],
         }
+        if self.file_sizes is not None:
+            chosen = set(self.selected())
+            data["totalLength"] = str(sum(self.file_sizes[i] for i in chosen))
+            data["completedLength"] = str(sum(self.file_done[i] for i in chosen))
+            data["files"] = [
+                {
+                    "index": str(i + 1),
+                    "path": os.path.join(self.dir, self.name, f"file{i + 1}.bin"),
+                    "length": str(size),
+                    "completedLength": str(self.file_done[i]),
+                    "selected": "true" if i in chosen else "false",
+                    "uris": [],
+                }
+                for i, size in enumerate(self.file_sizes)
+            ]
+        if self.torrent:
+            data["bittorrent"] = {"info": {"name": self.name}}
+            data["infoHash"] = "0" * 40
         if keys:
             return {k: v for k, v in data.items() if k in keys}
         return data
@@ -228,7 +290,21 @@ class FakeAria2:
             return dl.gid
 
         if method == "aria2.addTorrent":
-            dl = self.add("fake.torrent.payload", 700 * 1024 * 1024)
+            # A test can describe the torrent as base64 JSON: {"name", "files"}.
+            try:
+                spec = json.loads(base64.b64decode(params[0]))
+            except (ValueError, TypeError):
+                spec = None
+            options = params[2] if len(params) > 2 else {}
+            if isinstance(spec, dict) and spec.get("files"):
+                dl = self.add(spec.get("name", "pack"), sum(spec["files"]),
+                              status="paused" if options.get("pause") == "true" else "active")
+                dl.file_sizes = list(spec["files"])
+                dl.file_done = [0] * len(dl.file_sizes)
+            else:
+                dl = self.add("fake.torrent.payload", 700 * 1024 * 1024)
+            dl.torrent = True
+            dl.options.update(options)
             return dl.gid
 
         if method == "aria2.tellStatus":
@@ -266,6 +342,8 @@ class FakeAria2:
         if method == "aria2.changeOption":
             dl = self._get(params[0])
             dl.options.update(params[1] or {})
+            if dl.file_sizes is not None and dl.status == "active":
+                dl.settle()  # a wider selection resumes; seed-time=0 stops a seeder
             return "OK"
 
         if method == "aria2.getOption":

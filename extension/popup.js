@@ -13,17 +13,37 @@ function setStatus(text, kind, title = '') {
 
 const STATUS_WORD = { active: '', waiting: 'Queued', paused: 'Paused' };
 
+/* The manager pushes a frame the moment it has new figures. Polling on a
+   timer of our own instead showed numbers up to a tick behind the DankBar,
+   which streams — the speed here read lower than the one in the bar. */
+function watchState() {
+  ManagerLink.subscribe({
+    onFrame(kind, data) {
+      if (kind === 'state') render(data);
+    },
+    onError(reason) {
+      showOffline(reason);
+    },
+  });
+}
+
 async function refresh() {
-  const reply = await api.runtime.sendMessage({ type: 'state' });
-  if (!reply || !reply.ok) {
-    setStatus('Manager offline', 'err', (reply && reply.error) || '');
-    $('list').textContent = '';
-    $('empty-text').textContent = `Can't reach the manager: ${(reply && reply.error) || 'no reply'}.`;
-    $('empty').hidden = false;
+  const reply = await ManagerLink.call('GET', '/api/state');
+  if (reply.status !== 200) {
+    showOffline(ManagerLink.errorText(reply));
     return;
   }
+  render(reply.body || {});
+}
 
-  const state = reply.state || {};
+function showOffline(reason) {
+  setStatus('Manager offline', 'err', reason || '');
+  $('list').textContent = '';
+  $('empty-text').textContent = `Can't reach the manager: ${reason || 'no reply'}.`;
+  $('empty').hidden = false;
+}
+
+function render(state) {
   const aria2 = state.aria2 || {};
   const counts = state.counts || {};
   const global = state.global || {};
@@ -147,7 +167,7 @@ async function init() {
   $('options').addEventListener('click', () => api.runtime.openOptionsPage());
 
   refresh();
-  setInterval(refresh, 1000);
+  watchState();
 }
 
 init();

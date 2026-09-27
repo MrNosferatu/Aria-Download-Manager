@@ -15,6 +15,12 @@ It deliberately does not read `video.src`: a player using Media Source
 Extensions puts a `blob:` handle there, pointing at a buffer in memory that
 cannot be fetched. The manifest on the network is the real thing.
 
+The source is only used to decide which player gets the button. A `<video>`
+whose source is a plain http(s) URL gets one only if that same file showed up on
+the network. Progressive files under 2 MiB are never kept, so loading spinners
+and looping decorations (Discord has both) don't get a button, and neither do
+players that are showing a camera or screen share.
+
 Cookies come from the `cookies` API rather than `document.cookie`, so HttpOnly
 session cookies travel with the probe — without them a members-only stream
 probes as an error page with no qualities in it.

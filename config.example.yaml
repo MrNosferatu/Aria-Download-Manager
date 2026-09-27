@@ -120,6 +120,33 @@ history:
   max_entries: 2000
 
 # ---------------------------------------------------------------------------
+# Torrents. download_only: never seed. New torrents get seed-time=0, aria2's
+# overall upload is held at 1 B/s (0 would mean unlimited), and a torrent found
+# seeding is stopped. The upload limit above is kept and comes back when this
+# is off. Also switchable in Settings, and per torrent in its detail panel.
+torrent:
+  download_only: false
+
+# ---------------------------------------------------------------------------
+# Sort downloads into subfolders of the download folder by what they are.
+# Manager-side (see routing.py): aria2 itself has one folder. The folder is
+# picked before the download starts, from the URL's filename, or a .torrent's
+# largest file; a magnet's torrent waits paused for the moment its metadata
+# takes to arrive. A folder chosen in the Add dialog always wins. A blank
+# folder means the download folder itself, and an absolute path is used as it
+# is. Leave "extensions" out to use the built-in lists.
+routing:
+  enabled: false
+  folders:
+    archive: Archives
+    music: Music
+    video: Video
+    image: Images
+    other: ""
+  # extensions:
+  #   archive: [zip, rar, 7z]
+
+# ---------------------------------------------------------------------------
 # Custom download actions.
 #
 # Each rule watches every download once per poll tick. When all `when`

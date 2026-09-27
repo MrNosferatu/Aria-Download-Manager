@@ -69,6 +69,15 @@
         <button class="chip chip-history" data-filter="history" title="Everything the manager has recorded, kept across restarts"><svg class="ico check" viewBox="0 0 24 24"><path d="M13 3a9 9 0 0 0-9 9H1l3.89 3.89.07.14L9 12H6c0-3.87 3.13-7 7-7s7 3.13 7 7-3.13 7-7 7c-1.93 0-3.68-.79-4.94-2.06l-1.42 1.42A8.954 8.954 0 0 0 13 21a9 9 0 0 0 0-18zm-1 5v5l4.28 2.54.72-1.21-3.5-2.08V8H12z"/></svg>History</button>
       </div>
       <div class="spacer"></div>
+      <div class="sortctl">
+        <label for="sort-field">Sort</label>
+        <select id="sort-field">
+          <option value="queue">Queue order</option>
+          <option value="added">Date added</option>
+          <option value="finished">Date completed</option>
+        </select>
+        <button id="sort-dir" class="btn btn-icon btn-sm" type="button"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d=""/></svg></button>
+      </div>
       <label class="search"><svg class="ico" viewBox="0 0 24 24"><path d="M15.5 14h-.79l-.28-.27A6.47 6.47 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg><input id="search" placeholder="Search by name" aria-label="Search by name"></label>
       <button id="btn-select" class="btn btn-sm btn-outline" title="Pick several downloads to act on together">Select</button>
     </div>
@@ -148,6 +157,23 @@
     <!-- Simple: the handful of options that decide how downloads behave. -->
     <div id="options-simple" class="card" data-level="simple"></div>
 
+    <!-- Where finished files go, by what they are. A manager feature, not an
+         aria2 option, so it sits in its own card rather than in the lists. -->
+    <div class="card">
+      <div class="card-head">
+        <h2>Sort into folders by type</h2>
+        <label class="setting"><span class="text"><span class="label">On</span></span>
+          <span class="switch"><input type="checkbox" id="route-enabled"><span class="track"><span class="knob"></span></span></span></label>
+      </div>
+      <p class="hint">Each download goes to a subfolder of the download folder, picked from its
+        file type. Blank means the download folder itself. An absolute path is used as it is.</p>
+      <div id="route-folders" class="stack"></div>
+      <details id="route-ext-wrap" class="fold" data-level="advanced">
+        <summary>Which extensions count as what</summary>
+        <div id="route-extensions" class="stack"></div>
+      </details>
+    </div>
+
     <!-- Advanced: the curated groups, then every option aria2 reports. -->
     <div id="options-groups" class="stack" data-level="advanced"></div>
     <details id="options-advanced-wrap" class="card fold" data-level="advanced" open>
@@ -218,8 +244,12 @@
       <div class="checkrow">
         <label class="setting"><span class="text"><span class="label">Start paused</span></span>
           <span class="switch"><input type="checkbox" id="add-paused"><span class="track"><span class="knob"></span></span></span></label>
+        <label class="setting"><span class="text"><span class="label">Choose torrent files first</span></span>
+          <span class="switch"><input type="checkbox" id="add-pick-files"><span class="track"><span class="knob"></span></span></span></label>
         <label class="setting" data-level="advanced"><span class="text"><span class="label">Links are mirrors of one file</span></span>
           <span class="switch"><input type="checkbox" id="add-mirrors"><span class="track"><span class="knob"></span></span></span></label>
+        <label class="setting" data-level="advanced"><span class="text"><span class="label">Torrents: download only, never seed</span></span>
+          <span class="switch"><input type="checkbox" id="add-download-only"><span class="track"><span class="knob"></span></span></span></label>
       </div>
     </div>
 

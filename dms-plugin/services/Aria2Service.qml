@@ -46,6 +46,8 @@ Singleton {
     readonly property var counts: (snapshot && snapshot.counts) || ({})
     readonly property var aria2: (snapshot && snapshot.aria2) || ({})
     readonly property var ruleState: (snapshot && snapshot.rules) || ({})
+    //: Torrents never seed (the manager's download-only setting).
+    readonly property bool downloadOnly: !!(snapshot && snapshot.torrent && snapshot.torrent.downloadOnly)
 
     readonly property int downloadSpeed: globalStat.downloadSpeed || 0
     readonly property int uploadSpeed: globalStat.uploadSpeed || 0
@@ -584,6 +586,25 @@ Singleton {
         post("/api/rules", {
                  "speed_source": source
              }, "Speed judged by: " + ({"hybrid": "Hybrid", "measured": "Write speed", "aria2": "Reported speed"}[source] || source))
+    }
+
+    //: Where downloads go by file type. A manager setting, not an aria2 one,
+    //: so it has its own endpoint rather than riding with the options.
+    property var routing: null
+
+    function loadRouting() {
+        get("/api/routing", (data, error) => {
+            if (error || !data)
+                return
+            root.routing = data
+        })
+    }
+
+    function saveRouting(payload, okMessage) {
+        post("/api/routing", payload, okMessage || "Sorting saved", data => {
+            if (data)
+                root.routing = data
+        })
     }
 
     function loadOptions() {

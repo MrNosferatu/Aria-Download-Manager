@@ -59,10 +59,18 @@ class History:
             data = json.loads(self.path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             return
+        from .state import METADATA_PREFIX
+
         for entry in data.get("entries", []):
             key = entry.get("key") or entry.get("gid")
-            if key:
-                self.entries[key] = entry
+            if not key:
+                continue
+            # Recorded by an older build, before a magnet's metadata fetch was
+            # told apart from the torrent it goes on to fetch.
+            if str(entry.get("name", "")).startswith(METADATA_PREFIX) or str(key).startswith(METADATA_PREFIX):
+                self._dirty = True
+                continue
+            self.entries[key] = entry
         self.dismissed = {
             str(k): float(v or 0) for k, v in (data.get("dismissed") or {}).items()
         }
@@ -107,6 +115,8 @@ class History:
         if not self.enabled:
             return
         for download in snapshot.get("downloads", []):
+            if download.get("isMetadata"):
+                continue  # the wait before a torrent, not a download to record
             key = download.get("path") or download.get("gid")
             if not key:
                 continue
@@ -134,6 +144,10 @@ class History:
                 "error": download.get("errorMessage") or "",
                 "finished_at": (existing or {}).get("finished_at") or time.time(),
                 "first_seen": (existing or {}).get("first_seen") or time.time(),
+                "added_at": download.get("addedAt")
+                or (existing or {}).get("added_at")
+                or (existing or {}).get("first_seen")
+                or time.time(),
             }
             if existing != entry:
                 self.entries[key] = entry

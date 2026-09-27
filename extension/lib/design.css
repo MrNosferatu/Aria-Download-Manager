@@ -437,6 +437,16 @@ dialog {
   &.dirty { box-shadow: inset 3px 0 0 var(--primary); padding-inline-start: 10px; }
   &.dirty > label { color: var(--primary); }
 }
+/* The value column is a fixed width, and a label is free to shrink, so in a
+   narrow window the label ends up a few characters wide with the option's
+   description wrapping one word per line. Measured against the card rather
+   than the window: the same rows also sit in the detail panel's column. */
+.optgroup, .card, .dl-detail { container-type: inline-size; }
+@container (max-width: 430px) {
+  .optfield { grid-template-columns: 1fr; }
+  .optfield .boolcell { justify-content: flex-start; }
+}
+
 .optgroup { padding-block: 4px; }
 .optgroup > h3 { margin: 6px 0 2px; }
 

@@ -28,6 +28,10 @@ from .rpc import DETAIL_KEYS, Aria2Error, Aria2RPC
 from .rules import ACTIONS, SPEED_SOURCES, RuleEngine
 from .state import Poller, Store
 from .supervisor import Aria2Supervisor
+from .timeline import Timeline
+from . import priorities as priority
+from . import routing as routing_mod
+from . import seeding
 
 VERSION = "1.0.0"
 
@@ -69,6 +73,17 @@ class RulesRequest(BaseModel):
     enabled: bool | None = None
     #: aria2 | measured | hybrid — which speed figure rules judge by.
     speed_source: str | None = None
+
+
+class FilePrioritiesRequest(BaseModel):
+    #: file index (aria2's, 1-based) -> 0 skip, 1 normal, 2 high, 3 maximum
+    levels: dict[str, int]
+
+
+class RoutingRequest(BaseModel):
+    enabled: bool | None = None
+    folders: dict[str, str] | None = None
+    extensions: dict[str, list[str]] | None = None
 
 
 class SelectFilesRequest(BaseModel):
@@ -249,7 +264,52 @@ def create_app(cfg: Config) -> FastAPI:
         float(cfg.get("poll_interval", 1.0)),
         float(cfg.get("poll_interval_idle", 5.0)),
     )
+    download_only = seeding.DownloadOnly(
+        cfg, rpc, lambda level, message, **kw: store.add_event(level, message, **kw))
+    router = routing_mod.Router(
+        cfg, rpc, lambda level, message, **kw: store.add_event(level, message, **kw))
+
+    def prepare_add(options: dict, uris=None, torrent=None) -> dict:
+        return router.apply(download_only.prepare(options), uris=uris, torrent=torrent)
+
+    rpc.prepare_add = prepare_add
+    poller.observers.append(router.observe)
+    poller.observers.append(download_only.observe)
+    poller.extras["torrent"] = download_only.public_state
+    # A magnet's metadata fetch has done its job the moment the real torrent
+    # exists. aria2 keeps the finished husk in its stopped list, where it shows
+    # as a completed download whose file is missing; drop it instead.
+    cleared_metadata: set[str] = set()
+
+    async def _drop_metadata(gid: str) -> None:
+        try:
+            await rpc.remove_result(gid)
+        except Exception:
+            cleared_metadata.discard(gid)  # try again on a later tick
+
+    def forget_metadata(snapshot: dict) -> None:
+        live = set()
+        for row in snapshot.get("downloads", []):
+            live.add(row.get("gid"))
+            if not (row.get("isMetadata") and row.get("status") == "complete"):
+                continue
+            # Only once it has actually produced the torrent download.
+            if not row.get("followedBy") or row["gid"] in cleared_metadata:
+                continue
+            cleared_metadata.add(row["gid"])
+            asyncio.get_running_loop().create_task(_drop_metadata(row["gid"]))
+        cleared_metadata &= live
+
+    poller.observers.append(forget_metadata)
     history = History(cfg)
+    file_priorities = priority.FilePriorities(
+        history.path.parent / "priorities.json", rpc, cfg, download_only,
+        lambda level, message, **kw: store.add_event(level, message, **kw))
+    download_only.exempt = file_priorities.holding
+    poller.observers.append(file_priorities.observe)
+    # Before the history, so a recorded download carries its "added" time too.
+    timeline = Timeline(history.path.parent / "timeline.json")
+    poller.observers.append(timeline.observe)
     poller.observers.append(history.observe)
     media_jobs = MediaJobs(
         on_event=lambda level, message, **kw: store.add_event(level, message, **kw),
@@ -275,6 +335,13 @@ def create_app(cfg: Config) -> FastAPI:
         # Say whether aria2c came up now, not after the first poll: against an
         # RPC port that never answers, that poll takes a full timeout to fail.
         store.set_snapshot({**store.snapshot, "ts": time.time(), "aria2": supervisor.status()})
+        # A managed aria2c already got the cap on its command line; an adopted
+        # or external one has to be told.
+        if download_only.enabled:
+            try:
+                await download_only.apply()
+            except Exception as exc:
+                store.add_event("error", f"Could not cap torrent uploads: {exc}")
         poller.start()
         store.add_event("info", f"IPC socket listening at {ipc.path}")
         try:
@@ -284,6 +351,7 @@ def create_app(cfg: Config) -> FastAPI:
             await ipc.stop()
             await media_jobs.shutdown()
             history.save(force=True)
+            timeline.save(force=True)
             await poller.stop()
             await supervisor.stop()
             await rpc.close()
@@ -368,6 +436,14 @@ def create_app(cfg: Config) -> FastAPI:
         options = clean_options(req.options)
         if req.paused:
             options["pause"] = "true"
+        # A magnet says nothing about what it holds. With sorting on, hold the
+        # torrent its metadata produces for the moment it takes to pick the
+        # folder — moving it afterwards would strand the files aria2 has
+        # already created. Someone who asked to choose files keeps their pause.
+        chooses_files = "pause-metadata" in options
+        hold = router.wants_paused_metadata(options, uris)
+        if hold:
+            options["pause-metadata"] = "true"
         gids: list[str] = []
         if req.mirrors:
             gids.append(await rpc.add_uri(uris, options, req.position))
@@ -375,6 +451,9 @@ def create_app(cfg: Config) -> FastAPI:
             for index, uri in enumerate(uris):
                 position = None if req.position is None else req.position + index
                 gids.append(await rpc.add_uri([uri], dict(options), position))
+        if hold or chooses_files:
+            for gid in gids:
+                router.expect(gid, resume=hold and not chooses_files)
         poller.poke()
         store.add_event(
             "info",
@@ -541,11 +620,29 @@ def create_app(cfg: Config) -> FastAPI:
                 peers = await rpc.get_peers(gid)
             except Aria2Error:
                 peers = None
+        levels = file_priorities.levels(gid, files or [])
+        files = [
+            {
+                **f,
+                "priority": levels.get(str(f.get("index")), priority.NORMAL),
+                # Wanted, but held back until the higher tiers finish.
+                "waitingForTier": levels.get(str(f.get("index"))) != priority.SKIP
+                and f.get("selected") != "true",
+            }
+            for f in (files or [])
+        ]
+        held = file_priorities.download_only_for(gid)
+        if held is not None:
+            held = held or download_only.enabled
         return {
             "status": status,
-            "files": files or [],
+            "files": files,
             "uris": uris or [],
-            "options": options or {},
+            "options": {
+                **(options or {}),
+                seeding.KEY: "true" if (held if held is not None else seeding.is_download_only(options or {}))
+                else "false",
+            },
             "servers": servers or [],
             "peers": (peers or [])[:60],
             "pieceMap": piece_map(
@@ -703,6 +800,17 @@ def create_app(cfg: Config) -> FastAPI:
     @app.post("/api/download/{gid}/options")
     async def set_download_options(gid: str, req: OptionsRequest):
         options = clean_options(req.options)
+        if file_priorities.has(gid) and seeding.KEY in options:
+            # File priorities own this torrent's seeding options while it has
+            # tiers to go; they apply download-only when the last tier runs.
+            wanted = seeding.truthy(options.pop(seeding.KEY))
+            await file_priorities.set_download_only(gid, wanted)
+            if wanted:
+                options.pop("max-upload-limit", None)  # the floor is applied with it
+            if not options:
+                poller.poke()
+                return {"ok": True, "applied": {}}
+        options = download_only.translate(options)
         if not options:
             raise HTTPException(400, "no options given")
         await rpc.change_option(gid, options)
@@ -719,10 +827,21 @@ def create_app(cfg: Config) -> FastAPI:
 
     @app.post("/api/download/{gid}/select")
     async def select_files(gid: str, req: SelectFilesRequest):
+        # A plain selection replaces any priorities rather than fighting them.
+        file_priorities.entries.pop(gid, None)
         value = ",".join(str(i) for i in req.indices) if req.indices else ""
         await rpc.change_option(gid, {"select-file": value})
         poller.poke()
         return {"ok": True, "select-file": value}
+
+    @app.post("/api/download/{gid}/files")
+    async def set_file_priorities(gid: str, req: FilePrioritiesRequest):
+        try:
+            change = await file_priorities.set(gid, req.levels)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        poller.poke()
+        return {"ok": True, "changed": change}
 
     @app.post("/api/download/{gid}/retry")
     async def retry(gid: str):
@@ -752,14 +871,32 @@ def create_app(cfg: Config) -> FastAPI:
 
     @app.get("/api/global/options")
     async def get_global_options():
-        return await rpc.get_global_option()
+        options = await rpc.get_global_option()
+        options[seeding.KEY] = "true" if download_only.enabled else "false"
+        if download_only.enabled:
+            # Live it is held at the floor; show what applies once this is off.
+            options["max-overall-upload-limit"] = download_only.configured_upload_limit()
+        return options
 
     @app.post("/api/global/options")
     async def set_global_options(req: OptionsRequest):
         options = clean_options(req.options)
         if not options:
             raise HTTPException(400, "no options given")
-        await rpc.change_global_option(options)
+        # Not an aria2 option: it must never reach aria2c's command line.
+        wanted = options.pop(seeding.KEY, None)
+        if wanted is not None and seeding.truthy(wanted) != download_only.enabled:
+            await download_only.set(seeding.truthy(wanted))
+        if not options:
+            poller.poke()
+            return {"ok": True, "applied": {seeding.KEY: wanted}, "pending": {}}
+        held = download_only.enabled and "max-overall-upload-limit" in options
+        live_options = dict(options)
+        if held:
+            # Saved for when download-only is switched off; the floor stays live.
+            live_options.pop("max-overall-upload-limit")
+        if live_options:
+            await rpc.change_global_option(live_options)
         # Mirror into config so a manager/aria2c restart keeps the change.
         persistable = {k: v for k, v in options.items() if not isinstance(v, list)}
         cfg.data["aria2"]["options"].update(persistable)
@@ -778,13 +915,15 @@ def create_app(cfg: Config) -> FastAPI:
             live = {}
         applied, pending = {}, {}
         for key, value in options.items():
-            if isinstance(value, list) or not live:
+            if isinstance(value, list) or not live or (held and key == "max-overall-upload-limit"):
                 applied[key] = value
             elif str(live.get(key)) == str(value):
                 applied[key] = value
             else:
                 pending[key] = value
 
+        if wanted is not None:
+            applied[seeding.KEY] = wanted
         note = "Global options updated: " + ", ".join(applied) if applied else ""
         if pending:
             note = (note + "; " if note else "") + (
@@ -796,6 +935,15 @@ def create_app(cfg: Config) -> FastAPI:
         return {"ok": True, "applied": applied, "pending": pending}
 
     # ---- rules -----------------------------------------------------------
+    @app.get("/api/routing")
+    async def get_routing():
+        return router.public_state()
+
+    @app.post("/api/routing")
+    async def set_routing(req: RoutingRequest):
+        router.save(enabled=req.enabled, folders=req.folders, extensions=req.extensions)
+        return {"ok": True, **router.public_state()}
+
     @app.get("/api/rules")
     async def get_rules():
         return {

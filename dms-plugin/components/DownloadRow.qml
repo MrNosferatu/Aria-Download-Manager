@@ -77,7 +77,14 @@ Rectangle {
                          "text": "File missing",
                          "color": Theme.warning
                      })
-        if (dl.isTorrent)
+        //: The metadata fetch goes away by itself once the torrent it
+        //: describes starts, so it reads as the wait, not as a download.
+        if (dl.isMetadata)
+            out.push({
+                         "text": "Fetching details",
+                         "color": Theme.surfaceVariantText
+                     })
+        else if (dl.isTorrent)
             out.push({
                          "text": "Torrent",
                          "color": Theme.surfaceVariantText

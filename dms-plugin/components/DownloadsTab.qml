@@ -96,6 +96,44 @@ Item {
 
     readonly property bool historyMode: filter === "history"
 
+    // ---- sort ------------------------------------------------------------
+    //: "queue", "added" or "finished", and whether it runs backwards. Kept in
+    //: the plugin's settings, like the Settings tab's mode, so the list opens
+    //: the way it was left. The manager stamps addedAt / finishedAt on every
+    //: row, since aria2 itself keeps no timestamps.
+    readonly property var sortFields: ["queue", "added", "finished"]
+    readonly property var sortLabels: ["Queue order", "Date added", "Date completed"]
+    //: Each field starts the way people expect it: the queue from the front,
+    //: dates newest first.
+    readonly property var sortDefaultDesc: ({
+            "queue": false,
+            "added": true,
+            "finished": true
+        })
+    readonly property string storedSort: {
+        const field = service ? service.cfg.downloadSort : ""
+        return sortFields.indexOf(field) >= 0 ? field : "queue"
+    }
+    //: History has no queue; it is ordered by when things finished instead.
+    readonly property string sortField: historyMode && storedSort === "queue" ? "finished" : storedSort
+    readonly property bool sortDesc: historyMode && storedSort === "queue" ? true : (service ? service.cfg.downloadSortDesc === true : false)
+
+    function setSort(field, desc) {
+        PluginService.savePluginData("ariaDownloadManager", "downloadSort", field)
+        PluginService.savePluginData("ariaDownloadManager", "downloadSortDesc", desc)
+    }
+
+    onSortFieldChanged: recompute()
+    onSortDescChanged: recompute()
+
+    readonly property var historyEntries: {
+        const entries = service && service.history ? (service.history.entries || []) : []
+        const key = sortField === "added" ? "added_at" : "finished_at"
+        const dir = sortDesc ? -1 : 1
+        const at = e => e[key] || e.first_seen || 0
+        return entries.slice().sort((a, b) => dir * (at(a) - at(b)))
+    }
+
     // gid -> row, so a delegate can bind to live values without the list model
     // itself churning every tick.
     readonly property var byGid: {
@@ -132,12 +170,23 @@ Item {
         })
 
         const rankOf = d => service.isActing(d.gid) ? 0 : (rank[d.status] !== undefined ? rank[d.status] : 9)
-        list.sort((a, b) => {
-            const diff = rankOf(a) - rankOf(b)
-            if (diff)
-                return diff
-            return (a.queuePosition || 0) - (b.queuePosition || 0)
-        })
+        const byQueue = (a, b) => (rankOf(a) - rankOf(b)) || ((a.queuePosition || 0) - (b.queuePosition || 0))
+        const dir = sortDesc ? -1 : 1
+        if (sortField === "queue") {
+            list.sort((a, b) => dir * byQueue(a, b))
+        } else {
+            const key = sortField === "added" ? "addedAt" : "finishedAt"
+            list.sort((a, b) => {
+                // Nothing to order by (not finished yet) sinks to the end
+                // either way, in queue order, rather than flipping to the top.
+                const x = a[key], y = b[key]
+                const xNone = x === undefined || x === null
+                const yNone = y === undefined || y === null
+                if (xNone || yNone)
+                    return (xNone - yNone) || byQueue(a, b)
+                return dir * (x - y) || byQueue(a, b)
+            })
+        }
 
         const next = list.map(d => d.gid)
         if (next.join(",") !== gids.join(","))
@@ -232,6 +281,7 @@ Item {
             anchors.left: parent.left
             anchors.verticalCenter: parent.verticalCenter
             width: Math.max(0, parent.width - addButton.width - Theme.spacingS
+                                - sortDropdown.width - sortDirButton.width - Theme.spacingS
                                 - (selectButton.visible ? selectButton.width + Theme.spacingS : 0)
                                 - (clearHistoryButton.visible ? clearHistoryButton.width + Theme.spacingS : 0))
             height: 40
@@ -239,6 +289,39 @@ Item {
             placeholderText: tab.historyMode ? "Search is not available in history" : "Search by name"
             showClearButton: true
             onTextChanged: tab.search = text
+        }
+
+        //: Order sits with the view controls — after search, before the
+        //: buttons that act on rows.
+        DankDropdown {
+            id: sortDropdown
+
+            anchors.left: searchField.right
+            anchors.leftMargin: Theme.spacingS
+            anchors.verticalCenter: parent.verticalCenter
+            width: 150
+            height: 40
+            compactMode: true
+            options: tab.historyMode ? tab.sortLabels.slice(1) : tab.sortLabels
+            currentValue: tab.sortLabels[tab.sortFields.indexOf(tab.sortField)]
+            onValueChanged: label => {
+                const field = tab.sortFields[tab.sortLabels.indexOf(label)]
+                if (field && field !== tab.sortField)
+                    tab.setSort(field, tab.sortDefaultDesc[field])
+            }
+        }
+
+        DankActionButton {
+            id: sortDirButton
+
+            anchors.left: sortDropdown.right
+            anchors.verticalCenter: parent.verticalCenter
+            buttonSize: 36
+            iconSize: Theme.iconSizeSmall
+            iconName: tab.sortDesc ? "arrow_downward" : "arrow_upward"
+            tooltipText: (tab.sortField === "queue" ? (tab.sortDesc ? "Back of the queue first" : "Front of the queue first")
+                                                    : (tab.sortDesc ? "Newest first" : "Oldest first")) + " — click to reverse"
+            onClicked: tab.setSort(tab.sortField, !tab.sortDesc)
         }
 
         DankButton {
@@ -504,7 +587,7 @@ Item {
         clip: true
         spacing: Theme.spacingXS
         visible: tab.historyMode
-        model: tab.service && tab.service.history ? (tab.service.history.entries || []) : []
+        model: tab.historyEntries
 
         delegate: HistoryRow {
             required property var modelData

@@ -87,7 +87,7 @@
   const VIDEO_MIN = () => (settings && settings.videoMinPx) || 200;
   let overlay = null;      // { host, root, button, menu }
   let anchored = null;     // the <video> the button currently sits on
-  let candidateCount = 0;
+  let candidates = [];     // [{url, kind}] the background worker saw on this tab
   let frame = 0;
 
   function buildOverlay() {
@@ -171,6 +171,11 @@
 
     const found = await api.runtime.sendMessage({ type: 'videoCandidates' });
     const candidates = (found && found.candidates) || [];
+    // A player with a real file as its source is playing exactly that file, so
+    // it goes first rather than whichever manifest the page fetched last.
+    const own = anchored && sourceOf(anchored);
+    const mine = own && candidates.findIndex((c) => sameUrl(c.url, own));
+    if (mine > 0) candidates.unshift(...candidates.splice(mine, 1));
     if (!candidates.length) {
       menu.replaceChildren(note(
         'No stream seen on this tab yet. Start playback, then try again.'));
@@ -228,10 +233,31 @@
     if (result.unsupported) menu.append(note(result.unsupported, true));
   }
 
+  const sameUrl = (a, b) => a.split('#')[0] === b.split('#')[0];
+
+  function sourceOf(video) {
+    const src = video.currentSrc || video.src || '';
+    return /^https?:/i.test(src) ? src : '';
+  }
+
+  /* Whether this element is plausibly playing something that was sniffed. A
+     <video> with a plain http(s) source names its file outright, so it only
+     counts when that very file went past on the network and was big enough to
+     be kept — which rules out spinners and looping decorations (Discord's
+     loading animation is one) that would otherwise borrow a stream seen
+     elsewhere on the page. A blob: source is MSE and says nothing, so any
+     sniffed stream will do. No source at all is a player not yet started. */
+  function isCandidateVideo(video) {
+    const src = sourceOf(video);
+    if (src) return candidates.some((c) => sameUrl(c.url, src));
+    return /^blob:/i.test(video.currentSrc || video.src || '');
+  }
+
   function bestVideo() {
     let best = null;
     let bestArea = 0;
     for (const video of document.querySelectorAll('video')) {
+      if (!isCandidateVideo(video)) continue;
       const box = video.getBoundingClientRect();
       if (box.width < VIDEO_MIN() || box.height < VIDEO_MIN() * 0.5) continue;
       // Off-screen players (carousels, hidden tabs) should not claim the button.
@@ -246,7 +272,7 @@
 
   function position() {
     frame = 0;
-    if (!settings || !settings.enabled || settings.videoSniffer === false || !candidateCount) {
+    if (!settings || !settings.enabled || settings.videoSniffer === false || !candidates.length) {
       if (overlay) overlay.host.style.display = 'none';
       return;
     }
@@ -310,7 +336,7 @@
   /* ----------------------------------------------------------- messages */
   api.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message.type === 'videoFound') {
-      candidateCount = message.count || 0;
+      candidates = message.candidates || [];
       schedule();
       sendResponse({ ok: true });
       return false;
