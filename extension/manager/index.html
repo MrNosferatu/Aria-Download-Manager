@@ -4,7 +4,8 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Aria Download Manager</title>
-<link rel="icon" href="aria2-logo.png">
+<link rel="icon" type="image/png" sizes="128x128" href="../icons/icon-128.png">
+<link rel="icon" type="image/png" sizes="32x32" href="../icons/icon-32.png">
 <link rel="stylesheet" href="../lib/design.css">
 <link rel="stylesheet" href="style.css">
 </head>
@@ -165,8 +166,10 @@
         <label class="setting"><span class="text"><span class="label">On</span></span>
           <span class="switch"><input type="checkbox" id="route-enabled"><span class="track"><span class="knob"></span></span></span></label>
       </div>
-      <p class="hint">Each download goes to a subfolder of the download folder, picked from its
-        file type. Blank means the download folder itself. An absolute path is used as it is.</p>
+      <p class="hint">Everything starts in the download folder. With sorting on, each download
+        goes to the subfolder its file type names below. Blank means the download folder itself,
+        and an absolute path is used as it is.</p>
+      <div id="route-default" class="stack"></div>
       <div id="route-folders" class="stack"></div>
       <details id="route-ext-wrap" class="fold" data-level="advanced">
         <summary>Which extensions count as what</summary>
