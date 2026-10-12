@@ -334,6 +334,8 @@ api.downloads.onCreated.addListener(async (item) => {
   // Both hosts count: the file's own, and the page that asked for it.
   if (isBlocked(settings, item.url, item.referrer)) return;
   if (item.byExtensionId && item.byExtensionId === api.runtime.id) return;
+  // Torrents switched off: leave .torrent files to the browser / torrent client.
+  if (!settings.captureMagnets && isTorrentFile(item.url, item.filename, item.mime)) return;
   if (settings.minSizeMB > 0 && item.totalBytes > 0
       && item.totalBytes < settings.minSizeMB * 1024 * 1024) {
     return;
