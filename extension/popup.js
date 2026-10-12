@@ -106,6 +106,7 @@ async function init() {
       : 'Off: the browser is handling its own downloads.';
     const site = $('site-block');
     if (site) site.disabled = !on || !currentHost;
+    $('captureMagnets').disabled = !on;
   }
 
   paintEnabled(settings.enabled !== false);
@@ -132,6 +133,14 @@ async function init() {
     else hosts.delete(currentHost);
     settings.blockedHosts = [...hosts];
     await saveSettings({ blockedHosts: settings.blockedHosts });
+  });
+
+  // Same switch as "Catch torrents" in settings: magnets and .torrent files.
+  $('captureMagnets').checked = settings.captureMagnets !== false;
+  $('captureMagnets').title = 'Off leaves magnet links and .torrent files to the browser or your torrent client.';
+  $('captureMagnets').addEventListener('change', async (event) => {
+    settings.captureMagnets = event.target.checked;
+    await saveSettings({ captureMagnets: settings.captureMagnets });
   });
 
   $('add').addEventListener('submit', async (event) => {

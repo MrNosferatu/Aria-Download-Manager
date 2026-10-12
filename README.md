@@ -97,7 +97,7 @@ cp config.example.yaml config.yaml     # optional; defaults work as-is
 ```
 
 ```
-Aria Download Manager 1.0.0
+Aria Download Manager 1.1.0
   socket     /run/user/1000/aria-download-manager.sock
   config     /home/you/GitHub/Aria2C/config.yaml
 ```

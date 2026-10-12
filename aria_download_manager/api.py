@@ -34,7 +34,7 @@ from . import qbittorrent as qbt
 from . import routing as routing_mod
 from . import seeding
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 
 # --------------------------------------------------------------------------
 # request models
