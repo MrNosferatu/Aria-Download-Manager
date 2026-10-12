@@ -16,7 +16,9 @@ const DEFAULTS = {
   intercept: true,
   // Auto-capture left-clicks on links that look like downloads.
   capture: true,
-  // Always capture magnet: links — the browser can rarely do anything useful.
+  // Torrents: magnet: links and .torrent files. Independent of `capture` and
+  // `intercept`, so torrents can go to aria2c (or stay with a torrent client)
+  // whatever the other switches say. Key name kept for stored settings.
   captureMagnets: true,
   // Alt+click sends any link, even when capture is off.
   altClick: true,
@@ -94,12 +96,26 @@ function isBlocked(settings, url, pageUrl) {
   return hostMatches(list, hostOf(url)) || hostMatches(list, hostOf(pageUrl || ''));
 }
 
+const isMagnet = (url) => /^magnet:/i.test(url || '');
+
+// A .torrent file, judged by URL, file name or MIME type.
+function isTorrentFile(url, name, mime) {
+  if (/bittorrent/i.test(mime || '')) return true;
+  if (/\.torrent$/i.test(name || '')) return true;
+  try {
+    return /\.torrent$/i.test(new URL(url).pathname);
+  } catch {
+    return false;
+  }
+}
+
 // Does this link look like a file rather than a page? Used for click capture;
 // browser-initiated downloads skip this, since the browser already decided.
 function looksDownloadable(settings, url, hasDownloadAttr, pageUrl) {
-  if (/^magnet:/i.test(url)) return settings.captureMagnets;
+  if (isMagnet(url)) return settings.captureMagnets;
   if (!/^https?:\/\//i.test(url)) return false;
   if (isBlocked(settings, url, pageUrl)) return false;
+  if (!settings.captureMagnets && isTorrentFile(url)) return false;
   if (hasDownloadAttr) return true;
   try {
     const ext = (new URL(url).pathname.split('.').pop() || '').toLowerCase();

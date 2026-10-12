@@ -160,7 +160,7 @@ On top of that:
 | Right-click a selection | send every link inside it |
 | Click capture | left-click on a magnet, or on a link the browser would *render* rather than download, sends it here instead |
 | Alt+click | sends any link, even with capture off |
-| Settings page | *Simple* shows the connection test, the save folder, add-paused and notifications; *Advanced* adds what gets caught (browser downloads, file links, magnets, Alt+click, the video button), minimum size, file types, sites to leave alone, and in-page toasts |
+| Settings page | *Simple* shows the connection test, the save folder, add-paused and notifications; *Advanced* adds what gets caught (browser downloads, file links, torrents (magnets and .torrent files), Alt+click, the video button), minimum size, file types, sites to leave alone, and in-page toasts |
 
 ## 4. Custom download actions (the rules engine)
 
