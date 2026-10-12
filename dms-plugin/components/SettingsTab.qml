@@ -21,6 +21,16 @@ Item {
     //: needs no plumbing of its own.
     readonly property bool advanced: (service ? service.cfg.settingsMode : "") === "advanced"
 
+    //: Which engine downloads torrents, in one line.
+    function torrentEngineText() {
+        const qb = service ? service.qbittorrent : ({})
+        if (!qb.wanted)
+            return "aria2c"
+        if (qb.running)
+            return "qBittorrent " + (qb.version || "") + " · " + (qb.url || "")
+        return "aria2c (qBittorrent unavailable: " + (qb.last_error || "not running") + ")"
+    }
+
     function setMode(mode) {
         PluginService.savePluginData("ariaDownloadManager", "settingsMode", mode)
     }
@@ -735,7 +745,7 @@ Item {
                     Repeater {
                         model: {
                             const aria2 = tab.service ? tab.service.aria2 : ({})
-                            return [["Managed", aria2.managed ? "Yes, started by the manager" : "No, external process"], ["Running", aria2.running ? "Yes" : "No"], ["PID", String(aria2.pid !== undefined && aria2.pid !== null ? aria2.pid : "—")], ["Version", aria2.version || "—"], ["RPC address", aria2.rpc_url || "—"], ["Uptime", Fmt.eta(aria2.uptime)], ["Restarts", String(aria2.restarts || 0)], ["Log file", aria2.log_file || "—"], ["Session file", aria2.session_file || "—"], ["Last error", aria2.last_error || "None"]]
+                            return [["Managed", aria2.managed ? "Yes, started by the manager" : "No, external process"], ["Running", aria2.running ? "Yes" : "No"], ["PID", String(aria2.pid !== undefined && aria2.pid !== null ? aria2.pid : "—")], ["Version", aria2.version || "—"], ["RPC address", aria2.rpc_url || "—"], ["Uptime", Fmt.eta(aria2.uptime)], ["Restarts", String(aria2.restarts || 0)], ["Log file", aria2.log_file || "—"], ["Session file", aria2.session_file || "—"], ["Last error", aria2.last_error || "None"], ["Torrents", tab.torrentEngineText()]]
                         }
 
                         Row {

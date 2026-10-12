@@ -39,6 +39,16 @@ sudo apt install aria2      # Debian/Ubuntu
 sudo dnf install aria2      # Fedora
 ```
 
+Recommended for torrents: **qbittorrent-nox**. When it is installed, torrents
+(magnets, `.torrent` files and `.torrent` links) go to a qBittorrent the manager
+runs itself, and everything else stays with aria2c — see §1b.
+
+```bash
+sudo pacman -S qbittorrent-nox    # Arch
+sudo apt install qbittorrent-nox  # Debian/Ubuntu
+sudo dnf install qbittorrent-nox  # Fedora
+```
+
 The Python side needs `fastapi`, `aiohttp` and `PyYAML`, which are already
 present on this machine's system Python. On another machine:
 
@@ -49,6 +59,35 @@ python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 There is no web server: FastAPI only routes the requests that arrive on the
 socket, in-process. `.torrent` uploads travel as base64 JSON, so no
 `python-multipart` either.
+
+## 1b. Torrents: aria2c or qBittorrent
+
+aria2 can only select or skip a torrent's files, so on aria2 the manager fakes
+priorities as strict tiers (a lower tier starts only when every higher one is
+done). qBittorrent has the real thing, so with `torrent.engine: auto` (the
+default) torrents go to qbittorrent-nox whenever it is installed:
+
+- **Per-file priority** — Do not download / Normal / High / Maximum, set in the
+  torrent's Files list. Higher priorities get their pieces first, as in
+  qBittorrent itself.
+- **Choose files before downloading** — the Add dialog's "choose files first"
+  fetches a magnet's file list and waits stopped for your choice.
+- **Download in order** and **First and last pieces first**, per torrent.
+- **Download only, never seed** — global or per torrent, through qBittorrent's
+  share limits (stop at ratio 0 / seeding time 0) plus a 1 KiB/s upload cap
+  while downloading.
+- `.torrent` links the browser hands over are fetched by the manager with the
+  page's cookie, so private-tracker links work; a link that turns out not to be
+  a torrent goes to aria2c like any other file.
+
+Torrents show up in the same list, tagged *Torrent · qBittorrent*, and pause,
+resume, remove (with files), queue order, limits and history all work as for
+aria2 downloads. The rules engine acts on aria2 downloads only. The manager runs
+qbittorrent-nox with its own profile under `~/.local/share/aria-download-manager/qbittorrent`,
+its Web UI on `127.0.0.1:8089` with no password, and stops it on exit; set
+`qbittorrent.managed: false` to use one you already run. If it cannot start,
+torrents fall back to aria2c and Settings says why. `torrent.engine: aria2`
+keeps everything on aria2c.
 
 ## 2. Run
 
@@ -461,6 +500,7 @@ installation is required** to run it:
 ```bash
 python3 tests/test_manager.py     # the whole manager suite
 python3 tests/test_ipc.py         # Unix socket, event stream, native-messaging host
+python3 tests/test_qbittorrent.py # torrents through a real qbittorrent-nox (skipped if absent)
 ```
 
 It covers config merging and persistence, the aria2c command line, the API and
@@ -520,6 +560,7 @@ aria_download_manager/
   supervisor.py   spawn / health-check / restart / shut down aria2c
   state.py        1 Hz poller, snapshot normalisation, live-stream fan-out
   rules.py        custom download actions
+  qbittorrent.py  qBittorrent as the torrent engine: Web API client, process, row mapping
   api.py          the API: FastAPI routes, run in-process (no web server)
   ipc.py          the Unix socket: newline-delimited JSON into those routes
   native_host.py  native-messaging bridge for the extension (stdlib only)

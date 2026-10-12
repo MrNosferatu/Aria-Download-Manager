@@ -29,6 +29,12 @@ os.environ["XDG_DATA_HOME"] = tempfile.mkdtemp(prefix="aria-download-manager-tes
 
 from aria_download_manager.api import clean_options, create_app, piece_map, split_uris  # noqa: E402
 from aria_download_manager.config import Config  # noqa: E402
+from aria_download_manager.config import DEFAULTS  # noqa: E402
+
+# These suites drive aria2c (real or fake). Torrents would otherwise go to a
+# qbittorrent-nox if one happens to be installed; tests/test_qbittorrent.py
+# covers that engine.
+DEFAULTS["torrent"]["engine"] = "aria2"
 from tests.fake_aria2 import serve  # noqa: E402
 from tests.harness import IPCSession, ManagerRunner, check, free_port, summary, wait_for  # noqa: E402
 

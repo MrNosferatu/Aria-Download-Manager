@@ -26,6 +26,10 @@ Column {
     //: This torrent's own download-only state, as last loaded or toggled.
     property bool downloadOnly: false
     readonly property bool isTorrent: !!statusInfo.bittorrent
+    //: A torrent run by qBittorrent rather than aria2c.
+    readonly property bool isQb: !!(detailData && detailData.engine === "qbittorrent")
+    property bool sequential: false
+    property bool firstLast: false
     //: The global setting covers every torrent; the switch then just says so.
     readonly property bool downloadOnlyEverywhere: service ? service.downloadOnly : false
 
@@ -62,6 +66,8 @@ Column {
                             downField.raw = opts["max-download-limit"] || ""
                             upField.raw = opts["max-upload-limit"] || ""
                             detail.downloadOnly = opts["download-only"] === "true"
+                            detail.sequential = opts["sequential-download"] === "true"
+                            detail.firstLast = opts["first-last-piece-first"] === "true"
                             const levels = ({})
                             for (const f of (payload.files || []))
                                 levels[f.index] = f.priority !== undefined ? f.priority : (f.selected === "true" ? 1 : 0)
@@ -211,6 +217,8 @@ Column {
         Column {
             width: (optionGrid.width - Theme.spacingS) / 2
             spacing: 1
+            //: Parts and connections are aria2's; qBittorrent manages its own peers.
+            visible: !detail.isQb
 
             StyledText {
                 text: "Parts"
@@ -229,6 +237,7 @@ Column {
         Column {
             width: (optionGrid.width - Theme.spacingS) / 2
             spacing: 1
+            visible: !detail.isQb
 
             StyledText {
                 text: "Connections per server"
@@ -301,15 +310,44 @@ Column {
         }
     }
 
+    Repeater {
+        model: detail.isQb ? [["sequential", "Download in order"], ["firstLast", "First and last pieces first"]] : []
+
+        Row {
+            id: qbSwitch
+
+            required property var modelData
+
+            spacing: Theme.spacingS
+
+            BoolSwitch {
+                anchors.verticalCenter: parent.verticalCenter
+                checked: detail[qbSwitch.modelData[0]]
+                onToggled: value => detail[qbSwitch.modelData[0]] = value
+            }
+
+            StyledText {
+                anchors.verticalCenter: parent.verticalCenter
+                text: qbSwitch.modelData[1]
+                font.pixelSize: Theme.fontSizeSmall
+                color: Theme.surfaceText
+            }
+        }
+    }
+
     DankButton {
         text: "Apply"
         buttonHeight: 40
         iconName: "check"
         onClicked: {
             const options = ({})
-            if (splitField.text.trim())
+            if (detail.isQb) {
+                options["sequential-download"] = detail.sequential ? "true" : "false"
+                options["first-last-piece-first"] = detail.firstLast ? "true" : "false"
+            }
+            if (splitField.text.trim() && !detail.isQb)
                 options["split"] = splitField.text.trim()
-            if (connField.text.trim())
+            if (connField.text.trim() && !detail.isQb)
                 options["max-connection-per-server"] = connField.text.trim()
             if (downField.value)
                 options["max-download-limit"] = downField.value
@@ -343,7 +381,8 @@ Column {
         StyledText {
             anchors.verticalCenter: parent.verticalCenter
             width: Math.max(0, parent.width - setAll.width - Theme.spacingS)
-            text: "Higher priorities finish before lower ones start."
+            text: detail.isQb ? "Higher priorities get their pieces first."
+                              : "Higher priorities finish before lower ones start."
             font.pixelSize: Theme.fontSizeSmall
             color: Theme.surfaceVariantText
             elide: Text.ElideRight
@@ -492,7 +531,7 @@ Column {
     StyledText {
         width: parent.width
         visible: detail.uris.length > 0
-        text: "Links · " + detail.uris.length
+        text: (detail.isQb ? "Trackers · " : "Links · ") + detail.uris.length
         font.pixelSize: Theme.fontSizeSmall
         font.weight: Font.Medium
         color: Theme.surfaceVariantText

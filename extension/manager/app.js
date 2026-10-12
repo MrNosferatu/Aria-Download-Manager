@@ -425,7 +425,7 @@ function updateRow(row, dl) {
   // The metadata fetch disappears by itself once the torrent it describes
   // starts, so it is labelled for the wait rather than as a download.
   if (dl.isMetadata) tags.push('<span class="tag">Fetching details</span>');
-  else if (dl.isTorrent) tags.push('<span class="tag">Torrent</span>');
+  else if (dl.isTorrent) tags.push(`<span class="tag">${dl.engine === 'qbittorrent' ? 'Torrent · qBittorrent' : 'Torrent'}</span>`);
   if (dl.seeder) tags.push('<span class="tag tag-complete">Seeding</span>');
   const ruleState = S.state?.rules?.downloads?.[dl.gid] || {};
   for (const [name, info] of Object.entries(ruleState)) {
@@ -643,7 +643,9 @@ function renderDetail(host, gid, data) {
       <div>
         <h3>Files ${files.length > 1 ? `· ${files.length}` : ''}</h3>
         ${files.length > 1 ? `<div class="filehead">
-          <span class="hint">Higher priorities finish before lower ones start.</span>
+          <span class="hint">${data.engine === 'qbittorrent'
+            ? 'Higher priorities get their pieces first.'
+            : 'Higher priorities finish before lower ones start.'}</span>
           <label>Set all ${prioritySelect('all', '')}</label>
         </div>` : ''}
         <div class="filelist">
@@ -655,15 +657,15 @@ function renderDetail(host, gid, data) {
             </div>`).join('') || '<p class="hint">No file information yet.</p>'}
         </div>
         ${files.length > 1 ? '<button class="btn btn-sm" data-role="save-files" style="margin-top:8px">Apply file choices</button>' : ''}
-        <h3>Connections ${active.length ? `· ${active.length}` : ''}</h3>
+        ${data.engine === 'qbittorrent' ? '' : `<h3>Connections ${active.length ? `· ${active.length}` : ''}</h3>
         <div class="serverlist">
           ${active.map((s) => `
             <div class="filerow">
               <span class="fname" title="${escapeHtml(s.currentUri || s.uri)}">${escapeHtml((s.currentUri || s.uri || '').slice(0, 70))}</span>
               <span class="fsize">${fmtSpeed(s.downloadSpeed)}</span>
             </div>`).join('') || '<p class="hint">No open connections.</p>'}
-        </div>
-        ${(data.uris || []).length ? `<h3>Links</h3><div class="filelist">${
+        </div>`}
+        ${(data.uris || []).length ? `<h3>${data.engine === 'qbittorrent' ? 'Trackers' : 'Links'}</h3><div class="filelist">${
           data.uris.map((u) => `<div class="filerow"><span class="fname" title="${escapeHtml(u.uri)}">${escapeHtml(u.uri)}</span><span class="fsize">${escapeHtml(u.status)}</span></div>`).join('')
         }</div>` : ''}
         ${(data.peers || []).length ? `<h3>Peers · ${data.peers.length}</h3><div class="filelist">${
@@ -676,7 +678,7 @@ function renderDetail(host, gid, data) {
   // the middle of editing must survive that: the options block is built once
   // per expansion and moved into each new render, and file ticks are kept.
   const optsHost = $('[data-role="dl-opts"]', host);
-  if (!draft.options) draft.options = buildDownloadOptions(gid, opts, Boolean(st.bittorrent));
+  if (!draft.options) draft.options = buildDownloadOptions(gid, opts, Boolean(st.bittorrent), data.engine);
   optsHost.replaceWith(draft.options);
   const pickers = $$('[data-file]', host).filter((s) => s.dataset.file !== 'all');
   const remember = (sel) => {
@@ -708,7 +710,8 @@ function prioritySelect(index, value) {
   }</select>`;
 }
 
-function buildDownloadOptions(gid, opts, isTorrent) {
+function buildDownloadOptions(gid, opts, isTorrent, engine) {
+  const qb = engine === 'qbittorrent';
   const block = document.createElement('div');
   const fields = [];
   const row = (label, control) => {
@@ -719,7 +722,8 @@ function buildDownloadOptions(gid, opts, isTorrent) {
     line.append(lab, control);
     block.append(line);
   };
-  for (const [key, label] of [['split', 'Parts'], ['max-connection-per-server', 'Connections per server']]) {
+  // Parts and connections are aria2's; qBittorrent manages its own peers.
+  for (const [key, label] of qb ? [] : [['split', 'Parts'], ['max-connection-per-server', 'Connections per server']]) {
     const input = document.createElement('input');
     input.type = 'number';
     input.min = '1';
@@ -752,6 +756,14 @@ function buildDownloadOptions(gid, opts, isTorrent) {
     input.addEventListener('change', sync);
     sync();
     if (!everyTorrent) fields.push(['download-only', () => String(input.checked), opts['download-only'] || 'false']);
+  }
+  if (qb) {
+    for (const [key, label] of [['sequential-download', 'Download in order'],
+      ['first-last-piece-first', 'First and last pieces first']]) {
+      const { box, input } = boolSwitch(opts[key] === 'true', false);
+      row(label, box);
+      fields.push([key, () => String(input.checked), opts[key] || 'false']);
+    }
   }
   const apply = document.createElement('button');
   apply.className = 'btn btn-sm';
@@ -1167,6 +1179,13 @@ async function saveGlobalOptions() {
   }
 }
 
+// Which engine downloads torrents, in one line.
+function torrentEngineText(qb) {
+  if (!qb || !qb.wanted) return 'aria2c';
+  if (qb.running) return `qBittorrent ${qb.version || ''} · ${qb.url || ''}`;
+  return `aria2c (qBittorrent unavailable: ${qb.last_error || 'not running'})`;
+}
+
 function renderProcInfo() {
   const aria2 = S.state?.aria2 || {};
   $('#proc-info').innerHTML = Object.entries({
@@ -1180,6 +1199,7 @@ function renderProcInfo() {
     'Log file': aria2.log_file || '—',
     'Session file': aria2.session_file || '—',
     'Last error': aria2.last_error || 'None',
+    Torrents: torrentEngineText(S.state?.qbittorrent),
   }).map(([k, v]) => `<label>${k}</label><code>${escapeHtml(v)}</code>`).join('');
 }
 

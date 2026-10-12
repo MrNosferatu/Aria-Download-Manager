@@ -83,6 +83,7 @@ def normalize(item: dict) -> dict:
         name = name[len(METADATA_PREFIX):].strip() or name
     return {
         "gid": item.get("gid", ""),
+        "engine": "aria2",
         "status": item.get("status", "unknown"),
         "name": name,
         "isMetadata": metadata,
@@ -117,6 +118,11 @@ def normalize(item: dict) -> dict:
             "",
         ),
     }
+
+
+def aria2_only(snapshot: dict) -> dict:
+    """The snapshot as aria2 alone sees it: no other engine's rows."""
+    return {**snapshot, "downloads": [d for d in snapshot.get("downloads", []) if d.get("engine", "aria2") == "aria2"]}
 
 
 class Store:
@@ -209,6 +215,9 @@ class Poller:
         self.extras: dict[str, Any] = {}
         #: callables handed each finished snapshot (e.g. the history recorder)
         self.observers: list[Any] = []
+        #: Other engines' downloads (qBittorrent): async callables returning
+        #: (rows, {"dl_info_speed", "up_info_speed"}) or None while unavailable.
+        self.sources: list[Any] = []
         self._task: asyncio.Task | None = None
         self._wake = asyncio.Event()
         self._fail_streak = 0
@@ -257,7 +266,8 @@ class Poller:
                 last = now
                 snapshot = await self.poll_once()
                 if snapshot is not None:
-                    await self.rules.evaluate(snapshot, dt)
+                    # Rules act through aria2's RPC, so they judge aria2's rows only.
+                    await self.rules.evaluate(aria2_only(snapshot), dt)
                     snapshot["rules"] = self.rules.public_state()
                     for name, provider in self.extras.items():
                         try:
@@ -340,6 +350,19 @@ class Poller:
                     row["queuePosition"] = offset
                 self._measure_speed(row, now)
                 downloads.append(row)
+        stat = stat or {}
+        extra_down = extra_up = 0
+        for source in self.sources:
+            result = await source()
+            if not result:
+                continue
+            rows, transfer = result
+            for row in rows:
+                self._measure_speed(row, now)
+                downloads.append(row)
+            extra_down += _int((transfer or {}).get("dl_info_speed"))
+            extra_up += _int((transfer or {}).get("up_info_speed"))
+        others = [d for d in downloads if d.get("engine", "aria2") != "aria2"]
         # Forget downloads that have gone away, so the map cannot grow forever.
         live = {d["gid"] for d in downloads if d["gid"]}
         for gone in [gid for gid in self._progress if gid not in live]:
@@ -354,14 +377,20 @@ class Poller:
             # checking it only ever produced a false "File missing".
             if path and not row.get("isMetadata") and row.get("status") in ("complete", "error"):
                 row["fileExists"] = os.path.exists(path)
-        stat = stat or {}
+        def others_in(*statuses: str) -> int:
+            return len([d for d in others if d.get("status") in statuses])
+
         counts = {
-            "active": len(active or []),
-            "waiting": len([d for d in (waiting or []) if d.get("status") == "waiting"]),
-            "paused": len([d for d in (waiting or []) if d.get("status") == "paused"]),
-            "stopped": len(stopped or []),
-            "error": len([d for d in (stopped or []) if d.get("status") == "error"]),
-            "complete": len([d for d in (stopped or []) if d.get("status") == "complete"]),
+            "active": len(active or []) + others_in("active"),
+            "waiting": len([d for d in (waiting or []) if d.get("status") == "waiting"])
+            + others_in("waiting"),
+            "paused": len([d for d in (waiting or []) if d.get("status") == "paused"])
+            + others_in("paused"),
+            "stopped": len(stopped or []) + others_in("complete", "error"),
+            "error": len([d for d in (stopped or []) if d.get("status") == "error"])
+            + others_in("error"),
+            "complete": len([d for d in (stopped or []) if d.get("status") == "complete"])
+            + others_in("complete"),
             #: Everything aria2 is still holding, which is what an "All" view
             #: shows. Note aria2 forgets stopped downloads when it restarts or
             #: is purged; the history is the durable record.
@@ -371,8 +400,8 @@ class Poller:
             "ts": time.time(),
             "downloads": downloads,
             "global": {
-                "downloadSpeed": _int(stat.get("downloadSpeed")),
-                "uploadSpeed": _int(stat.get("uploadSpeed")),
+                "downloadSpeed": _int(stat.get("downloadSpeed")) + extra_down,
+                "uploadSpeed": _int(stat.get("uploadSpeed")) + extra_up,
                 "numActive": _int(stat.get("numActive")),
                 "numWaiting": _int(stat.get("numWaiting")),
                 "numStopped": _int(stat.get("numStopped")),
