@@ -70,8 +70,9 @@ default) torrents go to qbittorrent-nox whenever it is installed:
 - **Per-file priority** — Do not download / Normal / High / Maximum, set in the
   torrent's Files list. Higher priorities get their pieces first, as in
   qBittorrent itself.
-- **Choose files before downloading** — the Add dialog's "choose files first"
-  fetches a magnet's file list and waits stopped for your choice.
+- **Choose files before downloading** — the DankBar Add panel always does
+  (it shows the torrent's files once they arrive), and so do the extension's
+  download dialog and the manager page's "choose files first".
 - **Download in order** and **First and last pieces first**, per torrent.
 - **Download only, never seed** — global or per torrent, through qBittorrent's
   share limits (stop at ratio 0 / seeding time 0) plus a 1 KiB/s upload cap

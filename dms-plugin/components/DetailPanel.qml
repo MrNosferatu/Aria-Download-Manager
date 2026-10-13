@@ -10,6 +10,18 @@ Column {
 
     property var service: null
     property string gid: ""
+    //: Shown by the Add panel for a torrent held for its file choice: the one
+    //: button applies options and files together and starts it.
+    property bool reviewing: false
+
+    signal started
+
+    //: Reused for another download (the Add panel's next torrent): start over.
+    onGidChanged: {
+        optionsInitialized = false
+        detailData = null
+        refresh()
+    }
     property var dl: ({})
     property var detailData: null
     property bool optionsInitialized: false
@@ -335,31 +347,34 @@ Column {
         }
     }
 
+    function optionsToSend() {
+        const options = ({})
+        if (detail.isQb) {
+            options["sequential-download"] = detail.sequential ? "true" : "false"
+            options["first-last-piece-first"] = detail.firstLast ? "true" : "false"
+        }
+        if (splitField.text.trim() && !detail.isQb)
+            options["split"] = splitField.text.trim()
+        if (connField.text.trim() && !detail.isQb)
+            options["max-connection-per-server"] = connField.text.trim()
+        if (downField.value)
+            options["max-download-limit"] = downField.value
+        const noUpload = detail.isTorrent && (detail.downloadOnly || detail.downloadOnlyEverywhere)
+        if (upField.value && !noUpload)
+            options["max-upload-limit"] = upField.value
+        if (detail.isTorrent && !detail.downloadOnlyEverywhere)
+            options["download-only"] = detail.downloadOnly ? "true" : "false"
+        return options
+    }
+
     DankButton {
+        visible: !detail.reviewing
         text: "Apply"
         buttonHeight: 40
         iconName: "check"
-        onClicked: {
-            const options = ({})
-            if (detail.isQb) {
-                options["sequential-download"] = detail.sequential ? "true" : "false"
-                options["first-last-piece-first"] = detail.firstLast ? "true" : "false"
-            }
-            if (splitField.text.trim() && !detail.isQb)
-                options["split"] = splitField.text.trim()
-            if (connField.text.trim() && !detail.isQb)
-                options["max-connection-per-server"] = connField.text.trim()
-            if (downField.value)
-                options["max-download-limit"] = downField.value
-            const noUpload = detail.isTorrent && (detail.downloadOnly || detail.downloadOnlyEverywhere)
-            if (upField.value && !noUpload)
-                options["max-upload-limit"] = upField.value
-            if (detail.isTorrent && !detail.downloadOnlyEverywhere)
-                options["download-only"] = detail.downloadOnly ? "true" : "false"
-            detail.service.post("/api/download/" + detail.gid + "/options", {
-                                    "options": options
-                                }, "Applied")
-        }
+        onClicked: detail.service.post("/api/download/" + detail.gid + "/options", {
+                                           "options": detail.optionsToSend()
+                                       }, "Applied")
     }
 
     // ---- files -----------------------------------------------------------
@@ -465,10 +480,10 @@ Column {
     }
 
     DankButton {
-        visible: detail.files.length > 1
-        //: A torrent waiting on this choice (added with "choose files") starts
-        //: with it; a running one just takes the new priorities.
-        readonly property bool startsIt: detail.statusInfo.status === "paused"
+        visible: detail.files.length > 1 || detail.reviewing
+        //: A torrent waiting on this choice starts with it; a running one just
+        //: takes the new priorities.
+        readonly property bool startsIt: detail.reviewing || detail.statusInfo.status === "paused"
         text: startsIt ? "Apply and start" : "Apply file choices"
         buttonHeight: 40
         iconName: startsIt ? "play_arrow" : "checklist"
@@ -486,11 +501,27 @@ Column {
                 ToastService.showError("Aria", "Pick at least one file to download")
                 return
             }
-            detail.service.post("/api/download/" + detail.gid + "/files", {
+            const gid = detail.gid
+            const resume = () => detail.service.post("/api/download/" + gid + "/resume", null, "Started",
+                                                    () => detail.started())
+            detail.service.post("/api/download/" + gid + "/files", {
                                     "levels": levels
                                 }, start ? "" : "File choices applied", () => {
-                                    if (start)
-                                        detail.service.post("/api/download/" + detail.gid + "/resume", null, "Started")
+                                    if (!start)
+                                        return
+                                    if (!detail.reviewing) {
+                                        resume()
+                                        return
+                                    }
+                                    // Held for review: its options go with the start.
+                                    const options = detail.optionsToSend()
+                                    if (Object.keys(options).length === 0) {
+                                        resume()
+                                        return
+                                    }
+                                    detail.service.post("/api/download/" + gid + "/options", {
+                                                            "options": options
+                                                        }, "", resume)
                                 })
         }
     }

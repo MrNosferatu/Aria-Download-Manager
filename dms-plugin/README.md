@@ -145,7 +145,13 @@ repeats the pill's status in words.
   *Done*), a search box, and an inline Add panel with a *Simple / Advanced*
   switch: Simple is links, folder and *Start paused*; Advanced adds rename,
   connections, parts, limits, referer, cookies, headers, proxy, checksum, queue
-  position and a `.torrent`/`.metalink` path. Each row expands into
+  position and a `.torrent`/`.metalink` path. *Next* always reviews before
+  anything starts: plain links are checked and shown with their real name,
+  size, type and resumability, with the folder (preset menu, or the chooser)
+  and *Download* / *Download later*; a torrent (magnet, `.torrent` link or
+  file) is added held, and once its file list arrives the panel shows its
+  files with priorities and its options, with *Apply and start* or *Cancel*.
+  Each row expands into
   the same detail the extension's manager page shows: piece map, paths, per-download options,
   file selection, live connections, URLs and peers. The **History** chip lists
   what the manager recorded, with re-add and forget.
