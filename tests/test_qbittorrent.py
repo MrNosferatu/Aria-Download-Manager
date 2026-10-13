@@ -96,6 +96,16 @@ def test_units(tmp_dir: Path) -> None:
           == ["active", "paused", "complete", "waiting", "error"])
     check("piece states bucketed", qbt.bucketize([2, 2, 1, 0], 2) == [100, 25])
 
+    from aria_download_manager.api import disposition_name, probe_headers
+    check("Content-Disposition names",
+          disposition_name('attachment; filename="Report 2026.pdf"') == "Report 2026.pdf"
+          and disposition_name("attachment; filename*=UTF-8''na%C3%AFve.zip") == "naïve.zip"
+          and disposition_name('attachment; filename="../../etc/passwd"') == "passwd")
+    ranged = probe_headers(206, {"Content-Range": "bytes 0-0/5000", "Content-Length": "1"})
+    check("ranged probe: full size, resumable", ranged["size"] == 5000 and ranged["resumable"], str(ranged))
+    plain = probe_headers(200, {"Content-Length": "77"})
+    check("plain probe: size, not resumable", plain["size"] == 77 and not plain["resumable"], str(plain))
+
     conf = tmp_dir / "ini" / "qBittorrent.conf"
     conf.parent.mkdir()
     conf.write_text("[Preferences]\nWebUI\\Port=1\nOther=keep\n[BitTorrent]\nSession\\X=1\n")
@@ -254,6 +264,20 @@ async def test_e2e(tmp_dir: Path) -> None:
                   await wait_for(lambda: (row(gids[0]) or {}).get("isMetadata") is True, 10), str(row(gids[0])))
             status, body = await call("POST", "/api/downloads", {"uris": [f"magnet:?xt=urn:btih:{magnet_hash}"]})
             check("adding it twice gives the same torrent", body.get("gids") == [gids[0]], str(body))
+
+            # ---- what the download dialog relies on -------------------------------
+            status, body = await call("POST", "/api/intake/add", {
+                "url": f"magnet:?xt=urn:btih:{magnet_hash}", "options": {"pause-metadata": "true"}})
+            check("intake says when a torrent was already there",
+                  body.get("existing") == [gids[0]], str(body))
+            status, body = await call("POST", "/api/intake/probe", {"url": f"{web_url}/linked.torrent"})
+            check("probe spots a torrent link", body.get("kind") == "torrent" and body.get("size") == len(linked),
+                  str(body))
+            status, body = await call("POST", "/api/intake/probe", {"url": "magnet:?xt=urn:btih:00&dn=Show"})
+            check("probe names a magnet", body.get("kind") == "torrent" and body.get("name") == "Show", str(body))
+            status, body = await call("POST", "/api/intake/probe", {"url": "http://127.0.0.1:9/nothing.zip"})
+            check("an unreachable probe still answers", status == 200 and body.get("size") is None
+                  and body.get("name") == "nothing.zip" and body.get("error"), str(body))
 
             # ---- .torrent links from the browser ---------------------------------
             status, body = await call("POST", "/api/intake/add", {

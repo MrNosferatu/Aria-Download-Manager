@@ -97,7 +97,7 @@ cp config.example.yaml config.yaml     # optional; defaults work as-is
 ```
 
 ```
-Aria Download Manager 1.1.0
+Aria Download Manager 1.2.0
   socket     /run/user/1000/aria-download-manager.sock
   config     /home/you/GitHub/Aria2C/config.yaml
 ```
@@ -198,6 +198,7 @@ On top of that:
 | Right-click a page | send the page URL, or every downloadable link on it |
 | Right-click a selection | send every link inside it |
 | Click capture | left-click on a magnet, or on a link the browser would *render* rather than download, sends it here instead |
+| Download dialog | optional (Settings → *Show a download dialog*, off by default): every caught download — browser downloads, clicks, the context menu, the popup's Add box — opens a small window first. A file shows its real name, size, type and whether it can resume, with the folder, connections, parts and speed limit to set; *Download later* queues it paused, *Let the browser download it* hands it back. A torrent or magnet is added held, and once its file list arrives the window shows every file with a checkbox and a priority, the save folder, *Download in order*, *First and last pieces first* and download-only, like qBittorrent's add dialog; Cancel or closing the window removes it again. Only the extension opens it, so the DankBar widget never shows a second one |
 | Alt+click | sends any link, even with capture off |
 | Settings page | *Simple* shows the connection test, the save folder, add-paused and notifications; *Advanced* adds what gets caught (browser downloads, file links, torrents (magnets and .torrent files), Alt+click, the video button), minimum size, file types, sites to leave alone, and in-page toasts |
 

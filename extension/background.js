@@ -249,11 +249,10 @@ async function cookieHeaderFor(url) {
 }
 
 /* ------------------------------------------------------------------ intake */
-async function sendToManager(settings, item, tabId) {
+async function buildPayload(settings, item) {
   const url = item.url;
   if (!isFetchable(url)) throw new Error('that link is not something aria2 can fetch');
-
-  const payload = {
+  return {
     url,
     filename: item.filename || filenameFromUrl(url, item.downloadAttr),
     referer: item.referer || '',
@@ -265,6 +264,11 @@ async function sendToManager(settings, item, tabId) {
     paused: !!settings.paused,
     source: item.source || hostOf(item.referer || url) || 'extension',
   };
+}
+
+async function sendToManager(settings, item, tabId) {
+  const url = item.url;
+  const payload = await buildPayload(settings, item);
   await request('/api/intake/add', payload);
   await remember(payload.filename || url);
   return payload.filename || url;
@@ -276,8 +280,48 @@ async function remember(name) {
   await api.storage.local.set({ recent: recent.slice(0, RECENT_LIMIT) });
 }
 
+/* ------------------------------------------------------- download dialog */
+/* With "Show a download dialog" on, a caught download opens a small window
+   (dialog.html) instead of being queued. The window holds the details the
+   background gathered — cookies included, which only this side can read — and
+   does the rest itself: probing the link, adding it, and for a torrent,
+   fetching its file list so files and priorities can be chosen first. */
+const dialogStore = api.storage.session || api.storage.local;
+
+async function openDialog(settings, item) {
+  const payload = await buildPayload(settings, item);
+  payload.size = item.size > 0 ? item.size : null;
+  payload.mime = item.mime || '';
+  payload.fromBrowser = !!item.fromBrowser;
+  const id = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+  await dialogStore.set({ [`dialog:${id}`]: payload });
+  const width = 640;
+  const height = 700;
+  const place = {};
+  try {
+    // Centred over the window the download came from.
+    const parent = await api.windows.getLastFocused();
+    if (parent && parent.width) {
+      place.left = Math.max(0, Math.round(parent.left + (parent.width - width) / 2));
+      place.top = Math.max(0, Math.round(parent.top + (parent.height - height) / 3));
+    }
+  } catch { /* let the browser place it */ }
+  await api.windows.create({
+    url: api.runtime.getURL(`dialog.html#${id}`), type: 'popup', width, height, ...place,
+  });
+}
+
 async function sendOne(item, tabId) {
   const settings = await loadSettings();
+  if (settings.askBeforeDownload && !item.noDialog) {
+    try {
+      await openDialog(settings, item);
+      return { ok: true, dialog: true };
+    } catch (err) {
+      // No window could be opened: queue it as if the dialog were off.
+      console.warn('download dialog failed, sending directly', err);
+    }
+  }
   try {
     const name = await sendToManager(settings, item, tabId);
     await report(settings, `Added ${name}`, false, tabId);
@@ -368,6 +412,9 @@ api.downloads.onCreated.addListener(async (item) => {
     filename: name,
     referer: item.referrer || '',
     source: hostOf(item.referrer || item.url),
+    size: item.totalBytes,
+    mime: item.mime,
+    fromBrowser: true,
   }, undefined);
 
   if (!result.ok) {
@@ -526,6 +573,31 @@ api.runtime.onMessage.addListener((message, sender, sendResponse) => {
       }
       case 'refreshBadge':
         await refreshBadge();
+        sendResponse({ ok: true });
+        break;
+      case 'dialogAdded':
+        await remember(message.name || 'download');
+        await refreshBadge();
+        sendResponse({ ok: true });
+        break;
+      case 'dialogBrowser':
+        // "Let the browser download it". Started by this extension, so the
+        // interception listener leaves it alone.
+        try {
+          await api.downloads.download({ url: message.url });
+          sendResponse({ ok: true });
+        } catch (err) {
+          sendResponse({ ok: false, error: err.message });
+        }
+        break;
+      case 'dialogAbandon':
+        // The dialog closed on a torrent it had added to read the file list:
+        // nothing was chosen, so nothing stays.
+        for (const gid of message.gids || []) {
+          try {
+            await ManagerLink.call('DELETE', `/api/download/${gid}?force=true&delete_files=true`);
+          } catch { /* already gone */ }
+        }
         sendResponse({ ok: true });
         break;
       case 'videoCandidates':

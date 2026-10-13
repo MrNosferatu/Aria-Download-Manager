@@ -24,6 +24,9 @@ const DEFAULTS = {
   altClick: true,
   dir: '',
   paused: false,
+  // Open a dialog for each caught download (name, folder, connections; a
+  // torrent's files and priorities) instead of queueing it straight away.
+  askBeforeDownload: false,
   notify: true,
   // In-page toasts (as well as the OS notifications the browser shows).
   pageToasts: true,

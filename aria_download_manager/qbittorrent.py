@@ -864,10 +864,13 @@ class QBEngine:
             return bool(await self.client.torrents([h]))
         return False
 
-    async def add_magnet(self, uri: str, options: dict, paused: bool = False) -> str:
+    async def add_magnet(self, uri: str, options: dict, paused: bool = False,
+                         existing: list[str] | None = None) -> str:
         h = magnet_hash(uri)
         if h and await self._existing(h):
             self.on_event("info", "That torrent is already in qBittorrent", gid=gid_for(h))
+            if existing is not None:
+                existing.append(gid_for(h))
             return gid_for(h)
         await self.client.add({"urls": uri, **self._add_fields(options, paused)})
         if not h:
@@ -875,11 +878,16 @@ class QBEngine:
         return gid_for(h)
 
     async def add_torrent(self, data: bytes, options: dict, paused: bool = False,
-                          filename: str = "") -> str:
+                          filename: str = "", existing: list[str] | None = None) -> str:
+        """Add a .torrent; a torrent qBittorrent already has goes into ``existing``."""
         h = torrent_hash(data)
         if await self._existing(h):
             self.on_event("info", "That torrent is already in qBittorrent", gid=gid_for(h))
+            if existing is not None:
+                existing.append(gid_for(h))
             return gid_for(h)
+        # A .torrent already has its file list: "wait for my choice" is a stop.
+        paused = paused or truthy(options.get("pause-metadata", ""))
         if self.prepare_torrent:
             options = self.prepare_torrent(dict(options), data)
         await self.client.add(self._add_fields(options, paused), torrent=data,
