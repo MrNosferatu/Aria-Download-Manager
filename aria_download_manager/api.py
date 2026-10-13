@@ -12,6 +12,7 @@ import signal
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
+from urllib.parse import unquote
 from typing import Any, Callable
 
 import aiohttp
@@ -249,8 +250,6 @@ def piece_map(bitfield: str, num_pieces: int, buckets: int = 256) -> list[int]:
 
 def disposition_name(value: str) -> str:
     """The file name in a Content-Disposition header, RFC 5987 form first."""
-    from urllib.parse import unquote
-
     star = re.search(r"filename\*\s*=\s*([^;]+)", value, re.I)
     if star:
         raw = star.group(1).strip().strip('"')
@@ -1324,6 +1323,14 @@ def create_app(cfg: Config) -> FastAPI:
             info["error"] = str(exc) or exc.__class__.__name__
         if not info["name"]:
             info["name"] = os.path.basename(str(info["finalUrl"]).split("?")[0].rstrip("/"))
+        # A link named as a file that answers with a web page: the site only
+        # gives the file to a browser (MediaFire's captcha comes back as
+        # "download_repair.php"). Keep the link's own name, and say so.
+        asked = unquote(os.path.basename(req.url.split("?")[0].rstrip("/")))
+        info["page"] = ("html" in info["contentType"].lower()
+                        and filetools.expects_binary(asked or str(info["name"])))
+        if info["page"] and asked:
+            info["name"] = asked
         if ("bittorrent" in info["contentType"].lower()
                 or str(info["name"]).lower().endswith(".torrent")):
             info["kind"] = "torrent"

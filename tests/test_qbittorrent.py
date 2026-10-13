@@ -149,6 +149,10 @@ async def test_e2e(tmp_dir: Path) -> None:
         def log_message(self, *args):
             pass
 
+        def guess_type(self, path):
+            # Stands in for a site that answers a file link with a web page.
+            return "text/html" if "/pages/" in str(path) else super().guess_type(path)
+
     handler = lambda *a, **kw: Quiet(*a, directory=str(web_dir), **kw)  # noqa: E731
     web = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
     threading.Thread(target=web.serve_forever, daemon=True).start()
@@ -273,6 +277,13 @@ async def test_e2e(tmp_dir: Path) -> None:
             status, body = await call("POST", "/api/intake/probe", {"url": f"{web_url}/linked.torrent"})
             check("probe spots a torrent link", body.get("kind") == "torrent" and body.get("size") == len(linked),
                   str(body))
+            (web_dir / "pages").mkdir()
+            (web_dir / "pages" / "driver.exe").write_text("<!DOCTYPE html><html>verify you're human</html>")
+            status, body = await call("POST", "/api/intake/probe", {"url": f"{web_url}/pages/driver.exe"})
+            check("probe flags a file link that answers with a page, keeping the link's name",
+                  body.get("page") is True and body.get("name") == "driver.exe", str(body))
+            status, body = await call("POST", "/api/intake/probe", {"url": f"{web_url}/linked.torrent"})
+            check("a real file is not a page", body.get("page") is False, str(body))
             status, body = await call("POST", "/api/intake/probe", {"url": "magnet:?xt=urn:btih:00&dn=Show"})
             check("probe names a magnet", body.get("kind") == "torrent" and body.get("name") == "Show", str(body))
             status, body = await call("POST", "/api/intake/probe", {"url": "http://127.0.0.1:9/nothing.zip"})

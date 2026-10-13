@@ -139,6 +139,7 @@ function expectsBinary(name) {
 }
 
 function pageInsteadOfFile(name, browserMime, probe) {
+  if (probe && probe.page) return !/html/i.test(browserMime || '');
   return !!probe && /text\/html/i.test(probe.contentType || '')
     && expectsBinary(name) && !/html/i.test(browserMime || '');
 }

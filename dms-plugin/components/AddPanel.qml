@@ -155,7 +155,8 @@ Column {
                                                        "name": probe.name || Fmt.basename(url.split("?")[0]),
                                                        "size": probe.size,
                                                        "contentType": probe.contentType || "",
-                                                       "resumable": probe.resumable
+                                                       "resumable": probe.resumable,
+                                                       "page": !!probe.page
                                                    })
                                     }
                                     finish()
@@ -200,6 +201,8 @@ Column {
 
     // ---- step 2: plain links ------------------------------------------
     function looksLikePage(entry) {
+        if (entry.page)
+            return true
         return /text\/html/i.test(entry.contentType || "") && /\.[a-z0-9]+$/i.test(entry.name || "")
             && !/\.(html?|xhtml|php|aspx?|jsp|txt|xml|json)$/i.test(entry.name || "")
     }
