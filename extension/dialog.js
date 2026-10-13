@@ -84,22 +84,20 @@ async function setupFolder(pre, name, initial) {
   // "" is the manager's download folder. The preset folders follow, and the
   // one for this file's type (a .zip: Archives) is chosen to start with.
   const base = option('', `Downloads · ${home(info.base || 'download folder')}`, info.base);
+  // One flat list: the presets, then recent folders.
   const known = new Set(['', info.base]);
-  const folders = document.createElement('optgroup');
-  folders.label = 'Folders';
+  const items = [base];
   for (const preset of info.presets || []) {
     if (known.has(preset.path)) continue;
     known.add(preset.path);
-    folders.append(option(preset.path, `${preset.label} · ${home(preset.path)}`));
+    items.push(option(preset.path, `${preset.label} · ${home(preset.path)}`));
   }
-  const recents = document.createElement('optgroup');
-  recents.label = 'Recent';
   for (const dir of [initial, ...recent]) {
     if (!dir || known.has(dir)) continue;
     known.add(dir);
-    recents.append(option(dir, home(dir)));
+    items.push(option(dir, home(dir)));
   }
-  sel.replaceChildren(base, ...[folders, recents].filter((g) => g.children.length));
+  sel.replaceChildren(...items);
   const start = initial || (info.suggested && info.suggested !== info.base ? info.suggested : '');
   sel.value = start;
   if (sel.value !== start) sel.value = '';
@@ -112,9 +110,7 @@ async function setupFolder(pre, name, initial) {
       const picked = await call('POST', '/api/pick-folder', { start: folderOf(pre) || info.base });
       if (picked.path) {
         if (![...sel.options].some((o) => o.value === picked.path)) {
-          let group = [...sel.querySelectorAll('optgroup')].find((g) => g.label === 'Recent');
-          if (!group) { group = document.createElement('optgroup'); group.label = 'Recent'; sel.append(group); }
-          group.prepend(option(picked.path, home(picked.path)));
+          sel.append(option(picked.path, home(picked.path)));
         }
         sel.value = picked.path;
         $(`${pre}-dir-custom`).hidden = true;
