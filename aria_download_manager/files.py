@@ -138,3 +138,38 @@ def prune_empty_dirs(paths: list[str], roots: list[Path]) -> None:
             except OSError:
                 break
             current = current.parent
+
+
+# --------------------------------------------------------------------------
+# a web page saved in place of a file
+# --------------------------------------------------------------------------
+#: Names under which a web page is the expected content.
+PAGE_EXTENSIONS = {"html", "htm", "xhtml", "shtml", "php", "asp", "aspx", "jsp", "cgi",
+                   "xml", "svg", "txt", "json"}
+
+
+def expects_binary(path: str) -> bool:
+    """Does this name promise something other than a web page?"""
+    name = Path(path).name
+    if "." not in name:
+        return False  # no extension: nothing to hold the content to
+    return name.rsplit(".", 1)[1].lower() not in PAGE_EXTENSIONS
+
+
+def starts_like_html(path: str) -> bool | None:
+    """True if the file begins as an HTML page, False if not, None if unknown yet.
+
+    Unknown while its first bytes are not written: aria2 preallocates, and with
+    several connections the start of the file may still be zeros.
+    """
+    try:
+        with open(path, "rb") as handle:
+            head = handle.read(1024)
+    except OSError:
+        return None
+    if not head.strip(b"\0"):
+        return None
+    text = head.lstrip(b"\xef\xbb\xbf").lstrip().lower()
+    # An XHTML page may open with an XML declaration before its <html>.
+    return text.startswith((b"<!doctype html", b"<html")) or (
+        text.startswith(b"<?xml") and b"<html" in text)

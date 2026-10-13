@@ -86,17 +86,20 @@ async def _find(list_argv, env, title: re.Pattern, key: str):
         await asyncio.sleep(0.15)
 
 
-async def float_window(title_prefix: str, width: int = 0, height: int = 0,
+async def float_window(title_part: str, width: int = 0, height: int = 0,
                        exact: bool = False) -> str:
-    """Float (and size, and centre) the newest tiled window whose title starts so.
+    """Float (and size, and centre) the newest tiled window whose title has this.
 
-    ``exact`` matches the whole title: a browser window showing a page of the
-    same name must not be caught by a prefix. Returns which compositor did it,
-    or "" when none could.
+    Browsers wrap a page's title (Firefox: "Extension: (Name) - <title> —
+    Mozilla Firefox"), so by default the text may sit anywhere in it. ``exact``
+    matches the whole title instead, for a window whose title is ours alone: a
+    browser showing a page of the same name must not be caught. Returns which
+    compositor did it, or "" when none could.
     """
-    if not title_prefix.strip():
+    if not title_part.strip():
         return ""
-    title = re.compile("^" + re.escape(title_prefix.strip()) + ("$" if exact else ""))
+    escaped = re.escape(title_part.strip())
+    title = re.compile(f"^{escaped}$" if exact else escaped)
 
     env = niri_env()
     if env:
@@ -122,3 +125,50 @@ async def float_window(title_prefix: str, width: int = 0, height: int = 0,
             await _run(["hyprctl", "dispatch", "centerwindow"], env)
             return "hyprland"
     return ""
+
+
+# --------------------------------------------------------------------------
+# a native folder picker, for the download dialog's "Choose folder…"
+# --------------------------------------------------------------------------
+#: (binary, argv builder) in order of preference; whichever is installed.
+PICKERS = [
+    ("zenity", lambda start, title: ["zenity", "--file-selection", "--directory",
+                                     f"--title={title}", f"--filename={start.rstrip('/')}/"]),
+    ("kdialog", lambda start, title: ["kdialog", "--title", title, "--getexistingdirectory", start]),
+    ("yad", lambda start, title: ["yad", "--file", "--directory", f"--title={title}",
+                                  f"--filename={start.rstrip('/')}/"]),
+]
+
+
+def picker_available() -> bool:
+    return any(shutil.which(name) for name, _ in PICKERS)
+
+
+def _display_env() -> dict[str, str]:
+    """The session's display, which a systemd user service may not have."""
+    env = dict(os.environ)
+    if not env.get("WAYLAND_DISPLAY"):
+        sockets = sorted(glob.glob(os.path.join(_runtime_dir(), "wayland-[0-9]*")))
+        sockets = [s for s in sockets if not s.endswith(".lock")]
+        if sockets:
+            env["WAYLAND_DISPLAY"] = os.path.basename(sockets[0])
+    env.setdefault("XDG_RUNTIME_DIR", _runtime_dir())
+    return env
+
+
+async def pick_folder(start: str, title: str = "Save downloads to") -> str | None:
+    """Ask the user for a folder. "" when cancelled, None when no picker exists."""
+    for name, argv in PICKERS:
+        if not shutil.which(name):
+            continue
+        proc = await asyncio.create_subprocess_exec(
+            *argv(start or os.path.expanduser("~"), title), env=_display_env(),
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
+        try:
+            out, _ = await asyncio.wait_for(proc.communicate(), 600)
+        except asyncio.TimeoutError:
+            proc.kill()
+            return ""
+        chosen = out.decode("utf-8", "replace").strip().rstrip("|")
+        return chosen if proc.returncode == 0 and os.path.isdir(chosen) else ""
+    return None

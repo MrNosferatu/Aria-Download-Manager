@@ -51,7 +51,8 @@ async def run(tmp: Path) -> None:
     os.environ["NIRI_SOCKET"] = str(tmp / "niri.sock")
     windows.write_text(json.dumps([
         {"id": 3, "title": "New download — Aria Download Manager — Mozilla Firefox", "is_floating": True},
-        {"id": 7, "title": "New download — Aria Download Manager — Mozilla Firefox", "is_floating": False},
+        {"id": 7, "title": "Extension: (Aria Download Manager) - New download — Aria Download Manager"
+                           " — Mozilla Firefox", "is_floating": False},
         {"id": 9, "title": "Aria Download Manager — Mozilla Firefox", "is_floating": False},
     ]))
     done = await compositor.float_window("New download — Aria Download Manager", 640, 700)
@@ -95,10 +96,48 @@ async def run(tmp: Path) -> None:
     check("no compositor running: nothing happens", done == "" and not calls(), str(calls()))
 
 
+async def desktop(tmp: Path) -> None:
+    print("\nfolder chooser")
+    from aria_download_manager import files
+
+    bin_dir = tmp / "picker-bin"
+    bin_dir.mkdir()
+    chosen = tmp / "Chosen Folder"
+    chosen.mkdir()
+    (bin_dir / "zenity").write_text(f'#!/bin/sh\necho "$*" > "{tmp}/zenity-args"\necho "{chosen}"\n')
+    (bin_dir / "zenity").chmod(0o755)
+    os.environ["PATH"] = f"{bin_dir}:/usr/bin:/bin"
+    check("a picker is found", compositor.picker_available())
+    picked = await compositor.pick_folder(str(tmp))
+    check("zenity's choice comes back", picked == str(chosen), str(picked))
+    check("it starts in the given folder", f"--filename={tmp}/" in (tmp / "zenity-args").read_text())
+    (bin_dir / "zenity").write_text("#!/bin/sh\nexit 1\n")
+    check("cancelled: empty", await compositor.pick_folder(str(tmp)) == "")
+    (bin_dir / "zenity").unlink()
+    os.environ["PATH"] = "/nonexistent"
+    check("no picker at all: None", await compositor.pick_folder(str(tmp)) is None)
+    os.environ["PATH"] = "/usr/bin:/bin"
+
+    print("\na web page saved as a file")
+    page = tmp / "driver.exe"
+    page.write_bytes(b"\n <!DOCTYPE html><html><body>verify you're human</body></html>")
+    check("an .exe that is a page is caught",
+          files.expects_binary(str(page)) and files.starts_like_html(str(page)) is True)
+    real = tmp / "real.exe"
+    real.write_bytes(b"MZ\x90\x00" + b"\x00" * 100)
+    check("a real .exe is left alone", files.starts_like_html(str(real)) is False)
+    blank = tmp / "pre.iso"
+    blank.write_bytes(b"\0" * 4096)
+    check("preallocated, not written yet: undecided", files.starts_like_html(str(blank)) is None)
+    check("a page saved as .html is expected",
+          not files.expects_binary(str(tmp / "index.html")) and not files.expects_binary(str(tmp / "noext")))
+
+
 def main() -> int:
     tmp = Path(tempfile.mkdtemp(prefix="aria-compositor-"))
     try:
         asyncio.run(run(tmp))
+        asyncio.run(desktop(tmp))
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
     return summary()

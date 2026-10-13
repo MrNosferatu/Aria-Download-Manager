@@ -60,9 +60,80 @@ function mount(templateId) {
   $('body').replaceChildren($(templateId).content.cloneNode(true));
 }
 
-async function recentDirs() {
-  const { recentDirs: dirs = [] } = await api.storage.local.get({ recentDirs: [] });
-  $('recent-dirs').replaceChildren(...dirs.map((d) => Object.assign(document.createElement('option'), { value: d })));
+/* ------------------------------------------------------------- folders */
+/* "Save to" is a menu of the folders that already mean something: the download
+   folder (or, with sorting on, the folder this file sorts into), each sorting
+   folder, and the recent ones. "Choose…" opens the desktop's folder chooser
+   through the manager; without one installed, a path can be typed instead. */
+const home = (path) => path.replace(/^\/home\/[^/]+|^\/root(?=\/|$)/, '~');
+
+function option(value, label, title) {
+  return Object.assign(document.createElement('option'), { value, textContent: label, title: title || value });
+}
+
+async function setupFolder(pre, name, initial) {
+  const sel = $(`${pre}-dir`);
+  let info = { base: D.defaultDir, presets: [], sorting: false, suggested: '', picker: false };
+  try {
+    info = await call('GET', `/api/folders?name=${encodeURIComponent(name || '')}`);
+  } catch { /* the menu still offers the download folder */ }
+  const { recentDirs: recent = [] } = await api.storage.local.get({ recentDirs: [] });
+
+  // "" leaves the choice to the manager: its download folder, or the sorting
+  // folder for this file type when sorting is on.
+  const auto = info.sorting && info.suggested
+    ? option('', `Automatic · ${home(info.suggested)}`, `Sorted by file type into ${info.suggested}`)
+    : option('', `Downloads · ${home(info.base || 'download folder')}`, info.base);
+  const known = new Set([''].concat(info.sorting ? [] : [info.base]));
+  const folders = document.createElement('optgroup');
+  folders.label = 'Folders';
+  for (const preset of info.presets || []) {
+    if (known.has(preset.path)) continue;
+    known.add(preset.path);
+    folders.append(option(preset.path, `${preset.label} · ${home(preset.path)}`));
+  }
+  const recents = document.createElement('optgroup');
+  recents.label = 'Recent';
+  for (const dir of [initial, ...recent]) {
+    if (!dir || known.has(dir)) continue;
+    known.add(dir);
+    recents.append(option(dir, home(dir)));
+  }
+  sel.replaceChildren(auto, ...[folders, recents].filter((g) => g.children.length));
+  sel.value = initial || '';
+
+  $(`${pre}-browse`).addEventListener('click', async (e) => {
+    const button = e.currentTarget;
+    button.disabled = true;
+    showError('');
+    try {
+      const picked = await call('POST', '/api/pick-folder', { start: folderOf(pre) || info.base });
+      if (picked.path) {
+        if (![...sel.options].some((o) => o.value === picked.path)) {
+          let group = [...sel.querySelectorAll('optgroup')].find((g) => g.label === 'Recent');
+          if (!group) { group = document.createElement('optgroup'); group.label = 'Recent'; sel.append(group); }
+          group.prepend(option(picked.path, home(picked.path)));
+        }
+        sel.value = picked.path;
+        $(`${pre}-dir-custom`).hidden = true;
+      }
+    } catch (err) {
+      // No chooser on this desktop: type it instead.
+      const custom = $(`${pre}-dir-custom`);
+      custom.hidden = false;
+      custom.focus();
+      showError(/no folder picker/i.test(err.message)
+        ? 'No folder chooser is installed (zenity, kdialog or yad). Type the folder instead.' : err.message);
+    } finally {
+      button.disabled = false;
+    }
+  });
+}
+
+// The folder chosen in a "Save to" menu ("" = the manager decides).
+function folderOf(pre) {
+  const custom = $(`${pre}-dir-custom`);
+  return (custom && !custom.hidden && custom.value.trim()) || $(`${pre}-dir`).value;
 }
 
 async function rememberDir(dir) {
@@ -98,7 +169,6 @@ async function init() {
   $('btn-browser').hidden = !/^https?:/i.test(p.url);
   $('title').textContent = p.filename || filenameFromUrl(p.url) || 'New download';
   $('subtitle').textContent = p.url;
-  recentDirs();
 
   try {
     const ping = await call('GET', '/api/intake/ping');
@@ -133,8 +203,14 @@ async function showFile() {
   $('f-url').value = p.url;
   $('f-name').value = (p.nameGuessed ? probe.name || p.filename : p.filename || probe.name)
     || filenameFromUrl(p.url);
-  $('f-dir').value = p.dir || '';
-  $('f-dir').placeholder = D.defaultDir || 'Download folder';
+  setupFolder('f', $('f-name').value, p.dir || '');
+  if (pageInsteadOfFile($('f-name').value, p.mime, probe)) {
+    // The manager would only save that page: steer to the browser.
+    $('f-page').hidden = false;
+    $('btn-browser').className = 'btn btn-primary';
+    $('btn-start').className = 'btn btn-outline';
+    $('btn-later').hidden = true;
+  }
   const size = p.size || probe.size;
   $('f-size').textContent = size ? humanBytes(size) : 'Unknown';
   $('f-type').textContent = (probe.contentType || p.mime || '—').split(';')[0] || '—';
@@ -159,7 +235,7 @@ async function submitFile(later) {
   if ($('f-conn').value.trim()) options['max-connection-per-server'] = $('f-conn').value.trim();
   if ($('f-split').value.trim()) options.split = $('f-split').value.trim();
   if ($('f-limit').value.trim()) options['max-download-limit'] = `${$('f-limit').value.trim()}${$('f-limit-unit').value}`;
-  const dir = $('f-dir').value.trim();
+  const dir = folderOf('f').trim();
   const name = $('f-name').value.trim();
   await call('POST', '/api/intake/add', {
     url: p.url,
@@ -173,6 +249,7 @@ async function submitFile(later) {
     options,
   });
   await rememberDir(dir);
+  dropBrowser();
   await api.runtime.sendMessage({ type: 'dialogAdded', name: name || p.url }).catch(() => {});
   closeSoon();
 }
@@ -262,8 +339,7 @@ function showTorrent(data) {
   const qb = D.engine === 'qbittorrent';
   for (const el of document.querySelectorAll('[data-qb]')) el.hidden = !qb;
   $('t-engine').textContent = qb ? 'qBittorrent' : 'aria2c';
-  $('t-dir').value = D.payload.dir || st.dir || '';
-  $('t-dir').placeholder = D.defaultDir || 'Download folder';
+  setupFolder('t', name, D.payload.dir || '');
   const opts = data.options || {};
   $('t-seq').checked = opts['sequential-download'] === 'true';
   $('t-fl').checked = opts['first-last-piece-first'] === 'true';
@@ -352,7 +428,7 @@ async function submitTorrent() {
   const gid = D.gid;
   await call('POST', `/api/download/${gid}/files`, { levels: D.levels });
   const options = {};
-  const dir = $('t-dir').value.trim();
+  const dir = folderOf('t').trim();
   if (dir && dir !== D.dirAtLoad) options.dir = dir;
   if (!$('t-donly').disabled) options['download-only'] = String($('t-donly').checked);
   if (D.engine === 'qbittorrent') {
@@ -366,6 +442,7 @@ async function submitTorrent() {
   await rememberDir(dir);
   // The metadata download (aria2) has done its job; the torrent is the user's now.
   D.owned.clear();
+  dropBrowser();
   await api.runtime.sendMessage({ type: 'dialogAdded', name: $('title').textContent }).catch(() => {});
   closeSoon();
 }
@@ -387,11 +464,14 @@ $('btn-start').addEventListener('click', (e) => guarded(e.currentTarget,
 $('btn-later').addEventListener('click', (e) => guarded(e.currentTarget, () => submitFile(true)));
 $('btn-cancel').addEventListener('click', () => {
   abandon();
+  dropBrowser();
   closeSoon();
 });
 $('btn-browser').addEventListener('click', (e) => guarded(e.currentTarget, async () => {
   abandon();
-  const reply = await api.runtime.sendMessage({ type: 'dialogBrowser', url: D.payload.url });
+  const browserId = D.payload.browserId;
+  D.payload.browserId = null;  // resumed below, not dropped
+  const reply = await api.runtime.sendMessage({ type: 'dialogBrowser', url: D.payload.url, browserId });
   if (!reply || !reply.ok) throw new Error((reply && reply.error) || 'the browser would not start it');
   closeSoon();
 }));
@@ -411,6 +491,18 @@ function abandon() {
   D.owned.clear();
   api.runtime.sendMessage({ type: 'dialogAbandon', gids }).catch(() => {});
 }
-window.addEventListener('pagehide', () => { if (!D.settled) abandon(); });
+// The browser's own download, held paused while this window decides, goes once
+// the manager has the file or the user said no.
+function dropBrowser() {
+  const browserId = D.payload && D.payload.browserId;
+  if (browserId === null || browserId === undefined) return;
+  D.payload.browserId = null;
+  api.runtime.sendMessage({ type: 'dialogDropBrowser', browserId }).catch(() => {});
+}
+window.addEventListener('pagehide', () => {
+  if (D.settled) return;
+  abandon();
+  dropBrowser();
+});
 
 init().catch((err) => notice(err.message));

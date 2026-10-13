@@ -279,6 +279,10 @@ async def test_e2e(tmp_dir: Path) -> None:
             check("an unreachable probe still answers", status == 200 and body.get("size") is None
                   and body.get("name") == "nothing.zip" and body.get("error"), str(body))
 
+            status, body = await call("GET", "/api/folders?name=movie.mkv")
+            check("folders list the download folder first", status == 200
+                  and body["presets"][0]["path"] == str(downloads) and body["sorting"] is False, str(body))
+
             # ---- .torrent links from the browser ---------------------------------
             status, body = await call("POST", "/api/intake/add", {
                 "url": f"{web_url}/linked.torrent", "cookie": "session=1", "referer": web_url})

@@ -165,6 +165,11 @@ class FloatRequest(BaseModel):
     exact: bool = False
 
 
+class PickFolderRequest(BaseModel):
+    start: str = ""
+    title: str = "Save downloads to"
+
+
 class IntakeRequest(BaseModel):
     """Deliberately lenient: the browser extension sends whatever the page gave it."""
 
@@ -375,6 +380,48 @@ def create_app(cfg: Config) -> FastAPI:
         cleared_metadata.intersection_update(live)
 
     poller.observers.append(aria2_view(forget_metadata))
+
+    # A site that will only hand a file to the browser (a captcha, a login, a
+    # link good for one request) answers aria2 with a web page, which aria2
+    # then saves under the file's name: a "driver.exe" that is MediaFire's
+    # "verify you're human" page. Catch that from the first bytes, stop it,
+    # delete the page and say what happened, rather than leave a fake file.
+    sniffed: set[str] = set()
+
+    async def _drop_page(row: dict) -> None:
+        gid, path = row["gid"], row["path"]
+        try:
+            await _remove_from_aria2(gid, force=True, purge=True)
+        finally:
+            await asyncio.to_thread(filetools.delete, [path], [row.get("dir") or os.path.dirname(path)])
+            store.add_event(
+                "error",
+                f"{os.path.basename(path)}: the site sent a web page instead of the file "
+                "(usually a captcha, a login or a one-time link). Download it in the browser.",
+                gid=gid, url=row.get("firstUri") or "")
+
+    def catch_pages(snapshot: dict) -> None:
+        live = set()
+        for row in snapshot.get("downloads", []):
+            gid = row.get("gid")
+            live.add(gid)
+            if gid in sniffed or row.get("isTorrent") or row.get("isMetadata"):
+                continue
+            if row.get("status") not in ("active", "complete") or not row.get("completed"):
+                continue
+            path = row.get("path") or ""
+            if not filetools.expects_binary(path):
+                sniffed.add(gid)
+                continue
+            verdict = filetools.starts_like_html(path)
+            if verdict is None:
+                continue  # its first bytes are not written yet; look next tick
+            sniffed.add(gid)
+            if verdict:
+                asyncio.get_running_loop().create_task(_drop_page(row))
+        sniffed.intersection_update(live)
+
+    poller.observers.append(aria2_view(catch_pages))
     history = History(cfg)
     file_priorities = priority.FilePriorities(
         history.path.parent / "priorities.json", rpc, cfg, download_only,
@@ -1281,6 +1328,39 @@ def create_app(cfg: Config) -> FastAPI:
                 or str(info["name"]).lower().endswith(".torrent")):
             info["kind"] = "torrent"
         return info
+
+    @app.get("/api/folders")
+    async def folders(name: str = ""):
+        """The folders a download can go to, for the dialog's folder menu.
+
+        The download folder, the sorting folders, and with sorting on, which
+        one this file would land in by itself (``suggested``).
+        """
+        base = router.base_dir()
+        presets = [{"label": "Downloads", "path": base, "category": ""}]
+        seen = {base}
+        for category in routing_mod.CATEGORIES:
+            path = router.folder_for(category)
+            if path in seen:
+                continue
+            seen.add(path)
+            presets.append({"label": os.path.basename(path.rstrip("/")) or category.capitalize(),
+                            "path": path, "category": category})
+        suggested = ""
+        if router.enabled and name:
+            category = router.category_of(name)
+            if category:
+                suggested = router.folder_for(category)
+        return {"base": base, "sorting": router.enabled, "presets": presets,
+                "suggested": suggested, "picker": compositor.picker_available()}
+
+    @app.post("/api/pick-folder")
+    async def pick_folder(req: PickFolderRequest):
+        """Open a native folder chooser (zenity, kdialog or yad) and return the pick."""
+        chosen = await compositor.pick_folder(req.start or router.base_dir(), req.title)
+        if chosen is None:
+            raise HTTPException(501, "no folder picker installed (zenity, kdialog or yad)")
+        return {"ok": True, "path": chosen}
 
     @app.post("/api/window/float")
     async def float_window(req: FloatRequest):

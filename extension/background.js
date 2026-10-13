@@ -293,6 +293,8 @@ async function openDialog(settings, item) {
   payload.size = item.size > 0 ? item.size : null;
   payload.mime = item.mime || '';
   payload.fromBrowser = !!item.fromBrowser;
+  // The browser's own download, held paused while the dialog decides.
+  payload.browserId = item.browserId ?? null;
   // Only guessed from the URL: the server's own name (the probe) is better.
   payload.nameGuessed = !item.filename && !item.downloadAttr;
   const id = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
@@ -400,14 +402,40 @@ api.downloads.onCreated.addListener(async (item) => {
 
   const name = item.filename ? item.filename.split(/[\\/]/).pop() : '';
   handedOff.add(item.id);
+  // Hold the browser's download, don't cancel it yet: some sites only give the
+  // file to the browser and answer the manager with a web page (MediaFire's
+  // captcha, a login, a link good for one request). Paused, it can carry on
+  // in the browser untouched if that turns out to be the case.
+  let held = false;
   try {
-    // Cancel first: the browser has already opened its own connection, and on
-    // a one-shot link letting both run can burn the token.
-    await api.downloads.cancel(item.id);
-  } catch { /* already finished — carry on and queue it anyway */ }
-  try {
-    await api.downloads.erase({ id: item.id });
-  } catch { /* leaving the row is harmless */ }
+    await api.downloads.pause(item.id);
+    held = true;
+  } catch { /* already finished, or not pausable */ }
+
+  if (settings.askBeforeDownload) {
+    // The dialog decides: it cancels this one, or resumes it for the browser.
+    const opened = await sendOne({
+      url: item.url, filename: name, referer: item.referrer || '',
+      source: hostOf(item.referrer || item.url), size: item.totalBytes, mime: item.mime,
+      fromBrowser: true, browserId: held ? item.id : null,
+    }, undefined);
+    if (!opened.dialog) {
+      // No window could open, so sendOne queued it directly (or failed to).
+      if (opened.ok) await dropBrowserDownload(item.id);
+      else if (held) await resumeInBrowser(item.id, item.url);
+      handedOff.delete(item.id);
+    }
+    return;
+  } else if (held && await managerGetsPage(item, name)) {
+    await resumeInBrowser(item.id, item.url);
+    handedOff.delete(item.id);
+    if (settings.notify) {
+      notify(`${name || 'This file'}: the site only gives it to the browser, so the browser is downloading it.`, false);
+    }
+    return;
+  }
+
+  await dropBrowserDownload(item.id);
 
   const result = await sendOne({
     url: item.url,
@@ -417,6 +445,7 @@ api.downloads.onCreated.addListener(async (item) => {
     size: item.totalBytes,
     mime: item.mime,
     fromBrowser: true,
+    noDialog: true,
   }, undefined);
 
   if (!result.ok) {
@@ -433,6 +462,44 @@ api.downloads.onCreated.addListener(async (item) => {
   }
   handedOff.delete(item.id);
 });
+
+// Cancel the browser's own copy and take it off its list.
+async function dropBrowserDownload(id) {
+  try {
+    await api.downloads.cancel(id);
+  } catch { /* already finished — carry on and queue it anyway */ }
+  try {
+    await api.downloads.erase({ id });
+  } catch { /* leaving the row is harmless */ }
+}
+
+// Let the browser finish what it started; start it afresh if it cannot resume.
+async function resumeInBrowser(id, url) {
+  if (id !== null && id !== undefined) {
+    try {
+      await api.downloads.resume(id);
+      return;
+    } catch { /* not resumable: fall through to a fresh download */ }
+    await dropBrowserDownload(id);
+  }
+  await api.downloads.download({ url });
+}
+
+// Ask the manager to look at the link: does it get a web page where the
+// browser got a file?
+async function managerGetsPage(item, name) {
+  try {
+    const probe = await request('/api/intake/probe', {
+      url: item.url,
+      referer: item.referrer || null,
+      cookie: (await cookieHeaderFor(item.url)) || null,
+      userAgent: navigator.userAgent,
+    });
+    return pageInsteadOfFile(name, item.mime, probe);
+  } catch {
+    return false;
+  }
+}
 
 /* ------------------------------------------------------------ context menus */
 const MENUS = [
@@ -583,14 +650,24 @@ api.runtime.onMessage.addListener((message, sender, sendResponse) => {
         sendResponse({ ok: true });
         break;
       case 'dialogBrowser':
-        // "Let the browser download it". Started by this extension, so the
-        // interception listener leaves it alone.
+        // "Let the browser download it": resume the browser's own download if
+        // it was held, else start one (started by this extension, so the
+        // interception listener leaves it alone).
         try {
-          await api.downloads.download({ url: message.url });
+          await resumeInBrowser(message.browserId, message.url);
+          handedOff.delete(message.browserId);
           sendResponse({ ok: true });
         } catch (err) {
           sendResponse({ ok: false, error: err.message });
         }
+        break;
+      case 'dialogDropBrowser':
+        // The manager has it now, or the user cancelled: the held browser copy goes.
+        if (message.browserId !== null && message.browserId !== undefined) {
+          await dropBrowserDownload(message.browserId);
+          handedOff.delete(message.browserId);
+        }
+        sendResponse({ ok: true });
         break;
       case 'dialogAbandon':
         // The dialog closed on a torrent it had added to read the file list:

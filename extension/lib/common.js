@@ -128,6 +128,21 @@ function looksDownloadable(settings, url, hasDownloadAttr, pageUrl) {
   }
 }
 
+// Does this name promise a file rather than a web page? A site that answers
+// the manager with a page for such a name will only give the file to the
+// browser (a captcha, a login, a link good for one request).
+const PAGE_EXTENSIONS = new Set(['html', 'htm', 'xhtml', 'shtml', 'php', 'asp', 'aspx', 'jsp',
+  'cgi', 'xml', 'svg', 'txt', 'json']);
+function expectsBinary(name) {
+  const match = /\.([a-z0-9]+)$/i.exec(name || '');
+  return !!match && !PAGE_EXTENSIONS.has(match[1].toLowerCase());
+}
+
+function pageInsteadOfFile(name, browserMime, probe) {
+  return !!probe && /text\/html/i.test(probe.contentType || '')
+    && expectsBinary(name) && !/html/i.test(browserMime || '');
+}
+
 // aria2 cannot fetch these, so they must never be intercepted.
 const isFetchable = (url) => /^(https?|ftps?|magnet):/i.test(url || '');
 

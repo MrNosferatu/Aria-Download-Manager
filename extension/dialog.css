@@ -82,6 +82,14 @@ details {
 }
 .spacer { flex: 1; }
 
+.folder { display: flex; gap: 8px; & select { flex: 1; } & .btn { flex: none; } }
+.field > input[hidden] { display: none; }
+
+.warn {
+  margin: 0; padding: 10px 12px; border-radius: var(--r-sm);
+  background: var(--warning-container); color: var(--on-surface); font-size: var(--fs-md); line-height: 1.45;
+}
+
 .notice {
   background: var(--surface-low); border-radius: var(--r-sm); padding: 14px 16px;
   font-size: var(--fs-md); line-height: 1.5;
