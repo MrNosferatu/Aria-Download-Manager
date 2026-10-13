@@ -162,9 +162,6 @@ Column {
                                 })
             }
         }
-        service.get("/api/folders?name=" + encodeURIComponent(uris.length ? Fmt.basename(uris[0]) : ""), (data, error) => {
-                        panel.folderInfo = data || ({})
-                    })
         finish()
     }
 
@@ -172,9 +169,11 @@ Column {
     function next() {
         if (entries.length) {
             singleName.text = entries.length === 1 ? (formOptions["out"] || entries[0].name) : ""
-            reviewDir.text = formOptions["dir"] || ""
+            loadFolders(entries[0].name, reviewDir)
             stage = "file"
         } else if (held.length) {
+            torrentDir.text = formOptions["dir"] || ""
+            torrentFolderFor = ""
             stage = "torrent"
         } else {
             urisField.text = ""
@@ -182,6 +181,21 @@ Column {
             stage = "form"
             panel.submitted()
         }
+    }
+
+    //: The preset folders, and the folder field starting at the one for this
+    //: file's type (a .zip: Archives) unless a folder was given in the form.
+    function loadFolders(name, field) {
+        field.text = formOptions["dir"] || ""
+        service.get("/api/folders?name=" + encodeURIComponent(name || ""), (data, error) => {
+                        if (error) {
+                            ToastService.showError("Aria", "The manager did not list its folders. Restart it to get the presets.")
+                            return
+                        }
+                        panel.folderInfo = data
+                        if (!field.text && data.suggested && data.suggested !== data.base)
+                            field.text = data.suggested
+                    })
     }
 
     // ---- step 2: plain links ------------------------------------------
@@ -240,6 +254,23 @@ Column {
         return null
     }
     readonly property bool reviewReady: !!reviewRow && !reviewRow.isMetadata && reviewRow.numFiles > 0
+    //: The gid whose folder suggestion is loaded, so it is asked once per torrent.
+    property string torrentFolderFor: ""
+
+    onReviewReadyChanged: {
+        if (!reviewReady || stage !== "torrent" || torrentFolderFor === reviewGid)
+            return
+        torrentFolderFor = reviewGid
+        // What the torrent mostly is: its biggest file picks the folder.
+        service.get("/api/download/" + reviewGid, (data, error) => {
+                        const files = (data && data.files) || []
+                        let biggest = null
+                        for (const f of files)
+                            if (!biggest || Number(f.length) > Number(biggest.length))
+                                biggest = f
+                        panel.loadFolders(biggest ? Fmt.basename(biggest.path) : (reviewRow ? reviewRow.name : ""), torrentDir)
+                    })
+    }
 
     function torrentDone() {
         held = held.slice(1)
@@ -597,29 +628,10 @@ Column {
             color: Theme.surfaceVariantText
         }
 
-        DankDropdown {
-            width: parent.width
-            height: 40
-            compactMode: true
-            //: The folders that already mean something; the field below takes
-            //: anything else, typed or chosen.
-            readonly property var presets: (panel.folderInfo.presets || [])
-            currentValue: "Folders…"
-            options: ["Folders…"].concat(presets.map(p => p.label + " · " + p.path))
-            onValueChanged: label => {
-                for (const p of presets)
-                    if (label === p.label + " · " + p.path)
-                        reviewDir.text = p.path
-            }
-        }
-
-        DirectoryField {
+        FolderPicker {
             id: reviewDir
-            objectName: "review"
             width: parent.width
-            placeholderText: panel.folderInfo.sorting && panel.folderInfo.suggested
-                             ? "Automatic: " + panel.folderInfo.suggested
-                             : "Download folder: " + (panel.folderInfo.base || "")
+            info: panel.folderInfo
         }
 
         Row {
@@ -687,6 +699,20 @@ Column {
         }
 
         StyledText {
+            visible: panel.reviewReady
+            text: "Save to"
+            font.pixelSize: Theme.fontSizeSmall
+            color: Theme.surfaceVariantText
+        }
+
+        FolderPicker {
+            id: torrentDir
+            width: parent.width
+            visible: panel.reviewReady
+            info: panel.folderInfo
+        }
+
+        StyledText {
             visible: !panel.reviewReady
             text: "Getting the file list from peers…" + (panel.reviewRow && panel.reviewRow.connections ? " · " + panel.reviewRow.connections + " connected" : "")
             font.pixelSize: Theme.fontSizeSmall
@@ -703,6 +729,9 @@ Column {
                 gid: panel.reviewGid
                 dl: panel.reviewRow || ({})
                 reviewing: true
+                extraOptions: torrentDir.text.trim() ? ({
+                                                           "dir": torrentDir.text.trim()
+                                                       }) : ({})
                 onStarted: panel.torrentDone()
             }
         }

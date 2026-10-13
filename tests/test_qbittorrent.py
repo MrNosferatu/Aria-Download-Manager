@@ -282,6 +282,9 @@ async def test_e2e(tmp_dir: Path) -> None:
             status, body = await call("GET", "/api/folders?name=movie.mkv")
             check("folders list the download folder first", status == 200
                   and body["presets"][0]["path"] == str(downloads) and body["sorting"] is False, str(body))
+            check("the folder for the file's type is suggested even with sorting off",
+                  body["suggested"] == str(downloads / "Video")
+                  and any(p["path"] == str(downloads / "Archives") for p in body["presets"]), str(body))
 
             # ---- .torrent links from the browser ---------------------------------
             status, body = await call("POST", "/api/intake/add", {

@@ -13,6 +13,8 @@ Column {
     //: Shown by the Add panel for a torrent held for its file choice: the one
     //: button applies options and files together and starts it.
     property bool reviewing: false
+    //: Sent with the options on start while reviewing (the Add panel's folder).
+    property var extraOptions: ({})
 
     signal started
 
@@ -364,6 +366,8 @@ Column {
             options["max-upload-limit"] = upField.value
         if (detail.isTorrent && !detail.downloadOnlyEverywhere)
             options["download-only"] = detail.downloadOnly ? "true" : "false"
+        if (detail.reviewing)
+            Object.assign(options, detail.extraOptions)
         return options
     }
 

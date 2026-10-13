@@ -1333,8 +1333,8 @@ def create_app(cfg: Config) -> FastAPI:
     async def folders(name: str = ""):
         """The folders a download can go to, for the dialog's folder menu.
 
-        The download folder, the sorting folders, and with sorting on, which
-        one this file would land in by itself (``suggested``).
+        The download folder, the sorting folders, and the one this file's
+        type belongs in (``suggested``), which the dialogs preselect.
         """
         base = router.base_dir()
         presets = [{"label": "Downloads", "path": base, "category": ""}]
@@ -1346,11 +1346,10 @@ def create_app(cfg: Config) -> FastAPI:
             seen.add(path)
             presets.append({"label": os.path.basename(path.rstrip("/")) or category.capitalize(),
                             "path": path, "category": category})
-        suggested = ""
-        if router.enabled and name:
-            category = router.category_of(name)
-            if category:
-                suggested = router.folder_for(category)
+        # The folder this file's type belongs in, whether or not sorting is on:
+        # the dialogs start there (a .zip in Archives), and the user can still
+        # pick another.
+        suggested = router.folder_for(router.category_of(name)) if name else ""
         return {"base": base, "sorting": router.enabled, "presets": presets,
                 "suggested": suggested, "picker": compositor.picker_available()}
 

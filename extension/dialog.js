@@ -76,15 +76,15 @@ async function setupFolder(pre, name, initial) {
   let info = { base: D.defaultDir, presets: [], sorting: false, suggested: '', picker: false };
   try {
     info = await call('GET', `/api/folders?name=${encodeURIComponent(name || '')}`);
-  } catch { /* the menu still offers the download folder */ }
+  } catch {
+    showError('The manager did not list its folders. Restart it to get the folder presets.');
+  }
   const { recentDirs: recent = [] } = await api.storage.local.get({ recentDirs: [] });
 
-  // "" leaves the choice to the manager: its download folder, or the sorting
-  // folder for this file type when sorting is on.
-  const auto = info.sorting && info.suggested
-    ? option('', `Automatic · ${home(info.suggested)}`, `Sorted by file type into ${info.suggested}`)
-    : option('', `Downloads · ${home(info.base || 'download folder')}`, info.base);
-  const known = new Set([''].concat(info.sorting ? [] : [info.base]));
+  // "" is the manager's download folder. The preset folders follow, and the
+  // one for this file's type (a .zip: Archives) is chosen to start with.
+  const base = option('', `Downloads · ${home(info.base || 'download folder')}`, info.base);
+  const known = new Set(['', info.base]);
   const folders = document.createElement('optgroup');
   folders.label = 'Folders';
   for (const preset of info.presets || []) {
@@ -99,8 +99,10 @@ async function setupFolder(pre, name, initial) {
     known.add(dir);
     recents.append(option(dir, home(dir)));
   }
-  sel.replaceChildren(auto, ...[folders, recents].filter((g) => g.children.length));
-  sel.value = initial || '';
+  sel.replaceChildren(base, ...[folders, recents].filter((g) => g.children.length));
+  const start = initial || (info.suggested && info.suggested !== info.base ? info.suggested : '');
+  sel.value = start;
+  if (sel.value !== start) sel.value = '';
 
   $(`${pre}-browse`).addEventListener('click', async (e) => {
     const button = e.currentTarget;
@@ -339,7 +341,9 @@ function showTorrent(data) {
   const qb = D.engine === 'qbittorrent';
   for (const el of document.querySelectorAll('[data-qb]')) el.hidden = !qb;
   $('t-engine').textContent = qb ? 'qBittorrent' : 'aria2c';
-  setupFolder('t', name, D.payload.dir || '');
+  // What the torrent mostly is: its biggest file decides the folder.
+  const biggest = D.files.reduce((a, f) => (Number(f.length) > Number(a.length) ? f : a), D.files[0]);
+  setupFolder('t', biggest ? relative(biggest.path) : name, D.payload.dir || '');
   const opts = data.options || {};
   $('t-seq').checked = opts['sequential-download'] === 'true';
   $('t-fl').checked = opts['first-last-piece-first'] === 'true';
