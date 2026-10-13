@@ -1037,6 +1037,12 @@ def create_app(cfg: Config) -> FastAPI:
             if qbt.is_gid(gid):
                 change = await qb.set_levels(gid, req.levels)
             else:
+                status = await rpc.tell_status(gid, ["status", "bittorrent"])
+                if status.get("bittorrent") and status.get("status") in ("complete", "removed"):
+                    # aria2 forgets a finished download's selection for good.
+                    raise HTTPException(
+                        409, "aria2c cannot download more of a torrent once it has finished. "
+                             "Add the torrent again to choose more files.")
                 change = await file_priorities.set(gid, req.levels)
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc

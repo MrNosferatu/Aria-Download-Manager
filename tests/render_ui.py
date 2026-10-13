@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import socket
 import sys
 from pathlib import Path
@@ -102,14 +103,19 @@ document.addEventListener('DOMContentLoaded', () => {{
 }});
 """
 
+    lib = STATIC.parent / "lib"
     html = html.replace('<link rel="stylesheet" href="../lib/design.css">', f"<style>\n{design}\n</style>")
+    html = html.replace('<link rel="stylesheet" href="../lib/filetree.css">',
+                        f"<style>\n{(lib / 'filetree.css').read_text(encoding='utf-8')}\n</style>")
     html = html.replace('<link rel="stylesheet" href="style.css">', f"<style>\n{css}\n</style>")
-    html = html.replace(
-        '<script src="../lib/link.js"></script>\n<script src="option-help.js"></script>\n'
-        '<script src="app.js"></script>',
-        f"<script>{stub}</script>\n<script>\n{option_help}\n"
-        f"</script>\n<script>\n{js}\n</script>\n<script>{driver}</script>",
-    )
+    # Every page script inlined in order; link.js is the one replaced by the stub.
+    inline = {"../lib/link.js": stub, "app.js": js, "option-help.js": option_help}
+    for src in re.findall(r'<script src="([^"]+)"></script>', html):
+        body = inline.get(src)
+        if body is None:
+            body = (STATIC / src).resolve().read_text(encoding="utf-8")
+        html = html.replace(f'<script src="{src}"></script>', f"<script>\n{body}\n</script>", 1)
+    html = html.replace("</body>", f"<script>{driver}</script>\n</body>", 1)
     return html
 
 

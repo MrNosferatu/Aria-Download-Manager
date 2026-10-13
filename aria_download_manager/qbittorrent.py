@@ -1062,8 +1062,21 @@ class QBEngine:
             groups.setdefault(to_qb_priority(level), []).append(int(index) - 1)
         if not any(p > 0 for p in groups):
             raise ValueError("pick at least one file to download")
+        state = str((await self._info(h)).get("state", ""))
         for prio, ids in groups.items():
             await self.client.file_priority(h, sorted(ids), prio)
+        # A finished torrent that was just given files it does not have yet
+        # stays stopped in qBittorrent ("pausedDL"); picking them means
+        # wanting them, so it starts again. A torrent the user paused
+        # mid-download is left as it is.
+        if state in STOPPED_UP:
+            files = await self.client.files(h)
+            missing = [i for p, ids in groups.items() if p > 0 for i in ids
+                       if i < len(files) and float(files[i].get("progress") or 0) < 1]
+            if missing:
+                self._stopping.discard(h)
+                await self.client.resume([h])
+                self.on_event("info", "Downloading the newly chosen files", gid=gid)
         return {str(i + 1): from_qb_priority(p) for p, ids in groups.items() for i in ids}
 
     async def select(self, gid: str, indices: list[int]) -> None:

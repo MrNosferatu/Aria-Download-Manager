@@ -255,6 +255,26 @@ async def test_e2e(tmp_dir: Path) -> None:
                   str(row(have_gid)))
             check("its files are reported", (row(have_gid) or {}).get("fileExists") is True, str(row(have_gid)))
 
+            # ---- a finished torrent given more files starts again ------------------
+            part_files = {"a.bin": os.urandom(32768), "b.bin": os.urandom(32768)}
+            part, part_hash = make_torrent("part", part_files)
+            (downloads / "part").mkdir()
+            (downloads / "part" / "a.bin").write_bytes(part_files["a.bin"])
+            await call("POST", "/api/downloads/file", {"data": base64.b64encode(part).decode(), "paused": True})
+            part_gid = qbt.gid_for(part_hash)
+            await wait_for(lambda: row(part_gid) is not None, 10)
+            await call("POST", f"/api/download/{part_gid}/files", {"levels": {"1": 1, "2": 0}})
+            await call("POST", f"/api/download/{part_gid}/resume")
+            check("the chosen part finishes",
+                  await wait_for(lambda: (row(part_gid) or {}).get("status") == "complete", 30), str(row(part_gid)))
+            status, body = await call("POST", f"/api/download/{part_gid}/files", {"levels": {"1": 1, "2": 1}})
+            check("choosing another file of a finished torrent downloads it",
+                  status == 200 and await wait_for(lambda: (row(part_gid) or {}).get("status") == "active", 10),
+                  str(row(part_gid)))
+            _, detail = await call("GET", f"/api/download/{part_gid}")
+            check("and the new priority stuck", [f["priority"] for f in detail["files"]] == [1, 1],
+                  str(detail.get("files")))
+
             # ---- magnets ----------------------------------------------------------
             magnet_hash = hashlib.sha1(b"nobody has this").hexdigest()
             status, body = await call("POST", "/api/downloads", {

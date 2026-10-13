@@ -16,7 +16,6 @@
 const $ = (id) => document.getElementById(id);
 const store = api.storage.session || api.storage.local;
 
-const LEVELS = [[0, 'Do not download'], [1, 'Normal'], [2, 'High'], [3, 'Maximum']];
 const RECENT_DIRS = 8;
 
 const D = {
@@ -336,92 +335,34 @@ function showTorrent(data) {
   mount('torrent-view');
   const qb = D.engine === 'qbittorrent';
   for (const el of document.querySelectorAll('[data-qb]')) el.hidden = !qb;
-  $('t-engine').textContent = qb ? 'qBittorrent' : 'aria2c';
   // What the torrent mostly is: its biggest file decides the folder.
   const biggest = D.files.reduce((a, f) => (Number(f.length) > Number(a.length) ? f : a), D.files[0]);
   setupFolder('t', biggest ? relative(biggest.path) : name, D.payload.dir || '');
   const opts = data.options || {};
   $('t-seq').checked = opts['sequential-download'] === 'true';
   $('t-fl').checked = opts['first-last-piece-first'] === 'true';
+  $('t-donly').checked = opts['download-only'] === 'true';
   call('GET', '/api/state').then((state) => {
-    const everywhere = Boolean(state.torrent && state.torrent.downloadOnly);
-    $('t-donly').checked = everywhere || opts['download-only'] === 'true';
-    $('t-donly').disabled = everywhere;
-    $('t-donly-hint').textContent = everywhere ? 'On for every torrent in Settings' : '';
+    if (!(state.torrent && state.torrent.downloadOnly)) return;
+    // Settings decides for every torrent: say so rather than offer a switch.
+    $('t-donly').checked = true;
+    $('t-donly').disabled = true;
+    $('t-donly-hint').textContent = 'On for every torrent (Settings).';
   }).catch(() => {});
 
-  for (const [value, label] of LEVELS) {
-    $('t-setall').append(Object.assign(document.createElement('option'), { value, textContent: label }));
-  }
-  $('t-filter').hidden = D.files.length < 15;
-  renderFiles();
-
-  $('t-all').addEventListener('change', (e) => {
-    for (const f of visibleFiles()) D.levels[f.index] = e.target.checked ? Math.max(1, D.levels[f.index]) || 1 : 0;
-    renderFiles();
+  // The files as a tree, like qBittorrent's: nothing has downloaded yet, so
+  // no progress column.
+  mountFileTree($('t-tree'), {
+    files: D.files,
+    base: D.base,
+    levels: D.levels,
+    progress: false,
+    onChange: (levels) => {
+      D.levels = levels;
+      $('btn-start').disabled = !Object.values(levels).some((v) => Number(v) > 0);
+    },
   });
-  $('t-setall').addEventListener('change', (e) => {
-    if (e.target.value === '') return;
-    for (const f of visibleFiles()) D.levels[f.index] = Number(e.target.value);
-    e.target.value = '';
-    renderFiles();
-  });
-  $('t-filter').addEventListener('input', renderFiles);
-  $('btn-start').disabled = false;
-}
-
-function visibleFiles() {
-  const needle = ($('t-filter').value || '').trim().toLowerCase();
-  return needle ? D.files.filter((f) => relative(f.path).toLowerCase().includes(needle)) : D.files;
-}
-
-function renderFiles() {
-  const rows = visibleFiles().map((f) => {
-    const level = D.levels[f.index];
-    const rel = relative(f.path);
-    const cut = rel.lastIndexOf('/');
-    const row = document.createElement('div');
-    row.className = `tfile${level === 0 ? ' is-skipped' : ''}`;
-    row.setAttribute('role', 'listitem');
-    row.innerHTML = `
-      <input type="checkbox" aria-label="Download this file"${level > 0 ? ' checked' : ''}>
-      <span class="fname" title=""><span class="fdir"></span><span class="fbase"></span></span>
-      <span class="fsize">${humanBytes(Number(f.length))}</span>
-      <select aria-label="Priority">${LEVELS.map(([v, label]) =>
-        `<option value="${v}"${v === level ? ' selected' : ''}>${label}</option>`).join('')}</select>`;
-    row.querySelector('.fname').title = rel;
-    row.querySelector('.fdir').textContent = cut >= 0 ? rel.slice(0, cut + 1) : '';
-    row.querySelector('.fbase').textContent = cut >= 0 ? rel.slice(cut + 1) : rel;
-    // One file's change updates its own row only, so focus stays put.
-    const box = row.querySelector('input');
-    const pick = row.querySelector('select');
-    const set = (value) => {
-      D.levels[f.index] = value;
-      box.checked = value > 0;
-      pick.value = String(value);
-      row.classList.toggle('is-skipped', value === 0);
-      updateTotals();
-    };
-    box.addEventListener('change', () => set(box.checked ? 1 : 0));
-    pick.addEventListener('change', () => set(Number(pick.value)));
-    return row;
-  });
-  $('t-files').replaceChildren(...rows);
-  updateTotals();
-}
-
-function updateTotals() {
-  const total = D.files.reduce((n, f) => n + Number(f.length), 0);
-  const chosen = D.files.filter((f) => D.levels[f.index] > 0);
-  const selected = chosen.reduce((n, f) => n + Number(f.length), 0);
-  $('t-total').textContent = humanBytes(total);
-  $('t-selected').textContent = humanBytes(selected);
-  $('t-count').textContent = `${chosen.length} of ${D.files.length}`;
-  const visible = visibleFiles();
-  const on = visible.filter((f) => D.levels[f.index] > 0).length;
-  $('t-all').checked = on === visible.length && on > 0;
-  $('t-all').indeterminate = on > 0 && on < visible.length;
-  $('btn-start').disabled = chosen.length === 0;
+  $('btn-start').disabled = !Object.values(D.levels).some((v) => Number(v) > 0);
 }
 
 async function submitTorrent() {

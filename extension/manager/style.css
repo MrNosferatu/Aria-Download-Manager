@@ -260,3 +260,34 @@ main { padding: 20px var(--gutter) 80px; }
 .optgroup { background: var(--surface-low); border-radius: var(--r-lg); padding: 8px 20px 8px; }
 .optgroup > h3 { padding: 8px 0 2px; font-size: var(--fs-sm); text-transform: uppercase; letter-spacing: .06em; }
 .fold .optgroup { background: var(--surface-mid); }
+
+/* ---- a download's details: banner, files, options, then folded details */
+.dbanner {
+  margin: 0; padding: 10px 12px; border-radius: var(--r-sm);
+  background: var(--error-container); color: var(--error); font-size: var(--fs-sm);
+}
+.dsec { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.dsec-head {
+  display: flex; align-items: center; gap: 10px;
+  & h3 { margin: 0; }
+  & .hint { font-size: var(--fs-xs); }
+  & .spacer { flex: 1; }
+}
+.dopts { display: flex; flex-direction: column; max-width: 560px; }
+.optlabel {
+  display: flex; flex-direction: column; gap: 2px; font-size: var(--fs-sm);
+  & small { font-size: var(--fs-xs); line-height: 1.35; }
+}
+.optrow + .optrow { border-top: 1px solid var(--outline-var); }
+.optrow { padding: 8px 0; }
+.dopts > .hint { margin: 6px 0; font-size: var(--fs-sm); }
+.dadvanced, .dmore {
+  & > summary {
+    cursor: pointer; color: var(--on-surface-var); font-size: var(--fs-sm); padding: 6px 0;
+    list-style-position: inside;
+  }
+}
+.dmore > summary { font-size: var(--fs-xs); text-transform: uppercase; letter-spacing: .06em; font-weight: 600; }
+.dmore h4 { margin: 12px 0 4px; font-size: var(--fs-xs); color: var(--on-surface-var); text-transform: uppercase; letter-spacing: .06em; }
+.dmore .kv { margin-top: 4px; }
+.dmore .kv code { overflow-wrap: anywhere; }

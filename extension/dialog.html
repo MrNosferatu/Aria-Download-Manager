@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <link rel="stylesheet" href="lib/design.css">
+<link rel="stylesheet" href="lib/filetree.css">
 <link rel="stylesheet" href="dialog.css">
 <title>New download — Aria Download Manager</title>
 </head>
@@ -74,36 +75,32 @@
       </div>
       <input id="t-dir-custom" placeholder="/path/to/folder" spellcheck="false" hidden>
     </div>
-    <div class="facts">
-      <div><label>Total</label><b id="t-total">—</b></div>
-      <div><label>Selected</label><b id="t-selected">—</b></div>
-      <div><label>Files</label><b id="t-count">—</b></div>
-      <div><label>Engine</label><b id="t-engine">—</b></div>
-    </div>
-    <div class="filebar">
-      <label class="check"><input type="checkbox" id="t-all"> All</label>
-      <input id="t-filter" placeholder="Filter files" hidden>
-      <span class="spacer"></span>
-      <label class="setall">Set all
-        <select id="t-setall" aria-label="Set every file's priority">
-          <option value="">Choose…</option>
-        </select>
-      </label>
-    </div>
-    <div id="t-files" class="tfiles" role="list"></div>
+    <div id="t-tree"></div>
     <div class="opts">
-      <label class="setting" for="t-seq" data-qb>
-        <span class="text"><span class="label">Download in order</span></span>
-        <span class="switch"><input type="checkbox" id="t-seq"><span class="track"><span class="knob"></span></span></span>
-      </label>
-      <label class="setting" for="t-fl" data-qb>
-        <span class="text"><span class="label">First and last pieces first</span></span>
-        <span class="switch"><input type="checkbox" id="t-fl"><span class="track"><span class="knob"></span></span></span>
-      </label>
       <label class="setting" for="t-donly">
-        <span class="text"><span class="label">Download only, never seed</span><span id="t-donly-hint" class="hint"></span></span>
+        <span class="text">
+          <span class="label">Stop sharing when done</span>
+          <span id="t-donly-hint" class="hint">Uploads as little as possible and stops the moment the download finishes.</span>
+        </span>
         <span class="switch"><input type="checkbox" id="t-donly"><span class="track"><span class="knob"></span></span></span>
       </label>
+      <details data-qb>
+        <summary>Advanced</summary>
+        <label class="setting" for="t-seq">
+          <span class="text">
+            <span class="label">Download in order</span>
+            <span class="hint">Lets you start watching a video before it finishes. Can be slower.</span>
+          </span>
+          <span class="switch"><input type="checkbox" id="t-seq"><span class="track"><span class="knob"></span></span></span>
+        </label>
+        <label class="setting" for="t-fl">
+          <span class="text">
+            <span class="label">First and last pieces first</span>
+            <span class="hint">Helps media players open the file sooner.</span>
+          </span>
+          <span class="switch"><input type="checkbox" id="t-fl"><span class="track"><span class="knob"></span></span></span>
+        </label>
+      </details>
     </div>
   </div>
 </template>
@@ -123,6 +120,8 @@
 
 <script src="lib/common.js"></script>
 <script src="lib/link.js"></script>
+<script src="lib/filetree-core.js"></script>
+<script src="lib/filetree-view.js"></script>
 <script src="dialog.js"></script>
 </body>
 </html>

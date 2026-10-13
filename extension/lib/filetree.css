@@ -1,0 +1,61 @@
+/* The file tree (lib/filetree-view.js), shared by the download dialog and the
+   manager page. One grid for every row and the header, so columns line up. */
+.ftree {
+  --ft-cols: minmax(0, 1fr) 76px 120px 112px;
+  display: flex; flex-direction: column; gap: 8px; min-width: 0;
+}
+.ftree.ft-noprogress { --ft-cols: minmax(0, 1fr) 76px 112px; }
+.ftree.ft-noprogress .ft-done, .ftree.ft-noprogress .ft-col-progress { display: none; }
+
+.ft-bar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.ft-check { display: inline-flex; align-items: center; gap: 8px; font-size: var(--fs-sm); color: var(--on-surface-var); }
+.ftree input[type="checkbox"] { width: 16px; height: 16px; margin: 0; accent-color: var(--primary); flex: none; cursor: pointer; }
+.ft-filter { max-width: 200px; height: var(--ctl-h-sm); }
+.ft-spacer { flex: 1; }
+.ft-setall { width: 160px; height: var(--ctl-h-sm); font-size: var(--fs-sm); }
+
+.ft-head, .ft-row {
+  display: grid; grid-template-columns: var(--ft-cols); align-items: center; gap: 10px;
+  padding: 0 10px;
+}
+.ft-head { color: var(--on-surface-var); font-size: var(--fs-xs); text-transform: uppercase; letter-spacing: .04em; }
+.ft-col {
+  all: unset; cursor: pointer; padding: 4px 0; text-align: left; white-space: nowrap;
+  &.is-sorted { color: var(--primary); }
+  &:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; border-radius: 4px; }
+}
+.ft-col-size { text-align: right; }
+
+.ft-list {
+  background: var(--surface-low); border-radius: var(--r-sm);
+  max-height: 340px; overflow: auto;
+}
+.ft-row {
+  min-height: 36px; font-size: var(--fs-md);
+  & + .ft-row { border-top: 1px solid var(--outline-var); }
+  &:hover { background: var(--surface-mid); }
+}
+.ft-name {
+  display: flex; align-items: center; gap: 6px; min-width: 0;
+  padding-left: calc(var(--depth, 0) * 18px);
+}
+.ft-twisty {
+  all: unset; width: 20px; height: 20px; flex: none; display: grid; place-items: center;
+  color: var(--on-surface-var); cursor: pointer; border-radius: 4px;
+  & .ico { width: 18px; height: 18px; transition: transform var(--t-fast) var(--ease); }
+  &.is-open .ico { transform: rotate(90deg); }
+  &:focus-visible { outline: 2px solid var(--primary); }
+}
+.ft-folder { color: var(--primary); display: grid; flex: none; & .ico { width: 18px; height: 18px; } }
+.ft-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.is-dir .ft-label { font-weight: 600; cursor: pointer; }
+.is-off .ft-label { color: var(--on-surface-var); }
+.ft-size { text-align: right; color: var(--on-surface-var); font-size: var(--fs-sm); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.ft-done { display: flex; align-items: center; gap: 6px; }
+.ft-bar-track { flex: 1; height: 6px; border-radius: 3px; background: var(--surface-highest); overflow: hidden; }
+.ft-bar-fill { display: block; height: 100%; background: var(--primary); border-radius: 3px; }
+.is-off .ft-bar-fill { background: var(--outline); }
+.ft-pct { width: 38px; text-align: right; color: var(--on-surface-var); font-size: var(--fs-xs); font-variant-numeric: tabular-nums; }
+.ft-level { height: 28px; font-size: var(--fs-sm); padding: 0 8px; }
+.ft-level:disabled { opacity: .45; }
+.ft-empty { padding: 14px; color: var(--on-surface-var); font-size: var(--fs-md); margin: 0; }
