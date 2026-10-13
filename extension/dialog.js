@@ -78,6 +78,11 @@ function closeSoon() {
 
 /* ------------------------------------------------------------------ start */
 async function init() {
+  // A tiling compositor (niri, Hyprland) would tile this window; the manager
+  // asks it to float it instead. Fire and forget: it waits for the window.
+  ManagerLink.call('POST', '/api/window/float', {
+    title: document.title, width: window.outerWidth, height: window.outerHeight,
+  }).catch(() => {});
   const id = location.hash.slice(1);
   const key = `dialog:${id}`;
   const stored = await store.get(key);

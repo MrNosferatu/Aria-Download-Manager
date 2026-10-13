@@ -93,6 +93,11 @@ DEFAULTS: dict[str, Any] = {
         # is installed, else aria2c), qbittorrent, or aria2.
         "engine": "auto",
     },
+    # Desktop integration. float_windows: float the download dialog and the
+    # DankBar detached window on niri / Hyprland (see compositor.py).
+    "desktop": {
+        "float_windows": True,
+    },
     # The torrent engine, when it is qBittorrent (see qbittorrent.py).
     "qbittorrent": {
         "managed": True,

@@ -31,11 +31,12 @@ from .state import Poller, Store, aria2_only
 from .supervisor import Aria2Supervisor
 from .timeline import Timeline
 from . import priorities as priority
+from . import compositor
 from . import qbittorrent as qbt
 from . import routing as routing_mod
 from . import seeding
 
-VERSION = "1.2.0"
+VERSION = "1.3.0"
 
 # --------------------------------------------------------------------------
 # request models
@@ -151,6 +152,17 @@ class ProbeRequest(BaseModel):
     referer: str | None = None
     cookie: str | None = None
     userAgent: str | None = None
+
+
+class FloatRequest(BaseModel):
+    """One of our windows just opened: float it on a tiling compositor."""
+
+    title: str
+    width: int = 0
+    height: int = 0
+    #: Whole-title match; otherwise the title only has to start so (a browser
+    #: appends its own name to a page's title).
+    exact: bool = False
 
 
 class IntakeRequest(BaseModel):
@@ -1269,6 +1281,18 @@ def create_app(cfg: Config) -> FastAPI:
                 or str(info["name"]).lower().endswith(".torrent")):
             info["kind"] = "torrent"
         return info
+
+    @app.post("/api/window/float")
+    async def float_window(req: FloatRequest):
+        """Float the window titled so (niri, Hyprland), unless turned off.
+
+        Windows cannot ask a tiling compositor to float them, so the dialog and
+        the DankBar window ask the manager, which asks the compositor.
+        """
+        if not cfg.get("desktop.float_windows", True):
+            return {"ok": True, "floated": ""}
+        size = (max(0, min(req.width, 4000)), max(0, min(req.height, 4000)))
+        return {"ok": True, "floated": await compositor.float_window(req.title, *size, exact=req.exact)}
 
     @app.post("/api/intake/add")
     async def intake_add(req: IntakeRequest):

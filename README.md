@@ -97,7 +97,7 @@ cp config.example.yaml config.yaml     # optional; defaults work as-is
 ```
 
 ```
-Aria Download Manager 1.2.0
+Aria Download Manager 1.3.0
   socket     /run/user/1000/aria-download-manager.sock
   config     /home/you/GitHub/Aria2C/config.yaml
 ```
@@ -198,7 +198,7 @@ On top of that:
 | Right-click a page | send the page URL, or every downloadable link on it |
 | Right-click a selection | send every link inside it |
 | Click capture | left-click on a magnet, or on a link the browser would *render* rather than download, sends it here instead |
-| Download dialog | optional (Settings → *Show a download dialog*, off by default): every caught download — browser downloads, clicks, the context menu, the popup's Add box — opens a small window first. A file shows its real name, size, type and whether it can resume, with the folder, connections, parts and speed limit to set; *Download later* queues it paused, *Let the browser download it* hands it back. A torrent or magnet is added held, and once its file list arrives the window shows every file with a checkbox and a priority, the save folder, *Download in order*, *First and last pieces first* and download-only, like qBittorrent's add dialog; Cancel or closing the window removes it again. Only the extension opens it, so the DankBar widget never shows a second one |
+| Download dialog | optional (Settings → *Show a download dialog*, off by default): every caught download — browser downloads, clicks, the context menu, the popup's Add box — opens a small window first. A file shows its real name, size, type and whether it can resume, with the folder, connections, parts and speed limit to set; *Download later* queues it paused, *Let the browser download it* hands it back. A torrent or magnet is added held, and once its file list arrives the window shows every file with a checkbox and a priority, the save folder, *Download in order*, *First and last pieces first* and download-only, like qBittorrent's add dialog; Cancel or closing the window removes it again. Only the extension opens it, so the DankBar widget never shows a second one. On niri and Hyprland it opens floating and centred, not tiled: the manager asks the compositor (`desktop.float_windows`, on by default), so no window rule is needed. The DankBar widget's detached window floats the same way |
 | Alt+click | sends any link, even with capture off |
 | Settings page | *Simple* shows the connection test, the save folder, add-paused and notifications; *Advanced* adds what gets caught (browser downloads, file links, torrents (magnets and .torrent files), Alt+click, the video button), minimum size, file types, sites to leave alone, and in-page toasts |
 
@@ -502,6 +502,7 @@ installation is required** to run it:
 python3 tests/test_manager.py     # the whole manager suite
 python3 tests/test_ipc.py         # Unix socket, event stream, native-messaging host
 python3 tests/test_qbittorrent.py # torrents through a real qbittorrent-nox (skipped if absent)
+python3 tests/test_compositor.py  # floating our windows on niri / Hyprland (fake niri, hyprctl)
 ```
 
 It covers config merging and persistence, the aria2c command line, the API and
@@ -562,6 +563,7 @@ aria_download_manager/
   state.py        1 Hz poller, snapshot normalisation, live-stream fan-out
   rules.py        custom download actions
   qbittorrent.py  qBittorrent as the torrent engine: Web API client, process, row mapping
+  compositor.py   float our windows on niri / Hyprland (niri msg, hyprctl)
   api.py          the API: FastAPI routes, run in-process (no web server)
   ipc.py          the Unix socket: newline-delimited JSON into those routes
   native_host.py  native-messaging bridge for the extension (stdlib only)

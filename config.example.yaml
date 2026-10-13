@@ -141,6 +141,13 @@ torrent:
   engine: auto
 
 # ---------------------------------------------------------------------------
+# Desktop. float_windows: on niri and Hyprland, float the extension's download
+# dialog and the DankBar widget's detached window as they open (the manager
+# asks the compositor), so neither tiles. No window rules needed.
+desktop:
+  float_windows: true
+
+# ---------------------------------------------------------------------------
 # qBittorrent, when it is the torrent engine. Real per-file priorities, sequential
 # download, first/last-piece priority and a current BitTorrent stack — what aria2
 # lacks. The manager runs its own qbittorrent-nox with a private profile, its Web

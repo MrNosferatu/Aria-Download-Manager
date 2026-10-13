@@ -2,7 +2,7 @@
     "id": "ariaDownloadManager",
     "name": "Aria Download Manager",
     "description": "Manage aria2c downloads from the bar - queue, automatic actions and live progress, backed by the Aria Download Manager daemon",
-    "version": "1.2.0",
+    "version": "1.2.1",
     "license": "MIT",
     "author": "FHADWA NUR'IZDHAD",
     "type": "composite",
