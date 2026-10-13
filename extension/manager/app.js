@@ -881,7 +881,6 @@ async function submitAdd() {
 /* Simple: what decides how a download behaves. The same eight the DankBar
    widget shows, so both surfaces teach the same starting point. */
 const SIMPLE_OPTIONS = [
-  ['dir', 'Download folder', 'text', 'Where finished files go.'],
   ['max-concurrent-downloads', 'Downloads at once', 'number', 'How many run in parallel; the rest wait in the queue.'],
   ['max-connection-per-server', 'Connections per server', 'number', 'Up to 16. More connections usually means faster downloads from one server.'],
   ['split', 'Parts per download', 'number', 'A file is fetched in this many pieces at the same time.'],
@@ -1085,6 +1084,7 @@ async function loadGlobalOptions() {
     for (const [key, label, kind, desc] of SIMPLE_OPTIONS) {
       simple.append(optionField(key, label, kind, S.globalOptions[key], desc));
     }
+    renderRouting();  // its "dir" field registers with the rest
     return;
   }
 
@@ -1120,6 +1120,7 @@ async function loadGlobalOptions() {
     advanced.append(group);
   }
   applyOptionFilter();
+  renderRouting();
 }
 
 function applyOptionFilter() {
@@ -1266,6 +1267,13 @@ async function loadRouting() {
 function renderRouting() {
   const data = S.routing;
   if (!data) return;
+  // aria2's own download folder leads the card: every folder below is
+  // relative to it, so the two belong together. It stays an ordinary option
+  // field, saved by the page's Save button like the rest.
+  const defaultHost = $('#route-default');
+  defaultHost.innerHTML = '';
+  defaultHost.append(optionField('dir', 'Download folder', 'text', S.globalOptions.dir,
+    'Where downloads go unless a type below sends them elsewhere.'));
   $('#route-enabled').checked = Boolean(data.enabled);
   $('#route-enabled').onchange = (e) => {
     data.enabled = e.target.checked;

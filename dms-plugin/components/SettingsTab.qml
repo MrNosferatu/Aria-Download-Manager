@@ -45,7 +45,6 @@ Item {
     //: Simple: the same seven the manager page shows, so both surfaces teach
     //: the same starting point.
     readonly property var simpleOptions: [
-        ["dir", "Download folder", "text", "Where finished files go."],
         ["max-concurrent-downloads", "Downloads at once", "number", "How many run in parallel; the rest wait in the queue."],
         ["max-connection-per-server", "Connections per server", "number", "Up to 16. More connections usually means faster downloads from one server."],
         ["split", "Parts per download", "number", "A file is fetched in this many pieces at the same time."],
@@ -428,10 +427,42 @@ Item {
 
                     StyledText {
                         width: parent.width
-                        text: "Each download goes to a subfolder of the download folder, picked from its file type. Blank means the download folder itself. An absolute path is used as it is."
+                        text: "Everything starts in the download folder. With sorting on, each download goes to the subfolder its file type names below. Blank means the download folder itself, and an absolute path is used as it is."
                         font.pixelSize: Theme.fontSizeSmall
                         color: Theme.surfaceVariantText
                         wrapMode: Text.WordWrap
+                    }
+
+                    //: aria2's own download folder leads the card: every folder
+                    //: below is relative to it, so the two belong together. It
+                    //: is still an aria2 option, saved by the page's Save.
+                    Item {
+                        width: parent.width
+                        height: 44
+
+                        StyledText {
+                            anchors.left: parent.left
+                            anchors.verticalCenter: parent.verticalCenter
+                            width: 140
+                            text: "Download folder"
+                            font.pixelSize: Theme.fontSizeSmall
+                            font.weight: Font.Medium
+                            color: Theme.surfaceText
+                            elide: Text.ElideRight
+                        }
+
+                        DirectoryField {
+                            objectName: "routeDefault"
+                            anchors.right: parent.right
+                            anchors.verticalCenter: parent.verticalCenter
+                            width: Math.max(0, parent.width - 150)
+                            placeholderText: "Where downloads go"
+                            text: {
+                                const opts = tab.service ? tab.service.globalOptions : ({})
+                                return opts["dir"] === undefined || opts["dir"] === null ? "" : String(opts["dir"])
+                            }
+                            onTextChanged: tab.record("dir", text)
+                        }
                     }
 
                     Repeater {
@@ -455,13 +486,20 @@ Item {
                                 elide: Text.ElideRight
                             }
 
-                            DankTextField {
+                            //: The same chooser the download folder has. A
+                            //: relative name is still typed by hand; the picker
+                            //: is for putting a category somewhere else entirely.
+                            DirectoryField {
+                                objectName: "routeFolder." + folderRow.modelData
                                 anchors.right: parent.right
                                 anchors.verticalCenter: parent.verticalCenter
                                 width: Math.max(0, parent.width - 150)
-                                height: 40
-                                font.pixelSize: Theme.fontSizeSmall
                                 placeholderText: "Download folder"
+                                startDir: {
+                                    const opts = tab.service ? tab.service.globalOptions : ({})
+                                    return opts["dir"] ? String(opts["dir"]) : ""
+                                }
+                                dialogTitle: "Folder for " + tab.routingLabels[folderRow.modelData]
                                 text: tab.routingFolders[folderRow.modelData] || ""
                                 onTextChanged: {
                                     if (text !== (tab.routingFolders[folderRow.modelData] || ""))
