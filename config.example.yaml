@@ -120,12 +120,55 @@ history:
   max_entries: 2000
 
 # ---------------------------------------------------------------------------
-# Torrents. download_only: never seed. New torrents get seed-time=0, aria2's
-# overall upload is held at 1 B/s (0 would mean unlimited), and a torrent found
-# seeding is stopped. The upload limit above is kept and comes back when this
-# is off. Also switchable in Settings, and per torrent in its detail panel.
+# Torrents. download_only: never seed. Also switchable in Settings, and per
+# torrent in its detail panel.
+#   with aria2c:      new torrents get seed-time=0, aria2's overall upload is
+#                     held at 1 B/s (0 would mean unlimited), and a torrent
+#                     found seeding is stopped. The upload limit above is kept
+#                     and comes back when this is off.
+#   with qBittorrent: share limits of ratio 0 / seeding time 0 (the torrent
+#                     stops the moment it completes), upload held at 1 KiB/s,
+#                     and a torrent found seeding is stopped.
+#
+# engine: which engine downloads torrents (magnets, .torrent files and .torrent
+# links). Everything else always goes to aria2c.
+#   auto        - qBittorrent whenever qbittorrent-nox is installed (default)
+#   qbittorrent - always qBittorrent
+#   aria2       - aria2c, as before
+# If qBittorrent cannot be started, torrents fall back to aria2c.
 torrent:
   download_only: false
+  engine: auto
+
+# ---------------------------------------------------------------------------
+# Desktop. float_windows: on niri and Hyprland, float the extension's download
+# dialog and the DankBar widget's detached window as they open (the manager
+# asks the compositor), so neither tiles. No window rules needed.
+desktop:
+  float_windows: true
+
+# ---------------------------------------------------------------------------
+# qBittorrent, when it is the torrent engine. Real per-file priorities, sequential
+# download, first/last-piece priority and a current BitTorrent stack — what aria2
+# lacks. The manager runs its own qbittorrent-nox with a private profile, its Web
+# UI on localhost only with no password (the same trust as aria2's RPC), and
+# keeps its download folder, speed limits, seed ratio and download-only in line
+# with the settings above. Its own Web UI stays usable at http://127.0.0.1:<port>.
+qbittorrent:
+  # false -> attach to a qBittorrent you already run (set username/password if
+  #          its Web UI wants a login). Its global seeding and speed preferences
+  #          are then managed by this manager too.
+  managed: true
+  binary: qbittorrent-nox
+  host: 127.0.0.1
+  port: 8089
+  username: ""
+  password: ""
+  profile: ~/.local/share/aria-download-manager/qbittorrent
+  restart_on_exit: true
+  # false -> leave qbittorrent-nox running when the manager exits; the next run adopts it.
+  stop_on_exit: true
+  startup_timeout: 30.0
 
 # ---------------------------------------------------------------------------
 # Sort downloads into subfolders of the download folder by what they are.

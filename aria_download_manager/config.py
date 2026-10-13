@@ -89,6 +89,28 @@ DEFAULTS: dict[str, Any] = {
     # downloading. Managed by the manager (see seeding.py), not an aria2 option.
     "torrent": {
         "download_only": False,
+        # Which engine downloads torrents: auto (qBittorrent when qbittorrent-nox
+        # is installed, else aria2c), qbittorrent, or aria2.
+        "engine": "auto",
+    },
+    # Desktop integration. float_windows: float the download dialog and the
+    # DankBar detached window on niri / Hyprland (see compositor.py).
+    "desktop": {
+        "float_windows": True,
+    },
+    # The torrent engine, when it is qBittorrent (see qbittorrent.py).
+    "qbittorrent": {
+        "managed": True,
+        "binary": "qbittorrent-nox",
+        "host": "127.0.0.1",
+        "port": 8089,
+        # Only for an external (managed: false) qBittorrent that wants a login.
+        "username": "",
+        "password": "",
+        "profile": str(DEFAULT_STATE_DIR / "qbittorrent"),
+        "restart_on_exit": True,
+        "stop_on_exit": True,
+        "startup_timeout": 30.0,
     },
     # Sort finished-and-in-progress downloads into subfolders by file type.
     # Manager-side (see routing.py): aria2 has one download folder.
@@ -193,6 +215,9 @@ class Config:
         aria2["rpc"]["secret"] = secret
         for key in ("session_file", "log_file"):
             aria2[key] = str(expand(aria2[key]))
+        qbt = self.data.setdefault("qbittorrent", {})
+        if qbt.get("profile"):
+            qbt["profile"] = str(expand(qbt["profile"]))
         history = self.data.setdefault("history", {})
         if history.get("file"):
             history["file"] = str(expand(history["file"]))
@@ -278,6 +303,9 @@ class Config:
         """Config for the UI. Drops the RPC secret."""
         data = copy.deepcopy(self.data)
         data["aria2"]["rpc"]["secret"] = "***" if data["aria2"]["rpc"]["secret"] else ""
+        qbt = data.get("qbittorrent") or {}
+        if qbt.get("password"):
+            qbt["password"] = "***"
         data["config_path"] = str(self.path)
         return data
 

@@ -20,4 +20,9 @@ if ! command -v aria2c >/dev/null 2>&1; then
   echo "  Debian: sudo apt install aria2" >&2
 fi
 
+if ! command -v qbittorrent-nox >/dev/null 2>&1; then
+  echo "note: qbittorrent-nox is not installed, so torrents go to aria2c" >&2
+  echo "      (no real per-file priorities). Install it for those." >&2
+fi
+
 exec "$PYTHON" -m aria_download_manager "$@"

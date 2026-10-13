@@ -1,0 +1,119 @@
+# Release the browser extension whenever main carries a version that has not
+# been released yet.
+#
+# Versions are bumped once per branch and held until it is merged, so the
+# version in extension/manifest.json is the release key: a push to main whose
+# manifest version has no `extension-v<version>` tag yet builds the extension,
+# tags that commit and publishes a GitHub Release with the packages. Any later
+# push with the same version does nothing.
+#
+# Firefox only installs signed add-ons for good, so the .xpi is signed through
+# AMO (unlisted: signed, not published on the store) when these repository
+# secrets exist — Settings → Secrets and variables → Actions:
+#   WEB_EXT_API_KEY     JWT issuer   from https://addons.mozilla.org/developers/addon/api/key/
+#   WEB_EXT_API_SECRET  JWT secret
+# Without them the release still carries the zip (Chromium: Load unpacked;
+# Firefox: temporary add-on), and says the .xpi was skipped.
+name: Extension release
+
+on:
+  push:
+    branches: [main]
+    paths: ['extension/**']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: extension-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Read the version
+        id: version
+        run: |
+          version=$(jq -r .version extension/manifest.json)
+          tag="extension-v$version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
+            echo "Version $version is already released as $tag; nothing to do."
+            echo "new=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "new=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/setup-node@v4
+        if: steps.version.outputs.new == 'true'
+        with:
+          node-version: 22
+
+      - name: Lint
+        if: steps.version.outputs.new == 'true'
+        run: ./extension/build.sh lint
+
+      - name: Build
+        if: steps.version.outputs.new == 'true'
+        run: |
+          ./extension/build.sh build
+          mkdir -p release
+          cp extension/dist/*.zip "release/aria-download-manager-extension-${{ steps.version.outputs.version }}.zip"
+
+      - name: Sign for Firefox
+        id: sign
+        if: steps.version.outputs.new == 'true'
+        env:
+          WEB_EXT_API_KEY: ${{ secrets.WEB_EXT_API_KEY }}
+          WEB_EXT_API_SECRET: ${{ secrets.WEB_EXT_API_SECRET }}
+        run: |
+          if [ -z "$WEB_EXT_API_KEY" ] || [ -z "$WEB_EXT_API_SECRET" ]; then
+            echo "No AMO credentials; skipping the signed .xpi."
+            echo "signed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          ./extension/build.sh sign unlisted
+          cp extension/dist/*.xpi "release/aria-download-manager-extension-${{ steps.version.outputs.version }}.xpi"
+          echo "signed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Release notes
+        if: steps.version.outputs.new == 'true'
+        run: |
+          previous=$(git tag --list 'extension-v*' --sort=-v:refname | head -n1)
+          {
+            echo "Browser extension ${{ steps.version.outputs.version }}."
+            echo
+            echo "## Install"
+            if [ "${{ steps.sign.outputs.signed }}" = "true" ]; then
+              echo "- **Firefox:** open the \`.xpi\` (about:addons → gear → Install Add-on From File)."
+            else
+              echo "- **Firefox:** no signed \`.xpi\` this time (AMO credentials not set); load the zip as a temporary add-on."
+            fi
+            echo "- **Chromium:** unzip, then chrome://extensions → Developer mode → Load unpacked."
+            echo
+            echo "## Changes to the extension"
+            if [ -n "$previous" ]; then
+              git log --no-merges --format='- %s' "$previous..HEAD" -- extension
+            else
+              git log --no-merges --format='- %s' -- extension | head -n 30
+            fi
+          } > release/notes.md
+          cat release/notes.md
+
+      - name: Tag and publish
+        if: steps.version.outputs.new == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ steps.version.outputs.tag }}" \
+            --target "$GITHUB_SHA" \
+            --title "Extension ${{ steps.version.outputs.version }}" \
+            --notes-file release/notes.md \
+            release/aria-download-manager-extension-*

@@ -51,7 +51,8 @@
       // The browser's own download interception handles plain file links, so
       // click capture only has to cover what it cannot: magnets, and links the
       // browser would render instead of download.
-      if (!settings.capture) return;
+      // Magnets follow their own switch, not the general click-capture one.
+      if (!settings.capture && !isMagnet(url)) return;
       if (!looksDownloadable(settings, url, anchor.hasAttribute('download'), location.href)) return;
       if (settings.intercept && /^https?:/i.test(url) && !anchor.hasAttribute('download')) {
         // Let the browser start it; the download listener takes it from there.

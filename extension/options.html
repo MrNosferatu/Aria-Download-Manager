@@ -53,6 +53,13 @@
     <span>Save to <small>blank uses the manager's download folder</small></span>
     <input id="dir" placeholder="/home/you/Downloads">
   </label>
+  <label class="setting" for="askBeforeDownload">
+    <span class="text">
+      <span class="label">Show a download dialog</span>
+      <span class="hint">Choose the name, folder and connections first; for a torrent, its files and their priorities.</span>
+    </span>
+    <span class="switch"><input type="checkbox" id="askBeforeDownload"><span class="track"><span class="knob"></span></span></span>
+  </label>
   <label class="setting" for="paused">
     <span class="text">
       <span class="label">Add new downloads paused</span>
@@ -79,7 +86,10 @@
     <span class="switch"><input type="checkbox" id="capture"><span class="track"><span class="knob"></span></span></span>
   </label>
   <label class="setting" for="captureMagnets">
-    <span class="text"><span class="label">Always catch magnet links</span></span>
+    <span class="text">
+      <span class="label">Catch torrents</span>
+      <span class="hint">Magnet links and .torrent files. Off leaves them to the browser or your torrent client.</span>
+    </span>
     <span class="switch"><input type="checkbox" id="captureMagnets"><span class="track"><span class="knob"></span></span></span>
   </label>
   <label class="setting" for="altClick">

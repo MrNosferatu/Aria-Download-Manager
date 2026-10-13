@@ -39,6 +39,16 @@ sudo apt install aria2      # Debian/Ubuntu
 sudo dnf install aria2      # Fedora
 ```
 
+Recommended for torrents: **qbittorrent-nox**. When it is installed, torrents
+(magnets, `.torrent` files and `.torrent` links) go to a qBittorrent the manager
+runs itself, and everything else stays with aria2c — see §1b.
+
+```bash
+sudo pacman -S qbittorrent-nox    # Arch
+sudo apt install qbittorrent-nox  # Debian/Ubuntu
+sudo dnf install qbittorrent-nox  # Fedora
+```
+
 The Python side needs `fastapi`, `aiohttp` and `PyYAML`, which are already
 present on this machine's system Python. On another machine:
 
@@ -50,6 +60,36 @@ There is no web server: FastAPI only routes the requests that arrive on the
 socket, in-process. `.torrent` uploads travel as base64 JSON, so no
 `python-multipart` either.
 
+## 1b. Torrents: aria2c or qBittorrent
+
+aria2 can only select or skip a torrent's files, so on aria2 the manager fakes
+priorities as strict tiers (a lower tier starts only when every higher one is
+done). qBittorrent has the real thing, so with `torrent.engine: auto` (the
+default) torrents go to qbittorrent-nox whenever it is installed:
+
+- **Per-file priority** — Do not download / Normal / High / Maximum, set in the
+  torrent's Files list. Higher priorities get their pieces first, as in
+  qBittorrent itself.
+- **Choose files before downloading** — the DankBar Add panel always does
+  (it shows the torrent's files once they arrive), and so do the extension's
+  download dialog and the manager page's "choose files first".
+- **Download in order** and **First and last pieces first**, per torrent.
+- **Download only, never seed** — global or per torrent, through qBittorrent's
+  share limits (stop at ratio 0 / seeding time 0) plus a 1 KiB/s upload cap
+  while downloading.
+- `.torrent` links the browser hands over are fetched by the manager with the
+  page's cookie, so private-tracker links work; a link that turns out not to be
+  a torrent goes to aria2c like any other file.
+
+Torrents show up in the same list, tagged *Torrent · qBittorrent*, and pause,
+resume, remove (with files), queue order, limits and history all work as for
+aria2 downloads. The rules engine acts on aria2 downloads only. The manager runs
+qbittorrent-nox with its own profile under `~/.local/share/aria-download-manager/qbittorrent`,
+its Web UI on `127.0.0.1:8089` with no password, and stops it on exit; set
+`qbittorrent.managed: false` to use one you already run. If it cannot start,
+torrents fall back to aria2c and Settings says why. `torrent.engine: aria2`
+keeps everything on aria2c.
+
 ## 2. Run
 
 ```bash
@@ -58,7 +98,7 @@ cp config.example.yaml config.yaml     # optional; defaults work as-is
 ```
 
 ```
-Aria Download Manager 1.0.0
+Aria Download Manager 1.1.0
   socket     /run/user/1000/aria-download-manager.sock
   config     /home/you/GitHub/Aria2C/config.yaml
 ```
@@ -122,6 +162,15 @@ target; the same directory also loads in Chromium.
 Signing needs a free AMO API key; `extension/store/listing.md` has the
 submission material, and `extension/build.sh` wraps the packaging.
 
+**Releases are automatic.** `.github/workflows/extension-release.yml` runs on
+every push to `main` that touches `extension/`. When the version in
+`extension/manifest.json` has no `extension-v<version>` tag yet, it lints and
+builds the extension, signs the Firefox `.xpi` (if the `WEB_EXT_API_KEY` and
+`WEB_EXT_API_SECRET` repository secrets are set), tags the commit and publishes
+a GitHub Release with the packages. So: bump the version once on a branch,
+merge, and the release follows; pushes with an already-released version do
+nothing. It can also be started by hand from the Actions tab.
+
 **Register the IPC bridge once.** The extension reaches the manager through
 native messaging: the browser starts a small host process
 (`aria_download_manager/native_host.py`), which relays to the manager's Unix socket.
@@ -159,8 +208,10 @@ On top of that:
 | Right-click a page | send the page URL, or every downloadable link on it |
 | Right-click a selection | send every link inside it |
 | Click capture | left-click on a magnet, or on a link the browser would *render* rather than download, sends it here instead |
+| Sites that only serve the browser | some sites (MediaFire's captcha, logins, one-time links) answer anything but the browser with a web page. A caught browser download is held paused rather than cancelled while the manager checks the link; if it gets a page where the browser got a file, the download carries on in the browser. The dialog says so and offers *Let the browser download it* first. And should aria2 still save a page under a file's name, the manager spots it from the first bytes, deletes it and says why |
+| Download dialog | optional (Settings → *Show a download dialog*, off by default): every caught download — browser downloads, clicks, the context menu, the popup's Add box — opens a small window first. A file shows its real name, size, type and whether it can resume, with the connections, parts and speed limit to set, and *Save to* as a menu of the download folder (or, with sorting on, the folder the file sorts into), the sorting folders and recent ones; *Choose…* opens the desktop's folder chooser (zenity, kdialog or yad); *Download later* queues it paused, *Let the browser download it* hands it back. A torrent or magnet is added held, and once its file list arrives the window shows every file with a checkbox and a priority, the save folder, *Download in order*, *First and last pieces first* and download-only, like qBittorrent's add dialog; Cancel or closing the window removes it again. Only the extension opens it, so the DankBar widget never shows a second one. On niri and Hyprland it opens floating and centred, not tiled: the manager asks the compositor (`desktop.float_windows`, on by default), so no window rule is needed. The DankBar widget's detached window floats the same way |
 | Alt+click | sends any link, even with capture off |
-| Settings page | *Simple* shows the connection test, the save folder, add-paused and notifications; *Advanced* adds what gets caught (browser downloads, file links, magnets, Alt+click, the video button), minimum size, file types, sites to leave alone, and in-page toasts |
+| Settings page | *Simple* shows the connection test, the save folder, add-paused and notifications; *Advanced* adds what gets caught (browser downloads, file links, torrents (magnets and .torrent files), Alt+click, the video button), minimum size, file types, sites to leave alone, and in-page toasts |
 
 ## 4. Custom download actions (the rules engine)
 
@@ -461,6 +512,8 @@ installation is required** to run it:
 ```bash
 python3 tests/test_manager.py     # the whole manager suite
 python3 tests/test_ipc.py         # Unix socket, event stream, native-messaging host
+python3 tests/test_qbittorrent.py # torrents through a real qbittorrent-nox (skipped if absent)
+python3 tests/test_compositor.py  # floating our windows on niri / Hyprland (fake niri, hyprctl)
 ```
 
 It covers config merging and persistence, the aria2c command line, the API and
@@ -520,6 +573,8 @@ aria_download_manager/
   supervisor.py   spawn / health-check / restart / shut down aria2c
   state.py        1 Hz poller, snapshot normalisation, live-stream fan-out
   rules.py        custom download actions
+  qbittorrent.py  qBittorrent as the torrent engine: Web API client, process, row mapping
+  compositor.py   float our windows on niri / Hyprland (niri msg, hyprctl)
   api.py          the API: FastAPI routes, run in-process (no web server)
   ipc.py          the Unix socket: newline-delimited JSON into those routes
   native_host.py  native-messaging bridge for the extension (stdlib only)

@@ -113,14 +113,12 @@ Rectangle {
     readonly property string metaText: {
         const bits = [Fmt.bytes(dl.completed) + " of " + (dl.total ? Fmt.bytes(dl.total) : "?") + " · " + (dl.progress || 0).toFixed(1) + "%"]
         if (status === "active") {
-            // aria2's figure is a moving average; the measured one is bytes
-            // actually written since the last tick. Showing both when they
-            // disagree is what makes a stall visible.
-            const measured = dl.measuredSpeed
+            // aria2's own figure is a long average that lags a stall; the
+            // measured one is what actually arrived. One number, the truer one.
+            const measured = dl.engine === "qbittorrent" ? null : dl.measuredSpeed
             const disagrees = measured !== null && measured !== undefined
                             && Math.abs(measured - dl.downloadSpeed) > Math.max(65536, dl.downloadSpeed * 0.35)
-            bits.push("↓ " + Fmt.speed(disagrees ? measured : dl.downloadSpeed)
-                      + (disagrees ? " (aria2 says " + Fmt.speed(dl.downloadSpeed) + ")" : ""))
+            bits.push("↓ " + Fmt.speed(disagrees ? measured : dl.downloadSpeed))
             if (dl.isTorrent)
                 bits.push("↑ " + Fmt.speed(dl.uploadSpeed))
             bits.push(Fmt.eta(dl.eta) + " left")

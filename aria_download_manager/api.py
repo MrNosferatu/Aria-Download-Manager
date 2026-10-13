@@ -7,10 +7,12 @@ import asyncio
 import base64
 import binascii
 import os
+import re
 import signal
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
+from urllib.parse import unquote
 from typing import Any, Callable
 
 import aiohttp
@@ -26,14 +28,16 @@ from .history import History
 from .ipc import IPCServer, socket_path_for
 from .rpc import DETAIL_KEYS, Aria2Error, Aria2RPC
 from .rules import ACTIONS, SPEED_SOURCES, RuleEngine
-from .state import Poller, Store
+from .state import Poller, Store, aria2_only
 from .supervisor import Aria2Supervisor
 from .timeline import Timeline
 from . import priorities as priority
+from . import compositor
+from . import qbittorrent as qbt
 from . import routing as routing_mod
 from . import seeding
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 
 # --------------------------------------------------------------------------
 # request models
@@ -142,6 +146,31 @@ class HistoryKeyRequest(BaseModel):
     key: str
 
 
+class ProbeRequest(BaseModel):
+    """What the download dialog asks before showing a link: size, name, kind."""
+
+    url: str
+    referer: str | None = None
+    cookie: str | None = None
+    userAgent: str | None = None
+
+
+class FloatRequest(BaseModel):
+    """One of our windows just opened: float it on a tiling compositor."""
+
+    title: str
+    width: int = 0
+    height: int = 0
+    #: Whole-title match; otherwise the title only has to start so (a browser
+    #: appends its own name to a page's title).
+    exact: bool = False
+
+
+class PickFolderRequest(BaseModel):
+    start: str = ""
+    title: str = "Save downloads to"
+
+
 class IntakeRequest(BaseModel):
     """Deliberately lenient: the browser extension sends whatever the page gave it."""
 
@@ -219,6 +248,45 @@ def piece_map(bitfield: str, num_pieces: int, buckets: int = 256) -> list[int]:
     return out
 
 
+def disposition_name(value: str) -> str:
+    """The file name in a Content-Disposition header, RFC 5987 form first."""
+    star = re.search(r"filename\*\s*=\s*([^;]+)", value, re.I)
+    if star:
+        raw = star.group(1).strip().strip('"')
+        if "''" in raw:
+            raw = raw.split("''", 1)[1]
+        return os.path.basename(unquote(raw))
+    plain = re.search(r'filename\s*=\s*("([^"]*)"|[^;]+)', value, re.I)
+    if plain:
+        return os.path.basename((plain.group(2) if plain.group(2) is not None
+                                 else plain.group(1)).strip())
+    return ""
+
+
+def probe_headers(status: int, headers: Any) -> dict[str, Any]:
+    """What a probe learns from a response: size, name, type, resumability."""
+    out: dict[str, Any] = {"contentType": headers.get("Content-Type", "")}
+    size = None
+    total = re.search(r"/(\d+)\s*$", headers.get("Content-Range", ""))
+    if total:
+        size = int(total.group(1))
+    elif status != 206 and headers.get("Content-Length", "").isdigit():
+        size = int(headers["Content-Length"])
+    out["size"] = size
+    out["resumable"] = status == 206 or headers.get("Accept-Ranges", "").lower() == "bytes"
+    out["name"] = disposition_name(headers.get("Content-Disposition", ""))
+    return out
+
+
+def magnet_name(uri: str) -> str:
+    from urllib.parse import parse_qs, urlsplit
+
+    try:
+        return (parse_qs(urlsplit(uri).query).get("dn") or [""])[0]
+    except ValueError:
+        return ""
+
+
 def decode_b64(data: str, what: str) -> str:
     payload = data.split(",", 1)[1] if data.startswith("data:") else data
     payload = payload.strip()
@@ -273,8 +341,18 @@ def create_app(cfg: Config) -> FastAPI:
         return router.apply(download_only.prepare(options), uris=uris, torrent=torrent)
 
     rpc.prepare_add = prepare_add
-    poller.observers.append(router.observe)
-    poller.observers.append(download_only.observe)
+
+    def aria2_view(observer):
+        """An observer that acts through aria2's RPC sees aria2's rows only."""
+        return lambda snapshot: observer(aria2_only(snapshot))
+
+    # Torrents go to qBittorrent when it is up (see qbittorrent.py).
+    qb = qbt.QBEngine(cfg, lambda level, message, **kw: store.add_event(level, message, **kw))
+    qb.prepare_torrent = lambda options, data: router.apply(options, torrent=data)
+    poller.sources.append(qb.poll)
+    poller.extras["qbittorrent"] = qb.public_state
+    poller.observers.append(aria2_view(router.observe))
+    poller.observers.append(aria2_view(download_only.observe))
     poller.extras["torrent"] = download_only.public_state
     # A magnet's metadata fetch has done its job the moment the real torrent
     # exists. aria2 keeps the finished husk in its stopped list, where it shows
@@ -298,15 +376,57 @@ def create_app(cfg: Config) -> FastAPI:
                 continue
             cleared_metadata.add(row["gid"])
             asyncio.get_running_loop().create_task(_drop_metadata(row["gid"]))
-        cleared_metadata &= live
+        cleared_metadata.intersection_update(live)
 
-    poller.observers.append(forget_metadata)
+    poller.observers.append(aria2_view(forget_metadata))
+
+    # A site that will only hand a file to the browser (a captcha, a login, a
+    # link good for one request) answers aria2 with a web page, which aria2
+    # then saves under the file's name: a "driver.exe" that is MediaFire's
+    # "verify you're human" page. Catch that from the first bytes, stop it,
+    # delete the page and say what happened, rather than leave a fake file.
+    sniffed: set[str] = set()
+
+    async def _drop_page(row: dict) -> None:
+        gid, path = row["gid"], row["path"]
+        try:
+            await _remove_from_aria2(gid, force=True, purge=True)
+        finally:
+            await asyncio.to_thread(filetools.delete, [path], [row.get("dir") or os.path.dirname(path)])
+            store.add_event(
+                "error",
+                f"{os.path.basename(path)}: the site sent a web page instead of the file "
+                "(usually a captcha, a login or a one-time link). Download it in the browser.",
+                gid=gid, url=row.get("firstUri") or "")
+
+    def catch_pages(snapshot: dict) -> None:
+        live = set()
+        for row in snapshot.get("downloads", []):
+            gid = row.get("gid")
+            live.add(gid)
+            if gid in sniffed or row.get("isTorrent") or row.get("isMetadata"):
+                continue
+            if row.get("status") not in ("active", "complete") or not row.get("completed"):
+                continue
+            path = row.get("path") or ""
+            if not filetools.expects_binary(path):
+                sniffed.add(gid)
+                continue
+            verdict = filetools.starts_like_html(path)
+            if verdict is None:
+                continue  # its first bytes are not written yet; look next tick
+            sniffed.add(gid)
+            if verdict:
+                asyncio.get_running_loop().create_task(_drop_page(row))
+        sniffed.intersection_update(live)
+
+    poller.observers.append(aria2_view(catch_pages))
     history = History(cfg)
     file_priorities = priority.FilePriorities(
         history.path.parent / "priorities.json", rpc, cfg, download_only,
         lambda level, message, **kw: store.add_event(level, message, **kw))
     download_only.exempt = file_priorities.holding
-    poller.observers.append(file_priorities.observe)
+    poller.observers.append(aria2_view(file_priorities.observe))
     # Before the history, so a recorded download carries its "added" time too.
     timeline = Timeline(history.path.parent / "timeline.json")
     poller.observers.append(timeline.observe)
@@ -342,6 +462,7 @@ def create_app(cfg: Config) -> FastAPI:
                 await download_only.apply()
             except Exception as exc:
                 store.add_event("error", f"Could not cap torrent uploads: {exc}")
+        await qb.start()
         poller.start()
         store.add_event("info", f"IPC socket listening at {ipc.path}")
         try:
@@ -353,6 +474,7 @@ def create_app(cfg: Config) -> FastAPI:
             history.save(force=True)
             timeline.save(force=True)
             await poller.stop()
+            await qb.stop()
             await supervisor.stop()
             await rpc.close()
 
@@ -367,6 +489,12 @@ def create_app(cfg: Config) -> FastAPI:
     app.state.history = history
     app.state.media_jobs = media_jobs
     app.state.ipc = ipc
+    app.state.qb = qb
+
+    @app.exception_handler(qbt.QBError)
+    async def qbittorrent_error_handler(request: Request, exc: qbt.QBError):
+        code = exc.status if exc.status in (400, 404, 409, 415) else 502
+        return JSONResponse(status_code=code, content={"ok": False, "error": exc.message})
 
     @app.exception_handler(Aria2Error)
     async def aria2_error_handler(request: Request, exc: Aria2Error):
@@ -429,6 +557,33 @@ def create_app(cfg: Config) -> FastAPI:
         return {"events": store.event_list(limit), "triggers": engine.trigger_log[:100]}
 
     # ---- adding ----------------------------------------------------------
+    async def _add_to_qb(uris: list[str], options: dict, paused: bool,
+                         headers: dict[str, str] | None = None,
+                         maybe_torrent: bool = False,
+                         existing: list[str] | None = None) -> tuple[list[str], list[str]]:
+        """Hand qBittorrent the torrents among ``uris``: (its gids, what is left for aria2).
+
+        A .torrent link (with ``maybe_torrent``, any link the browser named as a
+        .torrent file) is fetched here, with the browser's headers, and only
+        goes to qBittorrent if it really is a torrent; anything else stays with
+        aria2, as does everything while qBittorrent is not up.
+        """
+        if not qb.ready:
+            return [], list(uris)
+        gids: list[str] = []
+        rest: list[str] = []
+        for uri in uris:
+            if qbt.is_magnet(uri):
+                gids.append(await qb.add_magnet(uri, options, paused, existing=existing))
+            elif ((maybe_torrent or qbt.is_torrent_url(uri))
+                  and (data := await qb.fetch_torrent(uri, headers or {}))):
+                name = os.path.basename(uri.split("?")[0])
+                gids.append(await qb.add_torrent(data, options, paused, filename=name,
+                                                 existing=existing))
+            else:
+                rest.append(uri)
+        return gids, rest
+
     async def _add_uris(req: AddRequest) -> dict:
         uris = split_uris(req.uris, req.url)
         if not uris:
@@ -436,6 +591,11 @@ def create_app(cfg: Config) -> FastAPI:
         options = clean_options(req.options)
         if req.paused:
             options["pause"] = "true"
+        qb_gids, uris = await _add_to_qb(uris, options, req.paused)
+        if not uris:
+            poller.poke()
+            store.add_event("info", f"Queued {len(qb_gids)} torrent(s) in qBittorrent", gids=qb_gids)
+            return {"ok": True, "gids": qb_gids}
         # A magnet says nothing about what it holds. With sorting on, hold the
         # torrent its metadata produces for the moment it takes to pick the
         # folder — moving it afterwards would strand the files aria2 has
@@ -454,6 +614,7 @@ def create_app(cfg: Config) -> FastAPI:
         if hold or chooses_files:
             for gid in gids:
                 router.expect(gid, resume=hold and not chooses_files)
+        gids = qb_gids + gids
         poller.poke()
         store.add_event(
             "info",
@@ -474,6 +635,9 @@ def create_app(cfg: Config) -> FastAPI:
             options["pause"] = "true"
         if req.kind == "metalink":
             gids = await rpc.add_metalink(payload, options, req.position)
+        elif qb.ready:
+            gids = [await qb.add_torrent(base64.b64decode(payload), options, req.paused,
+                                         filename=req.filename or "")]
         else:
             gids = [await rpc.add_torrent(payload, req.uris, options, req.position)]
         poller.poke()
@@ -604,6 +768,8 @@ def create_app(cfg: Config) -> FastAPI:
     # ---- per-download ----------------------------------------------------
     @app.get("/api/download/{gid}")
     async def download_detail(gid: str):
+        if qbt.is_gid(gid):
+            return await qb.detail(gid)
         status = await rpc.tell_status(gid, DETAIL_KEYS)
         results = await rpc.multicall(
             [
@@ -652,13 +818,19 @@ def create_app(cfg: Config) -> FastAPI:
 
     @app.post("/api/download/{gid}/pause")
     async def pause(gid: str, force: bool = False):
-        await rpc.pause(gid, force=force)
+        if qbt.is_gid(gid):
+            await qb.pause(gid)
+        else:
+            await rpc.pause(gid, force=force)
         poller.poke()
         return {"ok": True}
 
     @app.post("/api/download/{gid}/resume")
     async def resume(gid: str):
-        await rpc.unpause(gid)
+        if qbt.is_gid(gid):
+            await qb.resume(gid)
+        else:
+            await rpc.unpause(gid)
         poller.poke()
         return {"ok": True}
 
@@ -725,6 +897,11 @@ def create_app(cfg: Config) -> FastAPI:
         aria2 never deletes anything itself, so without `delete_files` a removed
         download leaves its part file and `.aria2` control file on disk forever.
         """
+        if qbt.is_gid(gid):
+            # qBittorrent deletes its own files, and only its own.
+            await qb.remove(gid, delete_files)
+            poller.poke()
+            return {"ok": True}
         if delete_files:
             removal = await _stop_and_delete(gid, force=force, purge=purge)
         else:
@@ -763,7 +940,14 @@ def create_app(cfg: Config) -> FastAPI:
 
         for gid in req.gids:
             try:
-                if req.action == "pause":
+                if qbt.is_gid(gid):
+                    if req.action == "pause":
+                        await qb.pause(gid)
+                    elif req.action == "resume":
+                        await qb.resume(gid)
+                    else:
+                        await qb.remove(gid, req.delete_files)
+                elif req.action == "pause":
                     await rpc.pause(gid, force=req.force)
                 elif req.action == "resume":
                     await rpc.unpause(gid)
@@ -775,7 +959,7 @@ def create_app(cfg: Config) -> FastAPI:
                 else:
                     await _remove_from_aria2(gid, force=req.force, purge=True)
                 done.append(gid)
-            except Aria2Error as exc:
+            except (Aria2Error, qbt.QBError) as exc:
                 failed.append({"gid": gid, "error": str(exc)})
 
         poller.poke()
@@ -800,6 +984,12 @@ def create_app(cfg: Config) -> FastAPI:
     @app.post("/api/download/{gid}/options")
     async def set_download_options(gid: str, req: OptionsRequest):
         options = clean_options(req.options)
+        if qbt.is_gid(gid):
+            applied = await qb.set_options(gid, options)
+            if not applied:
+                raise HTTPException(400, "none of those options apply to a qBittorrent torrent")
+            poller.poke()
+            return {"ok": True, "applied": applied}
         if file_priorities.has(gid) and seeding.KEY in options:
             # File priorities own this torrent's seeding options while it has
             # tiers to go; they apply download-only when the last tier runs.
@@ -821,12 +1011,19 @@ def create_app(cfg: Config) -> FastAPI:
     async def set_position(gid: str, req: PositionRequest):
         if req.how not in ("POS_SET", "POS_CUR", "POS_END"):
             raise HTTPException(400, "how must be POS_SET, POS_CUR or POS_END")
-        position = await rpc.change_position(gid, req.pos, req.how)
+        if qbt.is_gid(gid):
+            position = await qb.move(gid, req.pos, req.how)
+        else:
+            position = await rpc.change_position(gid, req.pos, req.how)
         poller.poke()
         return {"ok": True, "position": position}
 
     @app.post("/api/download/{gid}/select")
     async def select_files(gid: str, req: SelectFilesRequest):
+        if qbt.is_gid(gid):
+            await qb.select(gid, req.indices)
+            poller.poke()
+            return {"ok": True, "select-file": ",".join(str(i) for i in req.indices)}
         # A plain selection replaces any priorities rather than fighting them.
         file_priorities.entries.pop(gid, None)
         value = ",".join(str(i) for i in req.indices) if req.indices else ""
@@ -837,7 +1034,16 @@ def create_app(cfg: Config) -> FastAPI:
     @app.post("/api/download/{gid}/files")
     async def set_file_priorities(gid: str, req: FilePrioritiesRequest):
         try:
-            change = await file_priorities.set(gid, req.levels)
+            if qbt.is_gid(gid):
+                change = await qb.set_levels(gid, req.levels)
+            else:
+                status = await rpc.tell_status(gid, ["status", "bittorrent"])
+                if status.get("bittorrent") and status.get("status") in ("complete", "removed"):
+                    # aria2 forgets a finished download's selection for good.
+                    raise HTTPException(
+                        409, "aria2c cannot download more of a torrent once it has finished. "
+                             "Add the torrent again to choose more files.")
+                change = await file_priorities.set(gid, req.levels)
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
         poller.poke()
@@ -845,7 +1051,7 @@ def create_app(cfg: Config) -> FastAPI:
 
     @app.post("/api/download/{gid}/retry")
     async def retry(gid: str):
-        detail = await engine._restart(gid)
+        detail = await (qb.retry(gid) if qbt.is_gid(gid) else engine._restart(gid))
         poller.poke()
         store.add_event("info", f"Retry {gid}: {detail}", gid=gid)
         return {"ok": True, "detail": detail}
@@ -854,12 +1060,14 @@ def create_app(cfg: Config) -> FastAPI:
     @app.post("/api/global/pause-all")
     async def pause_all(force: bool = False):
         await rpc.pause_all(force=force)
+        await qb.pause_all()
         poller.poke()
         return {"ok": True}
 
     @app.post("/api/global/resume-all")
     async def resume_all():
         await rpc.unpause_all()
+        await qb.resume_all()
         poller.poke()
         return {"ok": True}
 
@@ -887,6 +1095,7 @@ def create_app(cfg: Config) -> FastAPI:
         wanted = options.pop(seeding.KEY, None)
         if wanted is not None and seeding.truthy(wanted) != download_only.enabled:
             await download_only.set(seeding.truthy(wanted))
+            await qb.set_download_only()
         if not options:
             poller.poke()
             return {"ok": True, "applied": {seeding.KEY: wanted}, "pending": {}}
@@ -897,6 +1106,10 @@ def create_app(cfg: Config) -> FastAPI:
             live_options.pop("max-overall-upload-limit")
         if live_options:
             await rpc.change_global_option(live_options)
+        try:
+            await qb.set_global_limits(options)
+        except qbt.QBError as exc:
+            store.add_event("warn", f"qBittorrent did not take the new limits: {exc}")
         # Mirror into config so a manager/aria2c restart keeps the change.
         persistable = {k: v for k, v in options.items() if not isinstance(v, list)}
         cfg.data["aria2"]["options"].update(persistable)
@@ -1023,6 +1236,11 @@ def create_app(cfg: Config) -> FastAPI:
         options = {}
         if entry.get("dir"):
             options["dir"] = entry["dir"]
+        if qbt.is_magnet(url) and qb.ready:
+            gid = await qb.add_magnet(url, clean_options(options))
+            poller.poke()
+            store.add_event("info", f"Re-added from history: {entry.get('name') or url}")
+            return {"ok": True, "gid": gid}
         if entry.get("name"):
             options["out"] = os.path.basename(entry["name"])
         gid = await rpc.add_uri([url], clean_options(options))
@@ -1068,9 +1286,105 @@ def create_app(cfg: Config) -> FastAPI:
             "name": "Aria Download Manager",
             "version": VERSION,
             "aria2": supervisor.status().get("running", False),
+            "torrentEngine": qbt.ENGINE if qb.ready else "aria2",
             "defaultDir": cfg.get("aria2.options.dir"),
             "socket": ipc.path,
         }
+
+    @app.post("/api/intake/probe")
+    async def intake_probe(req: ProbeRequest):
+        """Size, server-side name and kind of a link, for the download dialog.
+
+        A HEAD first; servers that refuse it get a one-byte ranged GET, which
+        also says whether the download can resume. Never fails the dialog: an
+        unreachable link just comes back with nothing known.
+        """
+        if qbt.is_magnet(req.url):
+            return {"ok": True, "kind": "torrent", "magnet": True,
+                    "name": magnet_name(req.url)}
+        headers: dict[str, str] = {}
+        if req.cookie:
+            headers["Cookie"] = req.cookie
+        if req.referer:
+            headers["Referer"] = req.referer
+        if req.userAgent:
+            headers["User-Agent"] = req.userAgent
+        info: dict[str, Any] = {"ok": True, "kind": "file", "size": None, "name": "",
+                                "contentType": "", "resumable": None, "finalUrl": req.url}
+        timeout = aiohttp.ClientTimeout(total=15)
+        try:
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                res = await session.head(req.url, headers=headers, allow_redirects=True)
+                if res.status >= 400:
+                    res.release()
+                    res = await session.get(req.url, allow_redirects=True,
+                                            headers={**headers, "Range": "bytes=0-0"})
+                async with res:
+                    if res.status < 400:
+                        info.update(probe_headers(res.status, res.headers))
+                        info["finalUrl"] = str(res.url)
+                    else:
+                        info["error"] = f"the server answered {res.status}"
+        except (aiohttp.ClientError, asyncio.TimeoutError, ValueError) as exc:
+            info["error"] = str(exc) or exc.__class__.__name__
+        if not info["name"]:
+            info["name"] = os.path.basename(str(info["finalUrl"]).split("?")[0].rstrip("/"))
+        # A link named as a file that answers with a web page: the site only
+        # gives the file to a browser (MediaFire's captcha comes back as
+        # "download_repair.php"). Keep the link's own name, and say so.
+        asked = unquote(os.path.basename(req.url.split("?")[0].rstrip("/")))
+        info["page"] = ("html" in info["contentType"].lower()
+                        and filetools.expects_binary(asked or str(info["name"])))
+        if info["page"] and asked:
+            info["name"] = asked
+        if ("bittorrent" in info["contentType"].lower()
+                or str(info["name"]).lower().endswith(".torrent")):
+            info["kind"] = "torrent"
+        return info
+
+    @app.get("/api/folders")
+    async def folders(name: str = ""):
+        """The folders a download can go to, for the dialog's folder menu.
+
+        The download folder, the sorting folders, and the one this file's
+        type belongs in (``suggested``), which the dialogs preselect.
+        """
+        base = router.base_dir()
+        presets = [{"label": "Downloads", "path": base, "category": ""}]
+        seen = {base}
+        for category in routing_mod.CATEGORIES:
+            path = router.folder_for(category)
+            if path in seen:
+                continue
+            seen.add(path)
+            presets.append({"label": os.path.basename(path.rstrip("/")) or category.capitalize(),
+                            "path": path, "category": category})
+        # The folder this file's type belongs in, whether or not sorting is on:
+        # the dialogs start there (a .zip in Archives), and the user can still
+        # pick another.
+        suggested = router.folder_for(router.category_of(name)) if name else ""
+        return {"base": base, "sorting": router.enabled, "presets": presets,
+                "suggested": suggested, "picker": compositor.picker_available()}
+
+    @app.post("/api/pick-folder")
+    async def pick_folder(req: PickFolderRequest):
+        """Open a native folder chooser (zenity, kdialog or yad) and return the pick."""
+        chosen = await compositor.pick_folder(req.start or router.base_dir(), req.title)
+        if chosen is None:
+            raise HTTPException(501, "no folder picker installed (zenity, kdialog or yad)")
+        return {"ok": True, "path": chosen}
+
+    @app.post("/api/window/float")
+    async def float_window(req: FloatRequest):
+        """Float the window titled so (niri, Hyprland), unless turned off.
+
+        Windows cannot ask a tiling compositor to float them, so the dialog and
+        the DankBar window ask the manager, which asks the compositor.
+        """
+        if not cfg.get("desktop.float_windows", True):
+            return {"ok": True, "floated": ""}
+        size = (max(0, min(req.width, 4000)), max(0, min(req.height, 4000)))
+        return {"ok": True, "floated": await compositor.float_window(req.title, *size, exact=req.exact)}
 
     @app.post("/api/intake/add")
     async def intake_add(req: IntakeRequest):
@@ -1102,7 +1416,24 @@ def create_app(cfg: Config) -> FastAPI:
         if req.paused:
             options["pause"] = "true"
 
-        gids = [await rpc.add_uri([uri], dict(options), None) for uri in uris]
+        fetch_headers: dict[str, str] = {}
+        for line in headers:
+            name, _, value = str(line).partition(":")
+            if name.strip() and value.strip():
+                fetch_headers[name.strip()] = value.strip()
+        if req.referer:
+            fetch_headers["Referer"] = req.referer
+        if req.userAgent:
+            fetch_headers["User-Agent"] = req.userAgent
+        torrent_options = {k: v for k, v in options.items()
+                           if k in ("dir", "pause", "download-only", "pause-metadata",
+                                    "max-download-limit", "max-upload-limit")}
+        # A browser download is often named only by its Content-Disposition.
+        named_torrent = (req.filename or "").strip().lower().endswith(".torrent")
+        existing: list[str] = []
+        qb_gids, rest = await _add_to_qb(uris, torrent_options, req.paused, fetch_headers,
+                                         maybe_torrent=named_torrent, existing=existing)
+        gids = qb_gids + [await rpc.add_uri([uri], dict(options), None) for uri in rest]
         poller.poke()
         origin = req.source or "browser"
         store.add_event(
@@ -1112,6 +1443,8 @@ def create_app(cfg: Config) -> FastAPI:
             gids=gids,
             source=origin,
         )
-        return {"ok": True, "gids": gids, "count": len(gids)}
+        # Torrents that were already there: the download dialog must not
+        # treat them as its own (and remove them when it is closed).
+        return {"ok": True, "gids": gids, "count": len(gids), "existing": existing}
 
     return app

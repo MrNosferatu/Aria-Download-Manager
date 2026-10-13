@@ -425,7 +425,7 @@ function updateRow(row, dl) {
   // The metadata fetch disappears by itself once the torrent it describes
   // starts, so it is labelled for the wait rather than as a download.
   if (dl.isMetadata) tags.push('<span class="tag">Fetching details</span>');
-  else if (dl.isTorrent) tags.push('<span class="tag">Torrent</span>');
+  else if (dl.isTorrent) tags.push(`<span class="tag">${dl.engine === 'qbittorrent' ? 'Torrent · qBittorrent' : 'Torrent'}</span>`);
   if (dl.seeder) tags.push('<span class="tag tag-complete">Seeding</span>');
   const ruleState = S.state?.rules?.downloads?.[dl.gid] || {};
   for (const [name, info] of Object.entries(ruleState)) {
@@ -449,11 +449,13 @@ function updateRow(row, dl) {
     // aria2's figure is a moving average; the measured one is bytes actually
     // written since the last tick. Both show when they disagree, because that
     // gap is what makes a stall look like it is still running.
-    const measured = dl.measuredSpeed;
+    // aria2's own figure is a long average that lags a stall; the measured
+    // one is what actually arrived. One number, the truer one.
+    const measured = dl.engine === 'qbittorrent' ? null : dl.measuredSpeed;
     const disagrees = measured != null
       && Math.abs(measured - dl.downloadSpeed) > Math.max(65536, dl.downloadSpeed * 0.35);
     bits.push(disagrees
-      ? `↓ ${fmtSpeed(measured)} <span title="aria2 reports ${fmtSpeed(dl.downloadSpeed)}: its figure is a moving average and lags by a few seconds">(aria2 says ${fmtSpeed(dl.downloadSpeed)})</span>`
+      ? `<span title="Measured over the last few seconds; the engine's own average says ${fmtSpeed(dl.downloadSpeed)}">↓ ${fmtSpeed(measured)}</span>`
       : `↓ ${fmtSpeed(dl.downloadSpeed)}`);
     if (dl.isTorrent) bits.push(`↑ ${fmtSpeed(dl.uploadSpeed)}`);
     bits.push(`${fmtEta(dl.eta)} left`);
@@ -600,176 +602,226 @@ async function refreshDetail(gid) {
   renderDetail(row._refs.detail, gid, data);
 }
 
+/* A download's details, in the order people look for things: what is wrong
+   (if anything), its files, its options, and only then the technical record.
+   Built once per expansion and refreshed in place every two seconds, so what
+   is being edited — a priority menu, a limit being typed — survives. Every
+   change saves as it is made; there is no Apply. */
 function renderDetail(host, gid, data) {
-  // The panel is rebuilt every two seconds; doing that under an open
-  // dropdown (a file's priority) would snap it shut mid-choice.
-  if (document.activeElement?.tagName === 'SELECT' && host.contains(document.activeElement)) return;
   if (!S.detailDrafts.has(gid)) S.detailDrafts.set(gid, {});
   const draft = S.detailDrafts.get(gid);
   const st = data.status || {};
-  // aria2 keeps no timestamps; the manager's own record rides on the snapshot.
-  const live = (S.state?.downloads || []).find((d) => d.gid === gid);
-  const opts = data.options || {};
   const files = data.files || [];
+  const qb = data.engine === 'qbittorrent';
+  const isTorrent = Boolean(st.bittorrent);
+
+  if (!host.querySelector('[data-role="d-files"]')) {
+    host.innerHTML = `
+      <p class="dbanner err" data-role="d-error" hidden></p>
+      <section class="dsec" data-role="d-files" hidden>
+        <div class="dsec-head">
+          <h3>Files</h3>
+          <span class="hint" data-role="d-saved"></span>
+          <span class="spacer"></span>
+          <button class="btn btn-sm btn-primary" data-role="d-start" hidden>Start download</button>
+        </div>
+        <div data-role="d-tree"></div>
+      </section>
+      <section class="dsec">
+        <div class="dsec-head"><h3>Options</h3><span class="hint" data-role="d-opts-saved"></span></div>
+        <div data-role="d-opts"></div>
+      </section>
+      <details class="dsec dmore" data-role="d-more">
+        <summary>Details</summary>
+        <div data-role="d-info"></div>
+      </details>`;
+    draft.tree = null;
+    draft.options = null;
+    const more = host.querySelector('[data-role="d-more"]');
+    more.open = Boolean(draft.moreOpen);
+    more.addEventListener('toggle', () => { draft.moreOpen = more.open; });
+    host.querySelector('[data-role="d-start"]').addEventListener('click', (e) => {
+      e.currentTarget.disabled = true;
+      act(`/api/download/${gid}/resume`, { method: 'POST' }, 'Started').catch(() => {});
+    });
+  }
+  const $d = (role) => host.querySelector(`[data-role="${role}"]`);
+
+  // ---- what is wrong, where it cannot be missed
+  const error = st.errorMessage ? `${st.errorMessage}${st.errorCode && st.errorCode !== 'qbittorrent' ? ` (${st.errorCode})` : ''}` : '';
+  $d('d-error').hidden = !error;
+  $d('d-error').textContent = error;
+
+  // ---- files: a tree, like qBittorrent's; saved as it changes
+  const many = files.length > 1;
+  $d('d-files').hidden = !many;
+  if (many) {
+    const levels = Object.fromEntries(files.map((f) => [String(f.index), f.priority ?? (f.selected === 'true' ? 1 : 0)]));
+    if (!draft.tree) {
+      draft.tree = mountFileTree($d('d-tree'), {
+        files, base: st.dir || '', levels, progress: true,
+        onChange: (next) => saveLevels(gid, draft, next, $d('d-saved')),
+      });
+    } else {
+      draft.tree.update(files, levels);
+    }
+  }
+  // A torrent held for its file choice says how to go on.
+  $d('d-start').hidden = !(isTorrent && st.status === 'paused');
+  $d('d-start').disabled = false;
+
+  // ---- options, built once
+  if (!draft.options) {
+    draft.options = buildDownloadOptions(gid, data.options || {}, isTorrent, qb, $d('d-opts-saved'));
+    $d('d-opts').replaceChildren(draft.options);
+  }
+
+  // ---- the technical record, folded away
+  if ($d('d-more').open) $d('d-info').innerHTML = detailInfo(gid, data);
+}
+
+// Priorities save half a second after the last change, so a burst of clicks
+// is one request.
+function saveLevels(gid, draft, levels, status) {
+  clearTimeout(draft.saveTimer);
+  if (!Object.values(levels).some((v) => Number(v) > 0)) {
+    status.textContent = 'Pick at least one file';
+    return;
+  }
+  status.textContent = 'Saving…';
+  draft.saveTimer = setTimeout(async () => {
+    try {
+      await api(`/api/download/${gid}/files`, { method: 'POST', body: { levels } });
+      status.textContent = 'Saved';
+    } catch (err) {
+      status.textContent = '';
+      toast(err.message, 'error');
+    }
+  }, 500);
+}
+
+function detailInfo(gid, data) {
+  const st = data.status || {};
+  const files = data.files || [];
+  const live = (S.state?.downloads || []).find((d) => d.gid === gid);
   const active = (data.servers || []).flatMap((s) => (s.servers || []).map((x) => ({ index: s.index, ...x })));
-
   const pieces = data.pieceMap || [];
-  const pieceHtml = pieces.length
-    ? `<div><h3>Pieces · ${st.numPieces || 0} × ${fmtBytes(st.pieceLength || 0)}</h3>
-       <div class="piecemap">${pieces.map((p) =>
-        `<i class="${p >= 100 ? 'done' : p > 0 ? 'part' : ''}"></i>`).join('')}</div></div>`
-    : '';
-
-  host.innerHTML = `
-    ${pieceHtml}
-    <div class="detail-cols">
-      <div>
-        <h3>About</h3>
-        <div class="kv">
-          <label>ID</label><code>${gid}</code>
-          <label>Status</label><span><span class="tag ${STATUS_TAG[st.status] || ''}">${statusLabel(st.status || '?')}</span></span>
-          <label>Folder</label><code>${escapeHtml(st.dir || '')}</code>
-          <label>Path</label><code>${escapeHtml(files[0]?.path || '')}</code>
-          <label>Size</label><span>${fmtBytes(st.completedLength)} of ${fmtBytes(st.totalLength)}</span>
-          <label>Connections</label><span>${st.connections || 0}</span>
-          ${live?.addedAt ? `<label>Added</label><span>${fmtDate(live.addedAt)}</span>` : ''}
-          ${live?.finishedAt ? `<label>Finished</label><span>${fmtDate(live.finishedAt)}</span>` : ''}
-          ${st.infoHash ? `<label>Info hash</label><code>${st.infoHash}</code>` : ''}
-          ${st.errorMessage ? `<label>Error</label><span class="err">${escapeHtml(st.errorMessage)} (${st.errorCode})</span>` : ''}
-        </div>
-        <h3>Options for this download</h3>
-        <div data-role="dl-opts"></div>
-      </div>
-      <div>
-        <h3>Files ${files.length > 1 ? `· ${files.length}` : ''}</h3>
-        ${files.length > 1 ? `<div class="filehead">
-          <span class="hint">Higher priorities finish before lower ones start.</span>
-          <label>Set all ${prioritySelect('all', '')}</label>
-        </div>` : ''}
-        <div class="filelist">
-          ${files.map((f) => `
-            <div class="filerow${(draft.files?.[f.index] ?? f.priority) === 0 ? ' is-skipped' : ''}">
-              <span class="fname" title="${escapeHtml(f.path)}">${escapeHtml(f.path.split('/').pop() || f.path)}</span>
-              <span class="fsize">${fmtBytes(f.completedLength)} / ${fmtBytes(f.length)}${f.waitingForTier ? ' · after higher priority' : ''}</span>
-              ${files.length > 1 ? prioritySelect(f.index, draft.files?.[f.index] ?? f.priority) : ''}
-            </div>`).join('') || '<p class="hint">No file information yet.</p>'}
-        </div>
-        ${files.length > 1 ? '<button class="btn btn-sm" data-role="save-files" style="margin-top:8px">Apply file choices</button>' : ''}
-        <h3>Connections ${active.length ? `· ${active.length}` : ''}</h3>
-        <div class="serverlist">
-          ${active.map((s) => `
-            <div class="filerow">
-              <span class="fname" title="${escapeHtml(s.currentUri || s.uri)}">${escapeHtml((s.currentUri || s.uri || '').slice(0, 70))}</span>
-              <span class="fsize">${fmtSpeed(s.downloadSpeed)}</span>
-            </div>`).join('') || '<p class="hint">No open connections.</p>'}
-        </div>
-        ${(data.uris || []).length ? `<h3>Links</h3><div class="filelist">${
-          data.uris.map((u) => `<div class="filerow"><span class="fname" title="${escapeHtml(u.uri)}">${escapeHtml(u.uri)}</span><span class="fsize">${escapeHtml(u.status)}</span></div>`).join('')
-        }</div>` : ''}
-        ${(data.peers || []).length ? `<h3>Peers · ${data.peers.length}</h3><div class="filelist">${
-          data.peers.slice(0, 25).map((p) => `<div class="filerow"><span class="fname">${escapeHtml(p.ip)}:${p.port}</span><span class="fsize">↓ ${fmtSpeed(p.downloadSpeed)} ↑ ${fmtSpeed(p.uploadSpeed)}</span></div>`).join('')
-        }</div>` : ''}
-      </div>
-    </div>`;
-
-  // Rebuilt every two seconds for the live figures, but what the user is in
-  // the middle of editing must survive that: the options block is built once
-  // per expansion and moved into each new render, and file ticks are kept.
-  const optsHost = $('[data-role="dl-opts"]', host);
-  if (!draft.options) draft.options = buildDownloadOptions(gid, opts, Boolean(st.bittorrent));
-  optsHost.replaceWith(draft.options);
-  const pickers = $$('[data-file]', host).filter((s) => s.dataset.file !== 'all');
-  const remember = (sel) => {
-    draft.files = draft.files || {};
-    draft.files[sel.dataset.file] = Number(sel.value);
-    sel.closest('.filerow').classList.toggle('is-skipped', sel.value === '0');
-  };
-  for (const sel of pickers) sel.addEventListener('change', () => remember(sel));
-  $('[data-file="all"]', host)?.addEventListener('change', (e) => {
-    if (e.target.value === '') return;
-    for (const sel of pickers) { sel.value = e.target.value; remember(sel); }
-    e.target.value = '';
-  });
-  $('[data-role="save-files"]', host)?.addEventListener('click', async () => {
-    const levels = Object.fromEntries(pickers.map((s) => [s.dataset.file, Number(s.value)]));
-    if (!Object.values(levels).some((v) => v > 0)) { toast('Pick at least one file to download', 'error'); return; }
-    await act(`/api/download/${gid}/files`, { method: 'POST', body: { levels } }, 'File choices applied');
-    draft.files = null;
-  });
+  const kv = [
+    ['Folder', st.dir],
+    ['File', files.length === 1 ? files[0].path : ''],
+    ['Size', `${fmtBytes(st.completedLength)} of ${fmtBytes(st.totalLength)}`],
+    ['Connections', String(st.connections || 0)],
+    ['Added', live?.addedAt ? fmtDate(live.addedAt) : ''],
+    ['Finished', live?.finishedAt ? fmtDate(live.finishedAt) : ''],
+    ['Info hash', st.infoHash],
+    ['ID', gid],
+  ].filter(([, v]) => v);
+  return `
+    <div class="kv">${kv.map(([k, v]) => `<label>${k}</label><code>${escapeHtml(v)}</code>`).join('')}</div>
+    ${pieces.length ? `<h4>Pieces · ${st.numPieces || 0} × ${fmtBytes(st.pieceLength || 0)}</h4>
+      <div class="piecemap">${pieces.map((p) => `<i class="${p >= 100 ? 'done' : p > 0 ? 'part' : ''}"></i>`).join('')}</div>` : ''}
+    ${active.length ? `<h4>Connections · ${active.length}</h4><div class="filelist">${active.map((x) => `
+      <div class="filerow"><span class="fname" title="${escapeHtml(x.currentUri || x.uri)}">${escapeHtml((x.currentUri || x.uri || '').slice(0, 90))}</span>
+      <span class="fsize">${fmtSpeed(x.downloadSpeed)}</span></div>`).join('')}</div>` : ''}
+    ${(data.uris || []).length ? `<h4>${data.engine === 'qbittorrent' ? 'Trackers' : 'Links'}</h4><div class="filelist">${
+      data.uris.map((u) => `<div class="filerow"><span class="fname" title="${escapeHtml(u.uri)}">${escapeHtml(u.uri)}</span><span class="fsize">${escapeHtml(u.status)}</span></div>`).join('')}</div>` : ''}
+    ${(data.peers || []).length ? `<h4>Peers · ${data.peers.length}</h4><div class="filelist">${
+      data.peers.slice(0, 25).map((x) => `<div class="filerow"><span class="fname">${escapeHtml(x.ip)}:${x.port}${x.client ? ` · ${escapeHtml(x.client)}` : ''}</span><span class="fsize">↓ ${fmtSpeed(x.downloadSpeed)} ↑ ${fmtSpeed(x.uploadSpeed)}</span></div>`).join('')}</div>` : ''}`;
 }
 
-// qBittorrent's four levels, which is what people coming from it expect.
-const PRIORITIES = [[0, 'Do not download'], [1, 'Normal'], [2, 'High'], [3, 'Maximum']];
-
-function prioritySelect(index, value) {
-  const blank = value === '' ? '<option value="">Choose…</option>' : '';
-  return `<select class="prio" data-file="${index}" aria-label="Priority">${blank}${
-    PRIORITIES.map(([v, label]) => `<option value="${v}"${v === value ? ' selected' : ''}>${label}</option>`).join('')
-  }</select>`;
-}
-
-function buildDownloadOptions(gid, opts, isTorrent) {
+/* Options in plain words, each saved the moment it changes. The everyday
+   ones show; what only matters to someone tuning goes under Advanced. */
+function buildDownloadOptions(gid, opts, isTorrent, qb, status) {
   const block = document.createElement('div');
-  const fields = [];
-  const row = (label, control) => {
+  block.className = 'dopts';
+  const save = async (options) => {
+    status.textContent = 'Saving…';
+    try {
+      await api(`/api/download/${gid}/options`, { method: 'POST', body: { options } });
+      status.textContent = 'Saved';
+    } catch (err) {
+      status.textContent = '';
+      toast(err.message, 'error');
+    }
+  };
+  const row = (parent, label, hint, control) => {
     const line = document.createElement('div');
     line.className = 'optrow';
-    const lab = document.createElement('label');
-    lab.textContent = label;
-    line.append(lab, control);
-    block.append(line);
+    const text = document.createElement('div');
+    text.className = 'optlabel';
+    text.innerHTML = `<span></span>${hint ? '<small class="hint"></small>' : ''}`;
+    text.firstElementChild.textContent = label;
+    if (hint) text.lastElementChild.textContent = hint;
+    line.append(text, control);
+    parent.append(line);
+    return line;
   };
-  for (const [key, label] of [['split', 'Parts'], ['max-connection-per-server', 'Connections per server']]) {
-    const input = document.createElement('input');
-    input.type = 'number';
-    input.min = '1';
-    input.value = opts[key] || '';
-    fields.push([key, () => input.value.trim(), opts[key] || '']);
-    row(label, input);
-  }
-  const unitRows = {};
-  for (const [key, label] of [['max-download-limit', 'Download limit'], ['max-upload-limit', 'Upload limit']]) {
-    const unitField = unitInput('speed', opts[key] ?? null);
-    fields.push([key, unitField.read, opts[key] || '']);
-    row(label, unitField.el);
-    unitRows[key] = block.lastElementChild;
-  }
+  const limit = (parent, key, label) => {
+    const field = unitInput('speed', opts[key] ?? null);
+    let last = opts[key] || '0';
+    field.el.addEventListener('change', () => {
+      const value = field.read() || '0';
+      if (sameOptionValue(value, last)) return;
+      last = value;
+      save({ [key]: value });
+    });
+    return row(parent, label, '', field.el);
+  };
+  const toggle = (parent, key, label, hint, onChange) => {
+    const { box, input } = boolSwitch(opts[key] === 'true', false);
+    input.addEventListener('change', () => {
+      save({ [key]: String(input.checked) });
+      if (onChange) onChange(input.checked);
+    });
+    return row(parent, label, hint, box);
+  };
+
+  limit(block, 'max-download-limit', 'Download speed limit');
   if (isTorrent) {
-    // With download-only on, the upload limit is the floor and not the
-    // user's to set, so its row goes away rather than showing "1 B/s".
-    const everyTorrent = Boolean(S.state?.torrent?.downloadOnly);
-    const on = everyTorrent || opts['download-only'] === 'true';
-    const { box, input } = boolSwitch(on, false);
-    input.disabled = everyTorrent;
-    row('Download only, never seed', box);
-    if (everyTorrent) {
-      const note = document.createElement('small');
+    const upload = limit(block, 'max-upload-limit', 'Upload speed limit');
+    if (S.state?.torrent?.downloadOnly) {
+      const note = document.createElement('p');
       note.className = 'hint';
-      note.textContent = 'On for every torrent in Settings';
-      block.lastElementChild.querySelector('label').append(document.createElement('br'), note);
+      note.textContent = 'Sharing stops when a download finishes, for every torrent (Settings).';
+      block.append(note);
+      upload.hidden = true;
+    } else {
+      const on = opts['download-only'] === 'true';
+      upload.hidden = on;
+      toggle(block, 'download-only', 'Stop sharing when done',
+        'Uploads as little as possible and stops the moment the download finishes.',
+        (checked) => { upload.hidden = checked; });
     }
-    const sync = () => { unitRows['max-upload-limit'].hidden = input.checked; };
-    input.addEventListener('change', sync);
-    sync();
-    if (!everyTorrent) fields.push(['download-only', () => String(input.checked), opts['download-only'] || 'false']);
   }
-  const apply = document.createElement('button');
-  apply.className = 'btn btn-sm';
-  apply.textContent = 'Apply';
-  apply.addEventListener('click', async () => {
-    const options = {};
-    for (const [key, read, original] of fields) {
-      const value = read();
-      if (value && !sameOptionValue(value, original)) options[key] = value;
+
+  const advanced = document.createElement('details');
+  advanced.className = 'dadvanced';
+  advanced.innerHTML = '<summary>Advanced</summary>';
+  if (qb) {
+    toggle(advanced, 'sequential-download', 'Download in order',
+      'Lets you start watching a video before it finishes. Can be slower.');
+    toggle(advanced, 'first-last-piece-first', 'First and last pieces first',
+      'Helps media players open the file sooner.');
+  } else {
+    for (const [key, label, hint] of [
+      ['max-connection-per-server', 'Connections per server', 'More can be faster; some servers allow few.'],
+      ['split', 'Parts', 'How many pieces are fetched at the same time.'],
+    ]) {
+      const input = document.createElement('input');
+      input.type = 'number';
+      input.min = '1';
+      input.value = opts[key] || '';
+      let last = input.value;
+      input.addEventListener('change', () => {
+        const value = input.value.trim();
+        if (!value || value === last) return;
+        last = value;
+        save({ [key]: value });
+      });
+      row(advanced, label, hint, input);
     }
-    if (!Object.keys(options).length) { toast('Nothing changed'); return; }
-    await act(`/api/download/${gid}/options`, { method: 'POST', body: { options } }, 'Applied');
-    S.detailDrafts.delete(gid);
-  });
-  const line = document.createElement('div');
-  line.className = 'optrow';
-  line.append(apply);
-  block.append(line);
+  }
+  if (advanced.children.length > 1) block.append(advanced);
   return block;
 }
 
@@ -1168,6 +1220,13 @@ async function saveGlobalOptions() {
   }
 }
 
+// Which engine downloads torrents, in one line.
+function torrentEngineText(qb) {
+  if (!qb || !qb.wanted) return 'aria2c';
+  if (qb.running) return `qBittorrent ${qb.version || ''} · ${qb.url || ''}`;
+  return `aria2c (qBittorrent unavailable: ${qb.last_error || 'not running'})`;
+}
+
 function renderProcInfo() {
   const aria2 = S.state?.aria2 || {};
   $('#proc-info').innerHTML = Object.entries({
@@ -1181,6 +1240,7 @@ function renderProcInfo() {
     'Log file': aria2.log_file || '—',
     'Session file': aria2.session_file || '—',
     'Last error': aria2.last_error || 'None',
+    Torrents: torrentEngineText(S.state?.qbittorrent),
   }).map(([k, v]) => `<label>${k}</label><code>${escapeHtml(v)}</code>`).join('');
 }
 

@@ -45,6 +45,8 @@ Singleton {
     readonly property var globalStat: (snapshot && snapshot.global) || ({})
     readonly property var counts: (snapshot && snapshot.counts) || ({})
     readonly property var aria2: (snapshot && snapshot.aria2) || ({})
+    //: The torrent engine when it is qBittorrent (see qbittorrent.py).
+    readonly property var qbittorrent: (snapshot && snapshot.qbittorrent) || ({})
     readonly property var ruleState: (snapshot && snapshot.rules) || ({})
     //: Torrents never seed (the manager's download-only setting).
     readonly property bool downloadOnly: !!(snapshot && snapshot.torrent && snapshot.torrent.downloadOnly)
@@ -118,6 +120,7 @@ Singleton {
     //: Set alongside requestedTab to open the Settings tab with its event log
     //: section already expanded.
     property bool requestedLog: false
+
 
     // ---- event stream ----------------------------------------------------
     //: Whether the manager is currently sending live frames on the socket.

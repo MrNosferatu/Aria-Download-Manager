@@ -603,7 +603,9 @@ Item {
         width: list.width - Theme.spacingXL * 2
         horizontalAlignment: Text.AlignHCenter
         wrapMode: Text.WordWrap
-        visible: tab.historyMode ? historyList.count === 0 : list.count === 0
+        //: Not while the Add panel is open: "add a download" under a download
+        //: being added contradicts it.
+        visible: tab.historyMode ? historyList.count === 0 : (list.count === 0 && !tab.adding)
         text: {
             if (!tab.service || !tab.service.connected)
                 return "Can't reach the manager at " + (tab.service ? tab.service.socketPath : "") + ".\nStart it with run.sh or the systemd unit."
