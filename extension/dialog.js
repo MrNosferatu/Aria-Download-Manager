@@ -131,7 +131,8 @@ async function showFile() {
   const probe = D.probe || {};
   mount('file-view');
   $('f-url').value = p.url;
-  $('f-name').value = p.filename || probe.name || filenameFromUrl(p.url);
+  $('f-name').value = (p.nameGuessed ? probe.name || p.filename : p.filename || probe.name)
+    || filenameFromUrl(p.url);
   $('f-dir').value = p.dir || '';
   $('f-dir').placeholder = D.defaultDir || 'Download folder';
   const size = p.size || probe.size;

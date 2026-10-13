@@ -211,6 +211,9 @@ Item {
         target: tab.service
         function onSnapshotChanged() {
             tab.recompute()
+            const ready = tab.service.takeReadyChoice()
+            if (ready)
+                tab.expandedGid = ready
         }
     }
 

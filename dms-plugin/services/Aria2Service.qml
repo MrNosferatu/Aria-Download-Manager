@@ -121,6 +121,31 @@ Singleton {
     //: section already expanded.
     property bool requestedLog: false
 
+    //: gids added with "choose files": their detail opens as soon as the file
+    //: list is known, on this torrent or (aria2, a magnet) the one it becomes.
+    property var pendingChoice: ({})
+
+    function openWhenListed(gids) {
+        const next = Object.assign({}, pendingChoice)
+        for (const gid of gids)
+            next[gid] = true
+        pendingChoice = next
+    }
+
+    //: The download to open now, if one is ready; it leaves the pending list.
+    function takeReadyChoice() {
+        for (const dl of downloads) {
+            const origin = pendingChoice[dl.gid] ? dl.gid : dl.following
+            if (!origin || !pendingChoice[origin] || dl.isMetadata || !(dl.numFiles > 0))
+                continue
+            const next = Object.assign({}, pendingChoice)
+            delete next[origin]
+            pendingChoice = next
+            return dl.gid
+        }
+        return ""
+    }
+
     // ---- event stream ----------------------------------------------------
     //: Whether the manager is currently sending live frames on the socket.
     property bool subscribed: false

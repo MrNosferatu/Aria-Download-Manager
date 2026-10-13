@@ -78,8 +78,8 @@ Column {
                                                        "options": panel.optionsPayload(),
                                                        "position": position,
                                                        "paused": panel.paused || panel.pickFiles
-                                                   }, panel.pickFiles ? "Added paused. Open it to choose files, then resume." : "Added",
-                                                   () => panel.reset())
+                                                   }, panel.pickFiles ? "Added. Choose its files, then start it." : "Added",
+                                                   data => panel.done(data))
                             }, 0)
             return
         }
@@ -90,8 +90,16 @@ Column {
                          "position": position,
                          "paused": paused,
                          "mirrors": mirrors
-                     }, pickFiles ? "Fetching the file list. Open the download to choose files, then resume." : "Added",
-                     () => panel.reset())
+                     }, pickFiles ? "Fetching the file list. It opens when it arrives." : "Added",
+                     data => panel.done(data))
+    }
+
+    //: With "choose files" on, the new torrent's file list opens by itself
+    //: once it is known (see DownloadsTab), instead of leaving it to be found.
+    function done(data) {
+        if (pickFiles && data && data.gids)
+            service.openWhenListed(data.gids)
+        reset()
     }
 
     function reset() {

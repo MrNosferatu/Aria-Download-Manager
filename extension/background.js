@@ -293,6 +293,8 @@ async function openDialog(settings, item) {
   payload.size = item.size > 0 ? item.size : null;
   payload.mime = item.mime || '';
   payload.fromBrowser = !!item.fromBrowser;
+  // Only guessed from the URL: the server's own name (the probe) is better.
+  payload.nameGuessed = !item.filename && !item.downloadAttr;
   const id = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
   await dialogStore.set({ [`dialog:${id}`]: payload });
   const width = 640;

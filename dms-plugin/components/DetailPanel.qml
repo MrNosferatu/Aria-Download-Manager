@@ -466,10 +466,14 @@ Column {
 
     DankButton {
         visible: detail.files.length > 1
-        text: "Apply file choices"
+        //: A torrent waiting on this choice (added with "choose files") starts
+        //: with it; a running one just takes the new priorities.
+        readonly property bool startsIt: detail.statusInfo.status === "paused"
+        text: startsIt ? "Apply and start" : "Apply file choices"
         buttonHeight: 40
-        iconName: "checklist"
+        iconName: startsIt ? "play_arrow" : "checklist"
         onClicked: {
+            const start = startsIt
             const levels = ({})
             let any = false
             for (const f of detail.files) {
@@ -484,7 +488,10 @@ Column {
             }
             detail.service.post("/api/download/" + detail.gid + "/files", {
                                     "levels": levels
-                                }, "File choices applied")
+                                }, start ? "" : "File choices applied", () => {
+                                    if (start)
+                                        detail.service.post("/api/download/" + detail.gid + "/resume", null, "Started")
+                                })
         }
     }
 
