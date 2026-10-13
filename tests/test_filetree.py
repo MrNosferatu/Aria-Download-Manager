@@ -32,7 +32,7 @@ const out = {
   order: rows.map((r) => r.name),
   folder: [rows[0].state, rows[0].level],
   folded: treeRows(root, levels, {'/extra': true}, '', 'name', false).map((r) => r.name),
-  bySize: treeRows(root, levels, {}, '', 'size', true).filter((r) => !r.isDir).map((r) => r.name)[0],
+  bySize: treeRows(root, levels, {}, '', 'size', true).filter((r) => !r.isDir && r.depth === 0).map((r) => r.name)[0],
   filtered: treeRows(root, levels, {}, 'a.t', 'name', false).map((r) => r.name),
   summary: treeSummary(files, levels),
   chosen: treeSetChosen(levels, ['2', '7'], true),
