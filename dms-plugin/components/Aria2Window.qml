@@ -36,6 +36,17 @@ DankFloatingWindow {
     visible: false
 
     onClosed: win.visible = false
+    //: On niri / Hyprland a new window tiles; the manager asks the compositor to
+    //: float this one (desktop.float_windows), so no window rule is needed.
+    onVisibleChanged: {
+        if (visible && service)
+            service.request("POST", "/api/window/float", {
+                                "title": win.title,
+                                "exact": true,
+                                "width": win.implicitWidth,
+                                "height": win.implicitHeight
+                            })
+    }
 
     Item {
         anchors.fill: parent

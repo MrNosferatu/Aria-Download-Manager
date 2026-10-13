@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="lib/design.css">
+<link rel="stylesheet" href="dialog.css">
+<title>New download — Aria Download Manager</title>
+</head>
+<body class="dlg">
+
+<header class="dlg-head">
+  <span class="logo" aria-hidden="true"><svg class="ico" viewBox="0 0 24 24"><path d="M5 20h14v-2H5v2zM19 9h-4V3H9v6H5l7 7 7-7z"/></svg></span>
+  <div class="titles">
+    <h1 id="title">New download</h1>
+    <p id="subtitle" class="dim">Checking the link…</p>
+  </div>
+</header>
+
+<main id="body">
+  <p class="loading"><span class="spinner" aria-hidden="true"></span><span id="loading-text">Checking the link…</span></p>
+</main>
+
+<!-- A plain file: what IDM asks before it starts. -->
+<template id="file-view">
+  <div class="stack">
+    <label class="field">
+      <span>Address</span>
+      <input id="f-url" readonly>
+    </label>
+    <label class="field">
+      <span>File name</span>
+      <input id="f-name" autocomplete="off" spellcheck="false">
+    </label>
+    <label class="field">
+      <span>Save to <small>blank uses the manager's download folder</small></span>
+      <input id="f-dir" list="recent-dirs" autocomplete="off" spellcheck="false">
+    </label>
+    <div class="facts">
+      <div><label>Size</label><b id="f-size">Unknown</b></div>
+      <div><label>Type</label><b id="f-type">—</b></div>
+      <div><label>Resume</label><b id="f-resume">—</b></div>
+    </div>
+    <details id="f-more">
+      <summary>Connections and speed</summary>
+      <div class="grid3">
+        <label class="field"><span>Connections per server</span><input id="f-conn" type="number" min="1" max="16"></label>
+        <label class="field"><span>Parts</span><input id="f-split" type="number" min="1"></label>
+        <label class="field"><span>Speed limit <small>blank: none</small></span>
+          <span class="unit-input">
+            <input id="f-limit" inputmode="decimal" placeholder="No limit">
+            <select id="f-limit-unit" aria-label="Unit"><option value="K">KiB/s</option><option value="M" selected>MiB/s</option></select>
+          </span>
+        </label>
+      </div>
+    </details>
+  </div>
+</template>
+
+<!-- A torrent: what qBittorrent asks once it has the file list. -->
+<template id="torrent-view">
+  <div class="stack">
+    <label class="field">
+      <span>Save to <small>blank uses the manager's download folder</small></span>
+      <input id="t-dir" list="recent-dirs" autocomplete="off" spellcheck="false">
+    </label>
+    <div class="facts">
+      <div><label>Total</label><b id="t-total">—</b></div>
+      <div><label>Selected</label><b id="t-selected">—</b></div>
+      <div><label>Files</label><b id="t-count">—</b></div>
+      <div><label>Engine</label><b id="t-engine">—</b></div>
+    </div>
+    <div class="filebar">
+      <label class="check"><input type="checkbox" id="t-all"> All</label>
+      <input id="t-filter" placeholder="Filter files" hidden>
+      <span class="spacer"></span>
+      <label class="setall">Set all
+        <select id="t-setall" aria-label="Set every file's priority">
+          <option value="">Choose…</option>
+        </select>
+      </label>
+    </div>
+    <div id="t-files" class="tfiles" role="list"></div>
+    <div class="opts">
+      <label class="setting" for="t-seq" data-qb>
+        <span class="text"><span class="label">Download in order</span></span>
+        <span class="switch"><input type="checkbox" id="t-seq"><span class="track"><span class="knob"></span></span></span>
+      </label>
+      <label class="setting" for="t-fl" data-qb>
+        <span class="text"><span class="label">First and last pieces first</span></span>
+        <span class="switch"><input type="checkbox" id="t-fl"><span class="track"><span class="knob"></span></span></span>
+      </label>
+      <label class="setting" for="t-donly">
+        <span class="text"><span class="label">Download only, never seed</span><span id="t-donly-hint" class="hint"></span></span>
+        <span class="switch"><input type="checkbox" id="t-donly"><span class="track"><span class="knob"></span></span></span>
+      </label>
+    </div>
+  </div>
+</template>
+
+<datalist id="recent-dirs"></datalist>
+
+<footer class="dlg-foot">
+  <label class="check keep"><input type="checkbox" id="keep-asking" checked> Show this dialog for every download</label>
+  <div class="buttons">
+    <button id="btn-browser" class="btn btn-text" hidden>Let the browser download it</button>
+    <span class="spacer"></span>
+    <button id="btn-cancel" class="btn btn-outline">Cancel</button>
+    <button id="btn-later" class="btn btn-tonal" disabled>Download later</button>
+    <button id="btn-start" class="btn btn-primary" disabled>Download</button>
+  </div>
+  <p id="error" class="hint err" hidden></p>
+</footer>
+
+<script src="lib/common.js"></script>
+<script src="lib/link.js"></script>
+<script src="dialog.js"></script>
+</body>
+</html>

@@ -2,7 +2,7 @@
 
 const $ = (id) => document.getElementById(id);
 const CHECKBOXES = ['enabled', 'intercept', 'capture', 'captureMagnets', 'altClick',
-  'paused', 'notify', 'pageToasts', 'videoSniffer'];
+  'paused', 'notify', 'pageToasts', 'videoSniffer', 'askBeforeDownload'];
 const TEXTS = ['dir'];
 
 const MIB = 1024 * 1024;

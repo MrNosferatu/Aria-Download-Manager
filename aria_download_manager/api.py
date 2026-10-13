@@ -7,6 +7,7 @@ import asyncio
 import base64
 import binascii
 import os
+import re
 import signal
 import time
 from contextlib import asynccontextmanager
@@ -30,6 +31,7 @@ from .state import Poller, Store, aria2_only
 from .supervisor import Aria2Supervisor
 from .timeline import Timeline
 from . import priorities as priority
+from . import compositor
 from . import qbittorrent as qbt
 from . import routing as routing_mod
 from . import seeding
@@ -143,6 +145,26 @@ class HistoryKeyRequest(BaseModel):
     key: str
 
 
+class ProbeRequest(BaseModel):
+    """What the download dialog asks before showing a link: size, name, kind."""
+
+    url: str
+    referer: str | None = None
+    cookie: str | None = None
+    userAgent: str | None = None
+
+
+class FloatRequest(BaseModel):
+    """One of our windows just opened: float it on a tiling compositor."""
+
+    title: str
+    width: int = 0
+    height: int = 0
+    #: Whole-title match; otherwise the title only has to start so (a browser
+    #: appends its own name to a page's title).
+    exact: bool = False
+
+
 class IntakeRequest(BaseModel):
     """Deliberately lenient: the browser extension sends whatever the page gave it."""
 
@@ -218,6 +240,47 @@ def piece_map(bitfield: str, num_pieces: int, buckets: int = 256) -> list[int]:
         chunk = bits[start:end]
         out.append(round(sum(chunk) / len(chunk) * 100))
     return out
+
+
+def disposition_name(value: str) -> str:
+    """The file name in a Content-Disposition header, RFC 5987 form first."""
+    from urllib.parse import unquote
+
+    star = re.search(r"filename\*\s*=\s*([^;]+)", value, re.I)
+    if star:
+        raw = star.group(1).strip().strip('"')
+        if "''" in raw:
+            raw = raw.split("''", 1)[1]
+        return os.path.basename(unquote(raw))
+    plain = re.search(r'filename\s*=\s*("([^"]*)"|[^;]+)', value, re.I)
+    if plain:
+        return os.path.basename((plain.group(2) if plain.group(2) is not None
+                                 else plain.group(1)).strip())
+    return ""
+
+
+def probe_headers(status: int, headers: Any) -> dict[str, Any]:
+    """What a probe learns from a response: size, name, type, resumability."""
+    out: dict[str, Any] = {"contentType": headers.get("Content-Type", "")}
+    size = None
+    total = re.search(r"/(\d+)\s*$", headers.get("Content-Range", ""))
+    if total:
+        size = int(total.group(1))
+    elif status != 206 and headers.get("Content-Length", "").isdigit():
+        size = int(headers["Content-Length"])
+    out["size"] = size
+    out["resumable"] = status == 206 or headers.get("Accept-Ranges", "").lower() == "bytes"
+    out["name"] = disposition_name(headers.get("Content-Disposition", ""))
+    return out
+
+
+def magnet_name(uri: str) -> str:
+    from urllib.parse import parse_qs, urlsplit
+
+    try:
+        return (parse_qs(urlsplit(uri).query).get("dn") or [""])[0]
+    except ValueError:
+        return ""
 
 
 def decode_b64(data: str, what: str) -> str:
@@ -450,7 +513,8 @@ def create_app(cfg: Config) -> FastAPI:
     # ---- adding ----------------------------------------------------------
     async def _add_to_qb(uris: list[str], options: dict, paused: bool,
                          headers: dict[str, str] | None = None,
-                         maybe_torrent: bool = False) -> tuple[list[str], list[str]]:
+                         maybe_torrent: bool = False,
+                         existing: list[str] | None = None) -> tuple[list[str], list[str]]:
         """Hand qBittorrent the torrents among ``uris``: (its gids, what is left for aria2).
 
         A .torrent link (with ``maybe_torrent``, any link the browser named as a
@@ -464,11 +528,12 @@ def create_app(cfg: Config) -> FastAPI:
         rest: list[str] = []
         for uri in uris:
             if qbt.is_magnet(uri):
-                gids.append(await qb.add_magnet(uri, options, paused))
+                gids.append(await qb.add_magnet(uri, options, paused, existing=existing))
             elif ((maybe_torrent or qbt.is_torrent_url(uri))
                   and (data := await qb.fetch_torrent(uri, headers or {}))):
                 name = os.path.basename(uri.split("?")[0])
-                gids.append(await qb.add_torrent(data, options, paused, filename=name))
+                gids.append(await qb.add_torrent(data, options, paused, filename=name,
+                                                 existing=existing))
             else:
                 rest.append(uri)
         return gids, rest
@@ -1174,6 +1239,61 @@ def create_app(cfg: Config) -> FastAPI:
             "socket": ipc.path,
         }
 
+    @app.post("/api/intake/probe")
+    async def intake_probe(req: ProbeRequest):
+        """Size, server-side name and kind of a link, for the download dialog.
+
+        A HEAD first; servers that refuse it get a one-byte ranged GET, which
+        also says whether the download can resume. Never fails the dialog: an
+        unreachable link just comes back with nothing known.
+        """
+        if qbt.is_magnet(req.url):
+            return {"ok": True, "kind": "torrent", "magnet": True,
+                    "name": magnet_name(req.url)}
+        headers: dict[str, str] = {}
+        if req.cookie:
+            headers["Cookie"] = req.cookie
+        if req.referer:
+            headers["Referer"] = req.referer
+        if req.userAgent:
+            headers["User-Agent"] = req.userAgent
+        info: dict[str, Any] = {"ok": True, "kind": "file", "size": None, "name": "",
+                                "contentType": "", "resumable": None, "finalUrl": req.url}
+        timeout = aiohttp.ClientTimeout(total=15)
+        try:
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                res = await session.head(req.url, headers=headers, allow_redirects=True)
+                if res.status >= 400:
+                    res.release()
+                    res = await session.get(req.url, allow_redirects=True,
+                                            headers={**headers, "Range": "bytes=0-0"})
+                async with res:
+                    if res.status < 400:
+                        info.update(probe_headers(res.status, res.headers))
+                        info["finalUrl"] = str(res.url)
+                    else:
+                        info["error"] = f"the server answered {res.status}"
+        except (aiohttp.ClientError, asyncio.TimeoutError, ValueError) as exc:
+            info["error"] = str(exc) or exc.__class__.__name__
+        if not info["name"]:
+            info["name"] = os.path.basename(str(info["finalUrl"]).split("?")[0].rstrip("/"))
+        if ("bittorrent" in info["contentType"].lower()
+                or str(info["name"]).lower().endswith(".torrent")):
+            info["kind"] = "torrent"
+        return info
+
+    @app.post("/api/window/float")
+    async def float_window(req: FloatRequest):
+        """Float the window titled so (niri, Hyprland), unless turned off.
+
+        Windows cannot ask a tiling compositor to float them, so the dialog and
+        the DankBar window ask the manager, which asks the compositor.
+        """
+        if not cfg.get("desktop.float_windows", True):
+            return {"ok": True, "floated": ""}
+        size = (max(0, min(req.width, 4000)), max(0, min(req.height, 4000)))
+        return {"ok": True, "floated": await compositor.float_window(req.title, *size, exact=req.exact)}
+
     @app.post("/api/intake/add")
     async def intake_add(req: IntakeRequest):
         uris = split_uris(req.urls, req.url)
@@ -1214,11 +1334,13 @@ def create_app(cfg: Config) -> FastAPI:
         if req.userAgent:
             fetch_headers["User-Agent"] = req.userAgent
         torrent_options = {k: v for k, v in options.items()
-                           if k in ("dir", "pause", "download-only")}
+                           if k in ("dir", "pause", "download-only", "pause-metadata",
+                                    "max-download-limit", "max-upload-limit")}
         # A browser download is often named only by its Content-Disposition.
         named_torrent = (req.filename or "").strip().lower().endswith(".torrent")
+        existing: list[str] = []
         qb_gids, rest = await _add_to_qb(uris, torrent_options, req.paused, fetch_headers,
-                                         maybe_torrent=named_torrent)
+                                         maybe_torrent=named_torrent, existing=existing)
         gids = qb_gids + [await rpc.add_uri([uri], dict(options), None) for uri in rest]
         poller.poke()
         origin = req.source or "browser"
@@ -1229,6 +1351,8 @@ def create_app(cfg: Config) -> FastAPI:
             gids=gids,
             source=origin,
         )
-        return {"ok": True, "gids": gids, "count": len(gids)}
+        # Torrents that were already there: the download dialog must not
+        # treat them as its own (and remove them when it is closed).
+        return {"ok": True, "gids": gids, "count": len(gids), "existing": existing}
 
     return app
