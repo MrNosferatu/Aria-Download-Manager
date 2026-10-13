@@ -161,6 +161,15 @@ target; the same directory also loads in Chromium.
 Signing needs a free AMO API key; `extension/store/listing.md` has the
 submission material, and `extension/build.sh` wraps the packaging.
 
+**Releases are automatic.** `.github/workflows/extension-release.yml` runs on
+every push to `main` that touches `extension/`. When the version in
+`extension/manifest.json` has no `extension-v<version>` tag yet, it lints and
+builds the extension, signs the Firefox `.xpi` (if the `WEB_EXT_API_KEY` and
+`WEB_EXT_API_SECRET` repository secrets are set), tags the commit and publishes
+a GitHub Release with the packages. So: bump the version once on a branch,
+merge, and the release follows; pushes with an already-released version do
+nothing. It can also be started by hand from the Actions tab.
+
 **Register the IPC bridge once.** The extension reaches the manager through
 native messaging: the browser starts a small host process
 (`aria_download_manager/native_host.py`), which relays to the manager's Unix socket.
