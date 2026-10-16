@@ -22,6 +22,21 @@ function speed(n) {
     return Number(n) > 0 ? bytes(n) + "/s" : "0 B/s"
 }
 
+// Bar-sized speed: at most three digits ("850 KiB/s", "12.4 MiB/s"), so the
+// pill keeps a steady width. `compact` drops the unit to a letter ("12M") for
+// a vertical bar, where every character costs a line.
+function speedShort(n, compact) {
+    n = Number(n) || 0
+    var units = compact ? ["", "K", "M", "G", "T"] : [" B/s", " KiB/s", " MiB/s", " GiB/s", " TiB/s"]
+    var i = 0
+    while (n >= 999.5 && i < units.length - 1) {
+        n /= 1024
+        i++
+    }
+    var text = i === 0 || n >= 99.95 || (compact && n >= 9.95) ? String(Math.round(n)) : n.toFixed(1)
+    return text + units[i]
+}
+
 function eta(seconds) {
     if (seconds === null || seconds === undefined || seconds < 0)
         return "—"

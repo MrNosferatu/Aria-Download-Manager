@@ -34,6 +34,27 @@ PluginComponent {
 
     readonly property bool busy: svc.activeCount > 0
     readonly property bool attention: svc.connected && !svc.aria2Running
+    readonly property int errorCount: svc.counts.error || 0
+    readonly property int queuedCount: svc.counts.waiting || 0
+    readonly property int pausedCount: svc.counts.paused || 0
+
+    //: Fraction done across everything downloading, or -1 when no running
+    //: download knows its size yet. Seeders are left out: they are finished
+    //: and would pin the bar at full.
+    readonly property real overallProgress: {
+        let done = 0
+        let total = 0
+        for (const d of svc.downloads) {
+            if (d.status !== "active" || d.seeder || d.isMetadata)
+                continue
+            const size = Number(d.total) || 0
+            if (size <= 0)
+                continue
+            total += size
+            done += Math.min(size, Number(d.completed) || 0)
+        }
+        return total > 0 ? done / total : -1
+    }
 
     readonly property string barIcon: {
         if (!svc.connected)
@@ -47,24 +68,57 @@ PluginComponent {
         return "download"
     }
 
+    //: Follows the bar's own widget colours when there is nothing to say, so
+    //: an idle pill sits with its neighbours instead of standing out.
     readonly property color barColor: {
         if (!svc.connected)
-            return Theme.surfaceVariantText
+            return Theme.widgetInactiveIconColor ?? Theme.surfaceVariantText
         if (attention)
             return Theme.error
         if (busy)
             return Theme.primary
-        return Theme.surfaceText
+        return Theme.widgetIconColor ?? Theme.surfaceText
     }
 
+    readonly property color labelColor: (busy || attention || !svc.connected) ? barColor : (Theme.widgetTextColor ?? Theme.surfaceText)
+
+    readonly property string idleText: queuedCount > 0 ? queuedCount + " queued" : (pausedCount > 0 ? pausedCount + " paused" : "")
+
+    //: True while the label is a speed — the only case that reserves width.
+    readonly property bool labelIsSpeed: svc.connected && pillMode === "speed" && busy
+
     readonly property string pillText: {
-        if (!svc.connected)
-            return "offline"
         if (pillMode === "none")
             return ""
+        if (!svc.connected)
+            return "offline"
         if (pillMode === "count")
-            return svc.activeCount + (svc.waitingCount > 0 ? "/" + (svc.activeCount + svc.waitingCount) : "")
-        return busy ? Fmt.speed(svc.downloadSpeed) : (svc.waitingCount > 0 ? svc.waitingCount + " queued" : "")
+            return busy ? svc.activeCount + (svc.waitingCount > 0 ? "/" + (svc.activeCount + svc.waitingCount) : "") : idleText
+        return busy ? Fmt.speedShort(svc.downloadSpeed) : idleText
+    }
+
+    readonly property string verticalText: {
+        if (pillMode === "none" || !svc.connected || !busy)
+            return ""
+        return pillMode === "count" ? String(svc.activeCount) : Fmt.speedShort(svc.downloadSpeed, true)
+    }
+
+    //: "Show when idle" off tucks the pill away while there is nothing to
+    //: report. Offline, a failed download, or an open panel all keep it up —
+    //: the first two are news, and the panel hangs off the pill.
+    readonly property bool idleHidden: !showWhenIdle && svc.connected && !attention && !busy
+                                       && svc.waitingCount === 0 && errorCount === 0 && !root.interactionActive
+
+    onIdleHiddenChanged: applyIdleVisibility()
+
+    function applyIdleVisibility() {
+        // Older DMS builds have no override; there the pill simply stays.
+        if (typeof root.setVisibilityOverride !== "function")
+            return
+        if (root.idleHidden)
+            root.setVisibilityOverride(false)
+        else
+            root.clearVisibilityOverride()
     }
 
     popoutWidth: parseInt(pluginData.popoutWidth || "640") || 640
@@ -82,7 +136,10 @@ PluginComponent {
     Timer {
         interval: 0
         running: true
-        onTriggered: root.tryClaimWindow()
+        onTriggered: {
+            root.tryClaimWindow()
+            root.applyIdleVisibility()
+        }
     }
 
     Component.onDestruction: root.svc.releaseWindow(root)
@@ -171,8 +228,11 @@ PluginComponent {
             return "Manager offline"
         if (busy)
             return svc.activeCount + " active · " + Fmt.speed(svc.downloadSpeed)
-        if (svc.waitingCount > 0)
-            return svc.waitingCount + " queued"
+                    + (overallProgress >= 0 ? " · " + Math.floor(overallProgress * 100) + "%" : "")
+        if (idleText)
+            return idleText
+        if (errorCount > 0)
+            return errorCount + " failed"
         return "Idle"
     }
     ccWidgetIsActive: busy
@@ -187,42 +247,66 @@ PluginComponent {
 
             spacing: Theme.spacingXS
 
-            DankIcon {
+            PillIcon {
                 anchors.verticalCenter: parent.verticalCenter
                 name: root.barIcon
                 size: root.iconSize
                 color: root.barColor
+                progress: root.busy ? root.overallProgress : -1
+                alert: root.svc.connected && root.errorCount > 0
             }
 
             StyledText {
+                id: pillLabel
+
                 anchors.verticalCenter: parent.verticalCenter
                 text: root.pillText
                 visible: text.length > 0
-                font.pixelSize: Theme.fontSizeSmall
+                //: A speed is given the width of its widest form, so
+                //: the pill and everything beside it hold still while
+                //: the number moves.
+                width: root.labelIsSpeed ? Math.max(implicitWidth, Math.ceil(speedMetrics.advanceWidth)) : implicitWidth
+                font.pixelSize: root.textSize || Theme.fontSizeSmall
                 font.weight: Font.Medium
-                color: root.barColor
+                color: root.labelColor
+
+                TextMetrics {
+                    id: speedMetrics
+
+                    font: pillLabel.font
+                    text: "88.8 MiB/s"
+                }
+
+                Behavior on color {
+                    ColorAnimation {
+                        duration: Theme.shortDuration
+                    }
+                }
             }
         }
     }
 
     verticalBarPill: Component {
         Column {
-            spacing: 2
+            // Leaves room for the progress line hung under the icon.
+            spacing: root.busy ? Theme.spacingXS : 2
 
-            DankIcon {
+            PillIcon {
                 anchors.horizontalCenter: parent.horizontalCenter
                 name: root.barIcon
                 size: root.iconSize
                 color: root.barColor
+                progress: root.busy ? root.overallProgress : -1
+                alert: root.svc.connected && root.errorCount > 0
             }
 
             StyledText {
                 anchors.horizontalCenter: parent.horizontalCenter
-                text: root.svc.connected ? root.svc.activeCount : "–"
-                visible: root.pillMode !== "none"
-                font.pixelSize: Theme.fontSizeSmall - 1
+                text: root.verticalText
+                visible: text.length > 0
+                font.pixelSize: (root.textSize || Theme.fontSizeSmall) - 1
                 font.weight: Font.Medium
-                color: root.barColor
+                color: root.labelColor
             }
         }
     }

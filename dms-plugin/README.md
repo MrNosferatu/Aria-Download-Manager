@@ -40,6 +40,18 @@ Start the daemon first — `./run.sh`, or the systemd user unit in `systemd/`.
 Until it answers, the pill shows `offline` and the window explains where it
 looked.
 
+## The bar pill
+
+- **Icon** — `download` when idle, `downloading` (in the accent colour) while
+  something runs, `error` if aria2c is down, a dimmed `cloud_off` when the
+  manager is unreachable. Idle, it takes the bar's own widget colours.
+- **Progress line** — a thin bar under the icon shows how far along all running
+  downloads are together (sized downloads only; seeders are left out).
+- **Red dot** — at least one download failed; it clears with the failed rows.
+- **Label** — the speed, held at a fixed width so the bar does not jitter;
+  idle, `N queued` / `N paused`, or nothing. On a vertical bar it shrinks to
+  `12M` or the active count.
+
 ## Settings
 
 **Settings → Plugins → Aria Download Manager**:
@@ -48,6 +60,7 @@ looked.
 | --- | --- | --- |
 | Manager socket | `$XDG_RUNTIME_DIR/aria-download-manager.sock` | Must match `server.socket` in `config.yaml` (blank on both sides = default) |
 | Bar label | Download speed | Speed, active count, or icon only |
+| Show when idle | on | Off hides the pill while nothing is downloading, queued or failed |
 | Clicking the bar icon opens | Bar popout | Whether left click opens the bar popout or goes straight to the standalone window |
 | Popout width / content height | 640 / 540 | Size of the bar popout (the window is resized by dragging it) |
 | Bar refresh interval | 3 s | How far behind the pill may lag a download that starts while the panel is closed |

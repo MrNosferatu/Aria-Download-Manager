@@ -45,6 +45,13 @@ PluginSettings {
         defaultValue: "speed"
     }
 
+    ToggleSetting {
+        settingKey: "showWhenIdle"
+        label: "Show when idle"
+        description: "Off hides the bar icon while nothing is downloading or queued. It comes back on its own for a new download, a failure, or the manager going offline; meanwhile the control center tile and dms ipc still open the panel."
+        defaultValue: true
+    }
+
     SelectionSetting {
         settingKey: "clickOpens"
         label: "Clicking the bar icon opens"
