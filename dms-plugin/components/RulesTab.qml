@@ -21,8 +21,12 @@ Item {
     //: refreshes its summary.
     property int editRev: 0
 
-    //: How often each action fired since midnight, by name.
-    readonly property var firedToday: Rules.firedToday(service ? service.triggers : [])
+    //: Each edited rule's name on the manager, "" for one not saved yet: the
+    //: switch saves at once under that name even after an unsaved rename.
+    property var origins: []
+
+    readonly property int onCount: rules.filter(r => r.enabled !== false).length
+    readonly property bool masterOn: !!service && service.rulesEnabled
 
     readonly property int scrollbarGutter: Layout.SCROLLBAR_GUTTER
 
@@ -34,6 +38,7 @@ Item {
             return
         // Edit a copy: the service keeps the server's version until we save.
         rules = JSON.parse(JSON.stringify(service.rules || []))
+        origins = rules.map(r => r.name)
         dirty = false
         if (openIndex >= rules.length)
             openIndex = -1
@@ -70,14 +75,58 @@ Item {
         rule.name = name
         next.push(rule)
         rules = next
+        origins = origins.concat([""])
         openIndex = next.length - 1
         dirty = true
+    }
+
+    //: A copy under a free name, right after the original.
+    function duplicateAt(index) {
+        const next = JSON.parse(JSON.stringify(rules))
+        const copy = JSON.parse(JSON.stringify(next[index]))
+        const taken = next.map(r => r.name)
+        let name = copy.name + " copy"
+        for (let n = 2; taken.indexOf(name) >= 0; n++)
+            name = copy.name + " copy " + n
+        copy.name = name
+        next.splice(index + 1, 0, copy)
+        const from = origins.slice()
+        from.splice(index + 1, 0, "")
+        rules = next
+        origins = from
+        if (openIndex > index)
+            openIndex++
+        dirty = true
+    }
+
+    //: The switch on a row (or in the editor) saves straight away, like the
+    //: master switch: it is never one of the unsaved edits. Only an action
+    //: that is not on the manager yet waits for Save with the rest of it.
+    function setEnabled(index, value) {
+        const next = JSON.parse(JSON.stringify(rules))
+        next[index].enabled = value
+        rules = next
+        const name = origins[index] || ""
+        if (!name || !service) {
+            dirty = true
+            return
+        }
+        service.post("/api/rules/" + encodeURIComponent(name) + "/toggle", {
+                         "enabled": value
+                     }, (value ? "On: " : "Off: ") + name, () => {
+                         service.rules = (service.rules || []).map(r => r.name === name ? Object.assign({}, r, {
+                                                                                                             "enabled": value
+                                                                                                         }) : r)
+                     })
     }
 
     function removeAt(index) {
         const next = JSON.parse(JSON.stringify(rules))
         next.splice(index, 1)
+        const from = origins.slice()
+        from.splice(index, 1)
         rules = next
+        origins = from
         if (openIndex === index)
             openIndex = -1
         else if (openIndex > index)
@@ -147,7 +196,7 @@ Item {
                     StyledText {
                         width: parent.width
                         text: masterCard.on ? "Watch running downloads and step in when one stalls"
-                                            : "Off — none of the actions below will run"
+                                            : "Off — nothing below runs. You can still edit and switch them."
                         wrapMode: Text.WordWrap
                         maximumLineCount: 2
                         font.pixelSize: Theme.fontSizeSmall
@@ -196,11 +245,47 @@ Item {
         }
     }
 
-    DankFlickable {
-        id: listFlick
+    //: How many are on, and while the master switch is off, that none run.
+    Item {
+        id: countLine
 
         anchors.top: masterCard.bottom
         anchors.topMargin: 12
+        width: masterCard.width
+        height: tab.rules.length ? 20 : 0
+        visible: tab.rules.length > 0
+
+        StyledText {
+            id: countText
+
+            anchors.left: parent.left
+            anchors.leftMargin: 4
+            anchors.verticalCenter: parent.verticalCenter
+            width: Math.min(implicitWidth, parent.width - 8)
+            text: tab.onCount + " of " + tab.rules.length + " on" + (tab.masterOn ? "" : " · none run while automatic actions are off")
+            font.pixelSize: Theme.fontSizeSmall + 1
+            font.weight: Font.DemiBold
+            color: Theme.surfaceVariantText
+            wrapMode: Text.NoWrap
+            elide: Text.ElideRight
+        }
+
+        StyledText {
+            anchors.right: parent.right
+            anchors.rightMargin: 4
+            anchors.verticalCenter: parent.verticalCenter
+            visible: tab.masterOn && parent.width - countText.width > implicitWidth + 32
+            text: "Switch to turn one on or off · click the row to edit"
+            font.pixelSize: Theme.fontSizeSmall
+            color: Theme.outline
+        }
+    }
+
+    DankFlickable {
+        id: listFlick
+
+        anchors.top: countLine.bottom
+        anchors.topMargin: countLine.visible ? 8 : 12
         anchors.bottom: saveBar.visible ? saveBar.top : parent.bottom
         anchors.bottomMargin: saveBar.visible ? 12 : 0
         width: tab.wide ? Math.round(parent.width * 0.42) : parent.width
@@ -231,9 +316,11 @@ Item {
                     open: !tab.wide && tab.openIndex === ruleCard.index
                     current: tab.wide && tab.openIndex === ruleCard.index
                     externalRev: tab.editRev
-                    fired: tab.firedToday[ruleCard.modelData.name] || 0
-                    dimmed: !!tab.service && !tab.service.rulesEnabled
+                    //: Master off: the whole list dims, still editable.
+                    opacity: tab.masterOn || ruleCard.open ? 1 : 0.6
                     onRemoved: tab.removeAt(ruleCard.index)
+                    onDuplicated: tab.duplicateAt(ruleCard.index)
+                    onEnabledToggled: value => tab.setEnabled(ruleCard.index, value)
                     onEdited: {
                         tab.dirty = true
                         tab.editRev++
@@ -245,17 +332,6 @@ Item {
                             tab.openIndex = (tab.openIndex === ruleCard.index ? -1 : ruleCard.index)
                     }
                 }
-            }
-
-            StyledText {
-                width: parent.width
-                visible: tab.rules.length > 0 && !!tab.service && !tab.service.rulesEnabled
-                horizontalAlignment: Text.AlignHCenter
-                topPadding: 4
-                bottomPadding: 4
-                text: "You can still edit them while they're off."
-                font.pixelSize: Theme.fontSizeSmall
-                color: Theme.surfaceVariantText
             }
 
             //: A dashed full-width outline: room for one more.
@@ -566,8 +642,8 @@ Item {
                     ruleIndex: tab.openIndex
                     open: true
                     externalRev: tab.editRev
-                    fired: tab.firedToday[editorColumn.rule.name] || 0
                     onRemoved: tab.removeAt(tab.openIndex)
+                    onEnabledToggled: value => tab.setEnabled(tab.openIndex, value)
                     onEdited: {
                         tab.dirty = true
                         tab.editRev++

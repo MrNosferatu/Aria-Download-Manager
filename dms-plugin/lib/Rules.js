@@ -142,20 +142,6 @@ function triggerLine(t) {
     return t.name + " · " + Fmt.speed(t.speed) + (done ? " → " + done : "") + (t.detail ? " (" + t.detail + ")" : "")
 }
 
-// How many times each rule fired since midnight: {name: count}.
-function firedToday(triggers) {
-    var midnight = new Date()
-    midnight.setHours(0, 0, 0, 0)
-    var since = midnight.getTime() / 1000
-    var out = {}
-    for (var i = 0; i < (triggers || []).length; i++) {
-        var t = triggers[i]
-        if (t.ts >= since)
-            out[t.rule] = (out[t.rule] || 0) + 1
-    }
-    return out
-}
-
 // Where a JSON text stops parsing, as "Line N: what", or "" when it parses.
 function jsonProblem(text) {
     try {

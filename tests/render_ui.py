@@ -8,7 +8,9 @@ fixtures. The result opens offline in any browser, headless ones included.
     python3 tests/render_ui.py --tab downloads --out /tmp/ui.html
 
 Options: --socket PATH (default: the manager's default socket), --tab
-downloads|settings|rules|log, --expand to open the first download's detail panel.
+downloads|settings|rules|log, --expand to open the first download's detail panel,
+--fixtures FILE to lay JSON responses (path -> body) over the captured ones;
+tests/ui_fixtures.json holds states the live manager rarely has.
 """
 
 from __future__ import annotations
@@ -127,10 +129,14 @@ def main() -> int:
                         choices=["downloads", "settings", "rules", "log"])
     parser.add_argument("--expand", action="store_true",
                         help="open the first active download's detail panel")
+    parser.add_argument("--fixtures", action="append", default=[],
+                        help="a JSON file of {path: body} laid over the captured responses")
     args = parser.parse_args()
 
     print(f"capturing from {args.socket}")
     fixtures = capture(args.socket)
+    for extra in args.fixtures:
+        fixtures.update(json.loads(Path(extra).read_text(encoding="utf-8")))
     if not fixtures.get("/api/state"):
         print("error: could not read /api/state — is the manager running?")
         return 1

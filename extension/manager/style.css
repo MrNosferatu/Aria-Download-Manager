@@ -308,20 +308,24 @@ body.offline .topbar .rate b { color: var(--on-surface-var); }
   & .master-row b { font-size: var(--fs-lg); }
   & .measure-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding-top: 10px; border-top: 1px solid var(--outline-var); }
 }
+/* Master off: the list dims, still editable and switchable. */
+#rules-list.dimmed > .rule:not(.open) { opacity: .6; }
 .rule {
-  background: var(--surface-low); border-radius: var(--r-lg); padding: 10px 12px 10px 16px;
+  background: var(--surface-low); border-radius: var(--r-lg); padding: 10px 12px 10px 14px;
   display: flex; flex-direction: column; gap: 12px;
-  box-shadow: inset 3px 0 0 var(--tertiary);
-  &.disabled { box-shadow: inset 3px 0 0 var(--outline-var); & .rule-fold, & .rule-body { opacity: .6; } }
+  /* An off action dims its words to about half and says Off; the switch stays clear. */
+  &.disabled:not(.open) .rule-fold { opacity: .55; }
   &.open { padding-bottom: 14px; }
-  & .rule-head { display: flex; align-items: center; gap: 10px; min-height: 40px; }
+  & .rule-head { display: flex; align-items: center; gap: 14px; min-height: 44px; }
+  &:not(.open) .rule-head { min-height: 44px; }
   & .rule-fold {
-    flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; align-items: flex-start;
+    flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; align-items: flex-start;
     border: 0; background: none; color: inherit; font: inherit; text-align: left; cursor: pointer; padding: 2px 0;
-    & b { font-size: var(--fs-md); }
+    & .rule-name { display: flex; align-items: center; gap: 8px; min-width: 0; max-width: 100%; }
+    & b { font-size: var(--fs-md); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     & .hint { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
   }
-  & .rule-fired { flex: none; color: var(--tertiary); }
+  & .tag-off { flex: none; border-radius: var(--r-full); }
   & .rule-chev .ico { transition: transform var(--t-fast); }
   &.open .rule-chev .ico { transform: rotate(90deg); }
   & .rname { flex: 1; font-weight: 600; font-size: var(--fs-lg); background: transparent; border-color: transparent; padding-left: 6px; &:hover, &:focus { background: var(--surface-highest); } }
@@ -524,3 +528,18 @@ body.offline .topbar .rate b { color: var(--on-surface-var); }
 .dmore h4 { margin: 12px 0 4px; font-size: var(--fs-xs); color: var(--on-surface-var); text-transform: uppercase; letter-spacing: .06em; }
 .dmore .kv { margin-top: 4px; }
 .dmore .kv code { overflow-wrap: anywhere; }
+
+/* A menu at the pointer (right-click). */
+.popmenu {
+  position: fixed; z-index: 50; min-width: 180px; padding: 6px; display: flex; flex-direction: column;
+  background: var(--surface-high); border: 1px solid color-mix(in oklch, var(--outline) 20%, transparent);
+  border-radius: 14px; box-shadow: var(--shadow-3);
+  & button {
+    display: flex; align-items: center; gap: 10px; height: 34px; padding: 0 10px; border: 0; border-radius: 9px;
+    background: none; color: var(--on-surface); font: inherit; font-size: var(--fs-md); text-align: left; cursor: pointer;
+    & .ico { width: 18px; height: 18px; color: var(--on-surface-var); }
+    &:hover, &:focus-visible { background: color-mix(in oklch, var(--on-surface) 8%, transparent); outline: none; }
+    &.danger, &.danger .ico { color: var(--error); }
+  }
+  & hr { border: 0; border-top: 1px solid var(--outline-var); margin: 4px 6px; }
+}

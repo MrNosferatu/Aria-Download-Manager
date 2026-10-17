@@ -6,8 +6,8 @@ import "../lib/Fmt.js" as Fmt
 import "../lib/Rules.js" as Rules
 import "../lib/Units.js" as Units
 
-//: One automatic action. Folded, it is one line: its name, what it does in
-//: words, and how often it fired today. Open, the four things that matter read
+//: One automatic action. Folded, it is one row: its on/off switch, its name
+//: and what it does in words. Open, the four things that matter read
 //: as a sentence with editable words in it; the optional conditions are chips
 //: that can be added and removed; the raw JSON is behind { }.
 Rectangle {
@@ -16,7 +16,6 @@ Rectangle {
     property var rule: ({})
     property int ruleIndex: 0
     property bool open: false
-    property int fired: 0
     //: Bumped by the tab when another card showing the same rule edits it
     //: (the wide window shows a rule in the list and in the editor at once).
     property int externalRev: 0
@@ -29,6 +28,11 @@ Rectangle {
     signal removed
     signal edited
     signal toggleOpen
+    signal duplicated
+    //: The switch: saved at once by the tab, never part of the unsaved edits.
+    signal enabledToggled(bool value)
+
+    readonly property bool on: card.rule.enabled !== false
 
     //: The rule object is edited in place, so bindings that read it go
     //: through this counter to notice.
@@ -215,10 +219,7 @@ Rectangle {
 
     readonly property string jsonProblem: showJson ? Rules.jsonProblem(jsonField.text) : ""
 
-    //: How often it fired today, as the folded card says it.
-    readonly property string firedWord: card.fired > 0 ? card.fired + "×" : "never"
-
-    height: body.implicitHeight + (open ? 32 : 24)
+    height: open ? body.implicitHeight + 32 : Math.max(64, body.implicitHeight + 20)
     radius: open ? 16 : 14
     //: Open, the card is an outline on the panel; deleting, it turns into
     //: the question (board 18).
@@ -227,10 +228,7 @@ Rectangle {
     border.color: confirming ? Theme.withAlpha(Theme.error, 0.5)
                              : (needsOptions ? Theme.withAlpha(Theme.warning, 0.6) : Theme.primary)
     readonly property bool confirming: open && confirmingDelete
-    //: A rule that is off, or every rule while the master switch is off,
-    //: dims but stays editable (board 18).
-    property bool dimmed: false
-    opacity: (card.rule.enabled === false || dimmed) && !open ? 0.5 : 1
+    //: An off action dims its words and says Off; the switch stays clear.
 
     readonly property bool needsOptions: card.rule.action === "set_option" && optionKeys.length === 0
 
@@ -361,71 +359,144 @@ Rectangle {
         anchors.left: parent.left
         anchors.right: parent.right
         anchors.top: parent.top
-        anchors.leftMargin: 16
+        anchors.leftMargin: card.open ? 16 : 14
         anchors.rightMargin: card.open ? 16 : 12
-        anchors.topMargin: card.open ? 16 : 12
+        anchors.topMargin: card.open ? 16 : Math.max(10, (Math.max(64, body.implicitHeight + 20) - body.implicitHeight) / 2)
         spacing: 14
 
-        // ---- folded: name, what it does, how often it fired ----------------
+        // ---- folded: the switch, the name, what it does (board 1) ---------
         Item {
+            id: folded
+
             width: parent.width
-            height: foldedText.implicitHeight
+            height: Math.max(40, foldedText.implicitHeight)
             visible: !card.open
+
+            //: Click opens it, right-click offers the rest; the switch and
+            //: the chevron sit above this and take their own clicks.
+            MouseArea {
+                id: foldedArea
+
+                anchors.fill: parent
+                acceptedButtons: Qt.LeftButton | Qt.RightButton
+                cursorShape: Qt.PointingHandCursor
+                onClicked: mouse => {
+                    if (mouse.button === Qt.RightButton) {
+                        const at = foldedArea.mapToItem(rowMenu.parent, mouse.x, mouse.y)
+                        rowMenu.openAt(at.x, at.y)
+                    } else {
+                        card.toggleOpen()
+                    }
+                }
+            }
+
+            BoolSwitch {
+                id: rowSwitch
+
+                anchors.left: parent.left
+                anchors.verticalCenter: parent.verticalCenter
+                width: 52
+                height: 32
+                checked: card.on
+                onToggled: value => card.enabledToggled(value)
+            }
 
             Column {
                 id: foldedText
 
-                anchors.left: parent.left
-                anchors.right: foldedEnd.left
-                anchors.rightMargin: 12
-                spacing: 2
+                anchors.left: rowSwitch.right
+                anchors.leftMargin: 14
+                anchors.right: foldedChevron.left
+                anchors.rightMargin: 8
+                anchors.verticalCenter: parent.verticalCenter
+                spacing: 3
 
-                StyledText {
+                Row {
                     width: parent.width
-                    text: card.rule.name || "Unnamed action"
-                    font.pixelSize: Theme.fontSizeMedium
-                    font.weight: Font.DemiBold
-                    color: Theme.surfaceText
-                    wrapMode: Text.NoWrap
-                    elide: Text.ElideRight
+                    spacing: 8
+
+                    StyledText {
+                        id: foldedName
+
+                        width: Math.min(implicitWidth, parent.width - (offTag.visible ? offTag.width + 8 : 0))
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: card.rule.name || "Unnamed action"
+                        font.pixelSize: Theme.fontSizeMedium
+                        font.weight: Font.DemiBold
+                        color: card.on ? Theme.surfaceText : Theme.outline
+                        wrapMode: Text.NoWrap
+                        elide: Text.ElideRight
+                    }
+
+                    //: Said in words as well as by the dimming.
+                    Rectangle {
+                        id: offTag
+
+                        anchors.verticalCenter: parent.verticalCenter
+                        visible: !card.on
+                        width: offText.implicitWidth + 16
+                        height: 20
+                        radius: 10
+                        color: Theme.surfaceContainerHighest
+
+                        StyledText {
+                            id: offText
+
+                            anchors.centerIn: parent
+                            text: "Off"
+                            font.pixelSize: Theme.fontSizeSmall - 1
+                            font.weight: Font.DemiBold
+                            color: Theme.surfaceVariantText
+                        }
+                    }
                 }
 
                 StyledText {
                     width: parent.width
                     text: card.summary
                     font.pixelSize: Theme.fontSizeSmall
-                    color: Theme.surfaceVariantText
+                    color: card.on ? Theme.surfaceVariantText : Theme.withAlpha(Theme.surfaceVariantText, 0.55)
                     wrapMode: Text.NoWrap
                     elide: Text.ElideRight
                 }
             }
 
-            Row {
-                id: foldedEnd
+            DankIcon {
+                id: foldedChevron
 
                 anchors.right: parent.right
                 anchors.verticalCenter: parent.verticalCenter
-                spacing: 8
-
-                StyledText {
-                    anchors.verticalCenter: parent.verticalCenter
-                    text: card.firedWord
-                    font.pixelSize: Theme.fontSizeSmall - 1
-                    color: Theme.surfaceVariantText
-                }
-
-                DankIcon {
-                    anchors.verticalCenter: parent.verticalCenter
-                    name: "expand_more"
-                    size: 20
-                    color: Theme.surfaceVariantText
-                }
+                name: "chevron_right"
+                size: 22
+                color: Theme.outline
             }
 
-            MouseArea {
-                anchors.fill: parent
-                cursorShape: Qt.PointingHandCursor
-                onClicked: card.toggleOpen()
+            MenuPopup {
+                id: rowMenu
+
+                parent: foldedChevron
+                menuWidth: 180
+                entries: [{
+                        "icon": "edit",
+                        "text": "Edit"
+                    }, {
+                        "icon": "content_copy",
+                        "text": "Duplicate"
+                    }, {
+                        "separator": true
+                    }, {
+                        "icon": "delete",
+                        "text": "Delete",
+                        "danger": true
+                    }]
+                onTriggered: index => {
+                    if (index === 0)
+                        card.toggleOpen()
+                    else if (index === 1)
+                        card.duplicated()
+                    else if (index === 3)
+                        card.removed()
+                }
             }
         }
 
@@ -480,7 +551,8 @@ Rectangle {
 
                 StyledText {
                     anchors.verticalCenter: parent.verticalCenter
-                    text: card.showJson ? "JSON" : (card.fired > 0 ? "fired " + card.fired + "× today" : "not fired today")
+                    visible: card.showJson
+                    text: "JSON"
                     font.pixelSize: Theme.fontSizeSmall - 1
                     color: Theme.surfaceVariantText
                     rightPadding: 4
@@ -489,8 +561,8 @@ Rectangle {
                 BoolSwitch {
                     anchors.verticalCenter: parent.verticalCenter
                     visible: !card.showJson
-                    checked: card.rule.enabled !== false
-                    onToggled: value => card.set("enabled", value)
+                    checked: card.on
+                    onToggled: value => card.enabledToggled(value)
                 }
 
                 DankActionButton {
@@ -551,8 +623,7 @@ Rectangle {
                 StyledText {
                     width: parent.width
                     wrapMode: Text.WordWrap
-                    text: (card.fired > 0 ? "It fired " + card.fired + (card.fired === 1 ? " time" : " times") + " today. " : "")
-                          + "This takes effect when you save."
+                    text: "This takes effect when you save."
                     font.pixelSize: Theme.fontSizeSmall
                     color: Theme.surfaceVariantText
                 }

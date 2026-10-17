@@ -21,6 +21,8 @@ const S = {
   rules: [],
   // The rules as last saved (JSON), what Discard goes back to.
   rulesSaved: '[]',
+  // Each edited action's name on the manager, '' for one not saved yet.
+  ruleOrigins: [],
   rulesEnabled: true,
   speedSource: 'hybrid',
   // Which action card is open (-1: none), and whether as JSON.
@@ -318,12 +320,14 @@ function applyState(state) {
 
   const rules = state.rules || {};
   $('#rules-master').checked = !!rules.enabled;
+  const masterChanged = S.rulesEnabled !== !!rules.enabled;
   S.rulesEnabled = !!rules.enabled;
+  if (masterChanged) paintRuleCount();
   $('#rail-actions').textContent = rules.enabled ? 'on' : 'off';
   $('#sb-actions').textContent = `Automatic actions ${rules.enabled ? 'on' : 'off'}`;
   $('#master-hint').textContent = rules.enabled
     ? 'Watch running downloads and step in when one stalls.'
-    : 'Off — none of the actions below will run. You can still edit them.';
+    : 'Off — nothing below runs. You can still edit and switch them.';
 
   renderDownloads();
   renderPane();
@@ -377,6 +381,8 @@ function setCount(filter, value) {
 const ICONS = {
   pause: 'M6 19h4V5H6v14zm8-14v14h4V5h-4z',
   play: 'M8 5v14l11-7z',
+  edit: 'M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04a1 1 0 0 0 0-1.41l-2.34-2.34a1 1 0 0 0-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z',
+  copy: 'M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z',
   trash: 'M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z',
   close: 'M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z',
   retry: 'M17.65 6.35A7.96 7.96 0 0 0 12 4a8 8 0 1 0 7.73 10h-2.08A6 6 0 1 1 12 6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z',
@@ -728,6 +734,46 @@ function moreFor(dl) {
     else askRemove(dl);
   }, 'btn btn-sm btn-danger'));
   return out;
+}
+
+/* A menu at the pointer, for a right-click: [icon, label, run, danger] rows,
+   null for a rule between groups. Any press elsewhere, Escape or a scroll
+   closes it. */
+function popMenu(x, y, items) {
+  document.querySelector('.popmenu')?.remove();
+  const menu = document.createElement('div');
+  menu.className = 'popmenu';
+  menu.setAttribute('role', 'menu');
+  for (const item of items) {
+    if (!item) {
+      menu.append(Object.assign(document.createElement('hr'), {}));
+      continue;
+    }
+    const [ico, label, run, danger] = item;
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.setAttribute('role', 'menuitem');
+    btn.className = danger ? 'danger' : '';
+    btn.innerHTML = `${icon(ico)}<span>${escapeHtml(label)}</span>`;
+    btn.addEventListener('click', () => { close(); run(); });
+    menu.append(btn);
+  }
+  document.body.append(menu);
+  const r = menu.getBoundingClientRect();
+  menu.style.left = `${Math.min(x, innerWidth - r.width - 8)}px`;
+  menu.style.top = `${y + r.height > innerHeight - 8 ? Math.max(8, y - r.height) : y}px`;
+  menu.querySelector('button')?.focus();
+  const away = (e) => { if (!menu.contains(e.target)) close(); };
+  const key = (e) => { if (e.key === 'Escape') close(); };
+  function close() {
+    menu.remove();
+    document.removeEventListener('pointerdown', away, true);
+    document.removeEventListener('keydown', key, true);
+    document.removeEventListener('scroll', close, true);
+  }
+  document.addEventListener('pointerdown', away, true);
+  document.addEventListener('keydown', key, true);
+  document.addEventListener('scroll', close, true);
 }
 
 function toggleMore(gid) {
@@ -1961,13 +2007,6 @@ function ruleSummary(rule) {
   return `${head || 'Always'} → ${action}`;
 }
 
-function firedToday(name) {
-  const midnight = new Date();
-  midnight.setHours(0, 0, 0, 0);
-  const since = midnight.getTime() / 1000;
-  return S.triggers.filter((t) => t.rule === name && t.ts >= since).length;
-}
-
 function triggerText(t) {
   // A log line already says what was done: "[Stall kick] paused and resumed debian.iso".
   if (t.logLine) return `${String(t.name).replace(/^\[[^\]]*\]\s*/, '')} · ${fmtSpeed(t.speed)}`;
@@ -1981,6 +2020,7 @@ async function loadRules() {
     const data = await api('/api/rules');
     S.rules = data.rules || [];
     S.rulesSaved = JSON.stringify(S.rules);
+    S.ruleOrigins = S.rules.map((r) => r.name);
     S.rulesEnabled = !!data.enabled;
     S.speedSource = data.speed_source || 'hybrid';
     S.triggers = data.triggers || S.triggers;
@@ -2016,6 +2056,7 @@ async function saveRules() {
     const data = await api('/api/rules', { method: 'POST', body: { rules: S.rules } });
     S.rules = data.rules;
     S.rulesSaved = JSON.stringify(S.rules);
+    S.ruleOrigins = S.rules.map((r) => r.name);
     toast('Actions saved', 'ok');
     renderRules();
   } catch (err) {
@@ -2025,7 +2066,46 @@ async function saveRules() {
 
 function discardRules() {
   S.rules = JSON.parse(S.rulesSaved || '[]');
+  S.ruleOrigins = S.rules.map((r) => r.name);
   S.openRule = Math.min(S.openRule ?? -1, S.rules.length - 1);
+  renderRules();
+}
+
+/* The switch on a row saves straight away, like the master switch, and is
+   never one of the unsaved edits: the saved copy changes with it. Only an
+   action that is not on the manager yet waits for Save with the rest. */
+async function setRuleEnabled(index, on) {
+  S.rules[index].enabled = on;
+  const name = S.ruleOrigins[index];
+  if (name) {
+    try {
+      await api(`/api/rules/${encodeURIComponent(name)}/toggle`, { method: 'POST', body: { enabled: on } });
+      const saved = JSON.parse(S.rulesSaved || '[]');
+      for (const rule of saved) if (rule.name === name) rule.enabled = on;
+      S.rulesSaved = JSON.stringify(saved);
+      toast(`${on ? 'On' : 'Off'}: ${name}`, 'ok');
+    } catch (err) {
+      S.rules[index].enabled = !on;
+      toast(err.message, 'error');
+    }
+  }
+  renderRules();
+}
+
+function duplicateRule(index) {
+  const copy = structuredClone(S.rules[index]);
+  copy.name = uniqueRuleName(`${copy.name} copy`);
+  S.rules.splice(index + 1, 0, copy);
+  S.ruleOrigins.splice(index + 1, 0, '');
+  if (S.openRule > index) S.openRule += 1;
+  renderRules();
+}
+
+function removeRule(index) {
+  S.rules.splice(index, 1);
+  S.ruleOrigins.splice(index, 1);
+  if (S.openRule === index) S.openRule = -1;
+  else if (S.openRule > index) S.openRule -= 1;
   renderRules();
 }
 
@@ -2041,6 +2121,7 @@ function addRule(template = RULE_TEMPLATES[0].rule) {
   const rule = structuredClone(template);
   rule.name = uniqueRuleName(rule.name);
   S.rules.push(rule);
+  S.ruleOrigins.push('');
   S.openRule = S.rules.length - 1;
   renderRules();
 }
@@ -2051,7 +2132,17 @@ function renderRules() {
   host.innerHTML = '';
   if (!S.rules.length) host.append(ruleTemplates());
   S.rules.forEach((rule, index) => host.append(ruleCard(rule, index)));
+  paintRuleCount();
   rulesChanged();
+}
+
+//: "3 of 4 on", and while the master switch is off, that none run.
+function paintRuleCount() {
+  $('#rules-list').classList.toggle('dimmed', !S.rulesEnabled);
+  const on = S.rules.filter((r) => r.enabled !== false).length;
+  $('#rules-count').textContent = S.rules.length
+    ? `${on} of ${S.rules.length} on${S.rulesEnabled ? '' : ' · none run while automatic actions are off'}`
+    : 'None yet';
 }
 
 function ruleTemplates() {
@@ -2080,7 +2171,8 @@ function ruleCard(rule, index) {
   head.className = 'rule-head';
   const { box: toggleBox, input: toggle } = boolSwitch(rule.enabled !== false, false);
   toggleBox.title = 'Action on or off';
-  toggle.addEventListener('change', () => { rule.enabled = toggle.checked; renderRules(); });
+  toggle.setAttribute('aria-label', `${rule.name || 'Action'} on or off`);
+  toggle.addEventListener('change', () => setRuleEnabled(index, toggle.checked));
   head.append(toggleBox);
 
   if (open) {
@@ -2093,26 +2185,26 @@ function ruleCard(rule, index) {
     head.append(name,
       mkBtn('code', 'Edit as JSON', () => { S.ruleJson = !S.ruleJson; renderRules(); },
         `btn btn-icon btn-sm${S.ruleJson ? ' on' : ''}`),
-      mkBtn('trash', 'Delete action', () => {
-        S.rules.splice(index, 1);
-        S.openRule = -1;
-        renderRules();
-      }, 'btn btn-icon btn-sm btn-danger'));
+      mkBtn('trash', 'Delete action', () => removeRule(index), 'btn btn-icon btn-sm btn-danger'));
   } else {
-    const fired = firedToday(rule.name);
+    // The whole row opens the editor; right-click offers the rest.
     const text = document.createElement('button');
     text.type = 'button';
     text.className = 'rule-fold';
-    text.innerHTML = `<b>${escapeHtml(rule.name || 'Unnamed action')}</b>
+    text.innerHTML = `<span class="rule-name"><b>${escapeHtml(rule.name || 'Unnamed action')}</b>${
+      rule.enabled === false ? '<span class="tag tag-off">Off</span>' : ''}</span>
       <span class="hint">${escapeHtml(ruleSummary(rule))}</span>`;
     text.addEventListener('click', () => { S.openRule = index; renderRules(); });
+    card.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      popMenu(e.clientX, e.clientY, [
+        ['edit', 'Edit', () => { S.openRule = index; renderRules(); }],
+        ['copy', 'Duplicate', () => duplicateRule(index)],
+        null,
+        ['trash', 'Delete', () => removeRule(index), true],
+      ]);
+    });
     head.append(text);
-    if (fired) {
-      const badge = document.createElement('span');
-      badge.className = 'hint rule-fired';
-      badge.textContent = `fired ${fired === 1 ? 'once' : fired === 2 ? 'twice' : `${fired}×`} today`;
-      head.append(badge);
-    }
   }
   head.append(mkBtn('chevron', open ? 'Fold' : 'Edit', () => {
     S.openRule = open ? -1 : index;

@@ -1,0 +1,78 @@
+{
+  "/api/rules": {
+    "enabled": true,
+    "speed_source": "hybrid",
+    "triggers": [],
+    "rules": [
+      {
+        "name": "stall-recovery",
+        "enabled": true,
+        "description": "Pause+resume a download that drops below 125 KiB/s for 1 s.",
+        "when": {
+          "statuses": [
+            "active"
+          ],
+          "speed_below": 128000,
+          "for_seconds": 1,
+          "min_age_seconds": 5,
+          "max_progress": 100
+        },
+        "action": "pause_resume",
+        "resume_after_seconds": 0,
+        "cooldown_seconds": 5,
+        "max_triggers": 0
+      },
+      {
+        "name": "Dead torrent",
+        "enabled": false,
+        "description": "Start a torrent over when it stops getting data",
+        "when": {
+          "statuses": [
+            "active"
+          ],
+          "torrent_only": true,
+          "speed_below": 1024,
+          "for_seconds": 120,
+          "min_progress": 5
+        },
+        "action": "restart",
+        "cooldown_seconds": 600,
+        "max_triggers": 3
+      },
+      {
+        "name": "Slow ISOs",
+        "enabled": true,
+        "description": "Keep disk images from taking the whole line",
+        "when": {
+          "statuses": [
+            "active"
+          ],
+          "name_matches": "\\.iso$",
+          "speed_above": 2097152,
+          "for_seconds": 5
+        },
+        "action": "set_option",
+        "options": {
+          "max-download-limit": "2M"
+        },
+        "max_triggers": 1
+      },
+      {
+        "name": "Night limit",
+        "enabled": true,
+        "description": "",
+        "when": {
+          "statuses": [
+            "active"
+          ],
+          "speed_above": 10485760,
+          "for_seconds": 3
+        },
+        "action": "set_option",
+        "options": {
+          "max-download-limit": "4M"
+        }
+      }
+    ]
+  }
+}
