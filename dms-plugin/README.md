@@ -37,8 +37,27 @@ to a section (or edit `barConfigs[].rightWidgets` in
 `{"id": "ariaDownloadManager", "enabled": true}`).
 
 Start the daemon first — `./run.sh`, or the systemd user unit in `systemd/`.
-Until it answers, the pill shows `offline` and the window explains where it
-looked.
+Until it answers, the bar icon is a dimmed `cloud_off` and the panel explains
+where it looked, with the socket path to copy and a *Retry now* button.
+
+## The bar icon
+
+The icon says what is happening; words appear only when something needs them.
+
+| State | Icon | Label |
+| --- | --- | --- |
+| Downloading | `downloading`, ring = overall progress | speed (or count, per *Bar label*) |
+| Paused / waiting only | `pause_circle` / `schedule`, muted | `3 paused` / `2 queued` |
+| Finished while the panel was closed | `download` with a dot | — (the dot clears when the panel opens) |
+| Idle | `download` | — |
+| aria2c not running | `error`, red | `aria2c down` |
+| Manager offline | `cloud_off`, dimmed | — |
+
+The ring is the running downloads' completed bytes over their total; it stays
+off while any of them has no size yet (a magnet still fetching its file list).
+The speed label reserves the width of its widest form, so the bar does not
+shift every second. *Count* mode shows running, then waiting (`2 +3`). On a
+vertical bar the speed is split onto two lines, and idle shows nothing.
 
 ## Settings
 
@@ -47,7 +66,8 @@ looked.
 | Setting | Default | What it does |
 | --- | --- | --- |
 | Manager socket | `$XDG_RUNTIME_DIR/aria-download-manager.sock` | Must match `server.socket` in `config.yaml` (blank on both sides = default) |
-| Bar label | Download speed | Speed, active count, or icon only |
+| Bar label | Download speed | Speed, active count, or icon only — shown only while something is downloading |
+| Progress ring | on | Overall progress as a ring around the bar icon |
 | Clicking the bar icon opens | Bar popout | Whether left click opens the bar popout or goes straight to the standalone window |
 | Popout width / content height | 640 / 540 | Size of the bar popout (the window is resized by dragging it) |
 | Bar refresh interval | 3 s | How far behind the pill may lag a download that starts while the panel is closed |
@@ -126,18 +146,34 @@ window-rule {
 
 ## Quick actions
 
-Right-clicking the bar icon opens a menu that does the common things without
-opening the manager at all:
+Right-clicking the bar icon opens a menu that shows what is happening before
+what can be done:
 
-- **Open in window** and **Add link from clipboard** (needs `wl-clipboard`; the
-  clipboard has to hold an `http`/`https`/`ftp`/`sftp`/`magnet` URL)
-- **Pause all**, **Resume all**, **Clear finished** — each showing its count
-- **Turn rules on/off**
-- **Restart aria2c**
+- **Status** — `2 downloading`, speed and time left, an overall progress bar,
+  and how many are waiting or finished since you last looked
+- **Up to three downloads** — running first, then paused and waiting — each
+  with its own pause / resume button
+- **Pause all**, **Resume**, **Clear** — side by side, each with its count;
+  pausing or clearing nothing is greyed out
+- **Add link from clipboard** (needs `wl-clipboard`; the clipboard has to hold
+  an `http`/`https`/`ftp`/`sftp`/`magnet` URL), **Open manager**, **Open in
+  window**
+- **Automatic actions** — a switch, and the menu stays open so it can be seen
+  to move
+- **Restart aria2c**, set apart at the bottom
 
-Entries that cannot do anything right now are greyed out: purge with nothing
-finished, and anything at all while the manager is offline. The top of the menu
-repeats the pill's status in words.
+When aria2c is down the menu leads with the error and a *Restart aria2c*
+button; when the manager is offline, with the socket it tried and *Retry now*.
+
+## The panel
+
+Above the tabs: one *Pause all / Resume all* button that flips with the state,
+*Clear finished* (greyed with nothing to clear), and *open in window*. Then the
+stat strip — download speed as the headline with the last minute as a
+sparkline, upload, and what is left with its time. The per-state counts are on
+the Downloads filter chips. When aria2c is down a banner with its error,
+*Restart aria2c* and *Open log* sits above the tabs; when the manager is
+offline the tabs give way to an explanation and *Retry now*.
 
 ## What each tab does
 
@@ -153,22 +189,31 @@ repeats the pill's status in words.
   files with priorities and its options, with *Apply and start* or *Cancel*.
   Each row expands into
   the same detail the extension's manager page shows: piece map, paths, per-download options,
-  file selection, live connections, URLs and peers. The **History** chip lists
-  what the manager recorded, with re-add and forget.
+  file selection, live connections, URLs and peers. Each row shows a status
+  tile (the kind of file, tinted by state; click it for details), size, speed
+  and time left, and the one action that fits — *Pause*, *Resume*, *Start
+  next*, *Open*, *Retry* or *Again*; the ⋮ button unfolds the rest, labelled
+  (queue moves, open file or folder, download again, remove). A failed row
+  shows its error in place of the size line. Every empty list says why it is
+  empty and what to do next. The **History** chip lists what the manager
+  recorded, with re-add and forget; *Clear history* asks first.
 - Speeds and sizes (limits, part size, disk cache, a rule's speed threshold) are
   a number plus a unit picker, shown as `12 MiB/s` rather than bytes — the same
   control as the extension's manager page.
-- **Actions** — one card per automatic action (the `rules` in `config.yaml`),
-  editable field by field or as raw JSON, plus the *Speed by* selector (Hybrid,
-  Write speed, Reported speed) and recent triggers. The master switch is the
-  *Actions* toggle in the window header.
+- **Actions** — headed by the *Automatic actions* master switch, then the
+  *Measure speed by* selector (Hybrid, Disk writes, aria2 reported) and one
+  card per automatic action (the `rules` in `config.yaml`), editable field by
+  field or as raw JSON, and recent triggers. Edits are held until *Save* in the
+  bar that appears at the bottom, or thrown away with *Discard*. The tab reads
+  *Actions · off* while the master switch is off.
 - **Settings** — the same *Simple / Advanced* switch as the manager page.
   Simple is one card with the seven options that decide how a download behaves
   (folder, downloads at once, connections per server, parts, the two speed
   limits, resume). Advanced adds a search box, the grouped aria2 options, an
   *Every aria2 option* fold built from whatever aria2 reports, the aria2c
   process card (with *Restart manager* and *Restart aria2c*), and the event log.
-  Edited fields are dot-marked until saved, and the choice is remembered.
+  Edited fields are dot-marked until saved with the *Save* bar that appears at
+  the bottom once something differs, and the mode choice is remembered.
 
 The **event log** is no longer a tab of its own. It is diagnostic material
 rather than something to watch, so it folds away at the bottom of *Settings*,
@@ -226,6 +271,7 @@ dms-plugin/
     ├── Aria2Popout.qml      the manager itself — hosted by both the popout and the window
     ├── Aria2Window.qml      standalone window: title bar, window controls, the popout inside
     ├── ManagerActions.qml   header buttons shared by the popout and the window
+    ├── BarGlyph.qml         the bar icon: glyph, progress ring, unseen-finished dot
     ├── QuickMenu.qml        the right-click menu, QuickMenuRow.qml one line of it
     └── ...                  one file per tab, plus the row delegates
 ```

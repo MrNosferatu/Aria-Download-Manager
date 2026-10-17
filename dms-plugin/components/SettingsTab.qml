@@ -144,8 +144,25 @@ Item {
         return key.toLowerCase().indexOf(needle) >= 0 || label.toLowerCase().indexOf(needle) >= 0
     }
 
+    //: Whether any option was touched since the last save; drives the save bar.
+    //: `edits` is written in place, which notifies nothing, hence the flag.
+    property bool optionsDirty: false
+    readonly property bool dirty: optionsDirty || routingDirty
+
     function record(key, value) {
         edits[key] = value
+        // Fields report their value when they are seeded too, so "touched"
+        // is not enough: dirty means some edit differs from what is saved.
+        const current = service ? service.globalOptions : ({})
+        let differs = false
+        for (const k in edits) {
+            const original = current[k] === undefined || current[k] === null ? "" : String(current[k])
+            if (!Units.same(edits[k], original)) {
+                differs = true
+                break
+            }
+        }
+        optionsDirty = differs
     }
 
     function save() {
@@ -168,13 +185,17 @@ Item {
                                 }, changed ? undefined : "Sorting saved")
             tab.routingDirty = false
         } else if (!changed) {
+            optionsDirty = false
             service.notice("Nothing changed")
             return
         }
-        if (!changed)
+        if (!changed) {
+            optionsDirty = false
             return
+        }
         service.saveOptions(options, "Applied " + changed + " change" + (changed === 1 ? "" : "s"))
         edits = ({})
+        optionsDirty = false
     }
 
     //: Unfold the log and go to it: it is the last thing on a long page.
@@ -287,8 +308,7 @@ Item {
 
             anchors.left: modeGroup.right
             anchors.leftMargin: Theme.spacingS
-            anchors.right: saveButton.left
-            anchors.rightMargin: Theme.spacingS
+            anchors.right: parent.right
             anchors.verticalCenter: parent.verticalCenter
             height: 40
             visible: tab.advanced
@@ -298,18 +318,6 @@ Item {
             onTextChanged: tab.search = text
         }
 
-        DankButton {
-            id: saveButton
-
-            anchors.right: parent.right
-            anchors.verticalCenter: parent.verticalCenter
-            text: "Save changes"
-            iconName: "save"
-            buttonHeight: 40
-            backgroundColor: Theme.primary
-            textColor: Theme.onPrimary
-            onClicked: tab.save()
-        }
     }
 
     DankFlickable {
@@ -317,7 +325,8 @@ Item {
 
         anchors.top: header.bottom
         anchors.topMargin: Theme.spacingS
-        anchors.bottom: parent.bottom
+        anchors.bottom: saveBar.visible ? saveBar.top : parent.bottom
+        anchors.bottomMargin: saveBar.visible ? Theme.spacingS : 0
         width: parent.width
         clip: true
         contentHeight: content.implicitHeight
@@ -880,6 +889,58 @@ Item {
                     }
                 }
             }
+        }
+    }
+
+    // ---- unsaved changes ---------------------------------------------------
+    //: Replaces the always-visible Save button: it appears only once
+    //: something was changed, and says so.
+    Rectangle {
+        id: saveBar
+
+        anchors.bottom: parent.bottom
+        width: parent.width - tab.scrollbarGutter
+        height: 48
+        visible: tab.dirty
+        radius: Theme.cornerRadius
+        color: Theme.surfaceContainerHighest
+
+        Rectangle {
+            id: saveDot
+
+            anchors.left: parent.left
+            anchors.leftMargin: Theme.spacingM
+            anchors.verticalCenter: parent.verticalCenter
+            width: 6
+            height: 6
+            radius: 3
+            color: Theme.primary
+        }
+
+        StyledText {
+            anchors.left: saveDot.right
+            anchors.leftMargin: Theme.spacingS
+            anchors.right: saveNow.left
+            anchors.rightMargin: Theme.spacingS
+            anchors.verticalCenter: parent.verticalCenter
+            text: "Unsaved changes · edited fields are dot-marked"
+            font.pixelSize: Theme.fontSizeSmall
+            color: Theme.surfaceText
+            elide: Text.ElideRight
+        }
+
+        DankButton {
+            id: saveNow
+
+            anchors.right: parent.right
+            anchors.rightMargin: Theme.spacingXS
+            anchors.verticalCenter: parent.verticalCenter
+            text: "Save"
+            iconName: "save"
+            buttonHeight: 36
+            backgroundColor: Theme.primary
+            textColor: Theme.onPrimary
+            onClicked: tab.save()
         }
     }
 }

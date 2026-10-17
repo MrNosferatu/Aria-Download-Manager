@@ -15,7 +15,7 @@ Item {
     readonly property int scrollbarGutter: Layout.SCROLLBAR_GUTTER
 
     readonly property var speedValues: ["hybrid", "measured", "aria2"]
-    readonly property var speedLabels: ["Hybrid", "Write speed", "Reported speed"]
+    readonly property var speedLabels: ["Hybrid", "Disk writes", "aria2 reported"]
 
     function reload() {
         if (!service)
@@ -68,14 +68,72 @@ Item {
         }
     }
 
+    // ---- master switch ----------------------------------------------------
+    //: It heads the tab it controls, saying what it does — it used to sit in
+    //: the stat strip of every tab, labelled only "Actions".
+    Rectangle {
+        id: masterCard
+
+        readonly property bool on: !!tab.service && tab.service.rulesEnabled
+
+        width: parent.width - tab.scrollbarGutter
+        height: 60
+        radius: Theme.cornerRadius
+        color: Theme.surfaceContainerHigh
+
+        Column {
+            anchors.left: parent.left
+            anchors.leftMargin: Theme.spacingM
+            anchors.right: masterSwitch.left
+            anchors.rightMargin: Theme.spacingM
+            anchors.verticalCenter: parent.verticalCenter
+            spacing: 2
+
+            StyledText {
+                text: "Automatic actions"
+                font.pixelSize: Theme.fontSizeMedium
+                font.weight: Font.Bold
+                color: Theme.surfaceText
+            }
+
+            StyledText {
+                width: parent.width
+                text: masterCard.on ? "Watch running downloads and step in when one stalls"
+                                    : "Off — none of the actions below will run. You can still edit them."
+                font.pixelSize: Theme.fontSizeSmall
+                color: Theme.surfaceVariantText
+                elide: Text.ElideRight
+            }
+        }
+
+        BoolSwitch {
+            id: masterSwitch
+
+            anchors.right: parent.right
+            anchors.rightMargin: Theme.spacingM
+            anchors.verticalCenter: parent.verticalCenter
+            checked: masterCard.on
+            onToggled: value => tab.service.setRulesEnabled(value)
+        }
+    }
+
     // Same shape as the Settings tab header: one Row with one spacing value, so
     // the gaps between the control and its buttons match across tabs.
     Row {
         id: header
 
+        anchors.top: masterCard.bottom
+        anchors.topMargin: Theme.spacingS
         width: parent.width
         height: 44
         spacing: Theme.spacingS
+
+        StyledText {
+            anchors.verticalCenter: parent.verticalCenter
+            text: "Measure speed by"
+            font.pixelSize: Theme.fontSizeSmall
+            color: Theme.surfaceVariantText
+        }
 
         DankDropdown {
             id: speedSource
@@ -109,26 +167,13 @@ Item {
             onClicked: tab.addRule()
         }
 
-        DankButton {
-            id: saveButton
-
-            anchors.verticalCenter: parent.verticalCenter
-            text: tab.dirty ? "Save actions •" : "Save actions"
-            iconName: "save"
-            buttonHeight: 40
-            backgroundColor: Theme.primary
-            textColor: Theme.onPrimary
-            onClicked: {
-                tab.service.saveRules(tab.rules, tab.service.rulesEnabled, tab.service.speedSource)
-                tab.dirty = false
-            }
-        }
     }
 
     DankFlickable {
         anchors.top: header.bottom
         anchors.topMargin: Theme.spacingS
-        anchors.bottom: parent.bottom
+        anchors.bottom: saveBar.visible ? saveBar.top : parent.bottom
+        anchors.bottomMargin: saveBar.visible ? Theme.spacingS : 0
         width: parent.width
         clip: true
         contentHeight: content.implicitHeight
@@ -215,6 +260,67 @@ Item {
                         color: Theme.surfaceText
                         elide: Text.ElideRight
                     }
+                }
+            }
+        }
+    }
+
+    // ---- unsaved changes ---------------------------------------------------
+    //: Appears only when there is something to save.
+    Rectangle {
+        id: saveBar
+
+        anchors.bottom: parent.bottom
+        width: parent.width - tab.scrollbarGutter
+        height: 48
+        visible: tab.dirty
+        radius: Theme.cornerRadius
+        color: Theme.surfaceContainerHighest
+
+        Rectangle {
+            id: saveDot
+
+            anchors.left: parent.left
+            anchors.leftMargin: Theme.spacingM
+            anchors.verticalCenter: parent.verticalCenter
+            width: 6
+            height: 6
+            radius: 3
+            color: Theme.primary
+        }
+
+        StyledText {
+            anchors.left: saveDot.right
+            anchors.leftMargin: Theme.spacingS
+            anchors.verticalCenter: parent.verticalCenter
+            text: "Unsaved changes to actions"
+            font.pixelSize: Theme.fontSizeSmall
+            color: Theme.surfaceText
+        }
+
+        Row {
+            anchors.right: parent.right
+            anchors.rightMargin: Theme.spacingXS
+            anchors.verticalCenter: parent.verticalCenter
+            spacing: Theme.spacingXS
+
+            DankButton {
+                text: "Discard"
+                buttonHeight: 36
+                backgroundColor: "transparent"
+                textColor: Theme.surfaceText
+                onClicked: tab.reload()
+            }
+
+            DankButton {
+                text: "Save"
+                iconName: "save"
+                buttonHeight: 36
+                backgroundColor: Theme.primary
+                textColor: Theme.onPrimary
+                onClicked: {
+                    tab.service.saveRules(tab.rules, tab.service.rulesEnabled, tab.service.speedSource)
+                    tab.dirty = false
                 }
             }
         }

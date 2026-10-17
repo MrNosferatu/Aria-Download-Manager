@@ -27,7 +27,7 @@ PluginSettings {
     SelectionSetting {
         settingKey: "pillMode"
         label: "Bar label"
-        description: "What sits next to the icon on the bar."
+        description: "What sits next to the icon while something is downloading. Idle and offline are icon-only; aria2c being down is always spelled out."
         options: [
             {
                 "label": "Download speed",
@@ -43,6 +43,13 @@ PluginSettings {
             }
         ]
         defaultValue: "speed"
+    }
+
+    ToggleSetting {
+        settingKey: "showProgressRing"
+        label: "Progress ring"
+        description: "Draw the overall progress of running downloads as a ring around the bar icon."
+        defaultValue: true
     }
 
     SelectionSetting {

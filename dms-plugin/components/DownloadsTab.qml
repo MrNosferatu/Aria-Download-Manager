@@ -22,6 +22,8 @@ Item {
     property var selection: ({})
     property bool selecting: false
     property bool confirmingBulkRemove: false
+    //: Clearing history cannot be undone, so it asks first.
+    property bool confirmingClearHistory: false
 
     //: A selection can mix the two cases, so they are counted separately: the
     //: unfinished ones are cleaned up without asking, and only the finished
@@ -60,7 +62,10 @@ Item {
     //: Selection only means anything against rows that are on screen; changing
     //: the filter or leaving selection mode drops it rather than acting later
     //: on downloads the user can no longer see.
-    onFilterChanged: clearSelection()
+    onFilterChanged: {
+        clearSelection()
+        confirmingClearHistory = false
+    }
     onSelectingChanged: {
         if (!selecting)
             clearSelection()
@@ -336,7 +341,7 @@ Item {
             buttonHeight: 40
             backgroundColor: Theme.errorHover
             textColor: Theme.error
-            onClicked: tab.service.post("/api/history-clear", null, "History cleared", () => tab.service.loadHistory())
+            onClicked: tab.confirmingClearHistory = true
         }
 
         DankButton {
@@ -530,10 +535,64 @@ Item {
     }
 
     // ---- summary line for history ---------------------------------------
+    Rectangle {
+        id: clearHistoryConfirm
+
+        anchors.top: bulkBar.bottom
+        anchors.topMargin: visible ? Theme.spacingS : 0
+        width: parent.width - tab.scrollbarGutter
+        visible: tab.historyMode && tab.confirmingClearHistory
+        height: visible ? 44 : 0
+        radius: Theme.cornerRadius
+        color: Theme.withAlpha(Theme.error, 0.10)
+        border.width: 1
+        border.color: Theme.withAlpha(Theme.error, 0.35)
+
+        StyledText {
+            anchors.left: parent.left
+            anchors.leftMargin: Theme.spacingM
+            anchors.right: clearHistoryButtons.left
+            anchors.rightMargin: Theme.spacingS
+            anchors.verticalCenter: parent.verticalCenter
+            text: "Forget every history entry? Files on disk are not touched."
+            font.pixelSize: Theme.fontSizeSmall
+            color: Theme.surfaceText
+            elide: Text.ElideRight
+        }
+
+        Row {
+            id: clearHistoryButtons
+
+            anchors.right: parent.right
+            anchors.rightMargin: Theme.spacingXS
+            anchors.verticalCenter: parent.verticalCenter
+            spacing: Theme.spacingXS
+
+            DankButton {
+                text: "Cancel"
+                buttonHeight: 30
+                backgroundColor: Theme.surfaceContainerHigh
+                textColor: Theme.surfaceText
+                onClicked: tab.confirmingClearHistory = false
+            }
+
+            DankButton {
+                text: "Clear history"
+                buttonHeight: 30
+                backgroundColor: Theme.error
+                textColor: Theme.onPrimary
+                onClicked: {
+                    tab.confirmingClearHistory = false
+                    tab.service.post("/api/history-clear", null, "History cleared", () => tab.service.loadHistory())
+                }
+            }
+        }
+    }
+
     StyledText {
         id: historySummary
 
-        anchors.top: bulkBar.bottom
+        anchors.top: clearHistoryConfirm.bottom
         anchors.topMargin: Theme.spacingS
         width: parent.width
         visible: tab.historyMode
@@ -598,22 +657,114 @@ Item {
         }
     }
 
-    StyledText {
-        anchors.centerIn: list
-        width: list.width - Theme.spacingXL * 2
-        horizontalAlignment: Text.AlignHCenter
-        wrapMode: Text.WordWrap
-        //: Not while the Add panel is open: "add a download" under a download
-        //: being added contradicts it.
-        visible: tab.historyMode ? historyList.count === 0 : (list.count === 0 && !tab.adding)
-        text: {
-            if (!tab.service || !tab.service.connected)
-                return "Can't reach the manager at " + (tab.service ? tab.service.socketPath : "") + ".\nStart it with run.sh or the systemd unit."
+    // ---- empty states ----------------------------------------------------
+    //: Every empty list says why it is empty and what to do next. Not while
+    //: the Add panel is open: "add a download" under a download being added
+    //: contradicts it. Offline is the popout's to explain.
+    Column {
+        id: emptyState
+
+        readonly property string kind: {
             if (tab.historyMode)
-                return "No history yet. Finished downloads are remembered here, even after a restart."
-            return tab.filter === "all" && !tab.search ? "Nothing here yet. Add a download, or start one in the browser and it lands here." : "Nothing matches."
+                return "history"
+            if (tab.search)
+                return "search"
+            return tab.filter
         }
-        font.pixelSize: Theme.fontSizeMedium
-        color: Theme.surfaceVariantText
+
+        readonly property var copy: ({
+                "all": ["download", "No downloads yet", "Add a link here, or start a download in the browser and it lands here."],
+                "active": ["downloading", "Nothing is downloading right now", "Paused and queued downloads are under their own filters."],
+                "waiting": ["schedule", "The queue is empty", "Downloads wait here when more are added than run at once."],
+                "paused": ["pause_circle", "Nothing is paused", ""],
+                "complete": ["task_alt", "Nothing finished since aria2c started", "aria2 forgets finished downloads when it restarts. History keeps them."],
+                "error": ["task_alt", "Nothing has failed", "Downloads that stop with an error land here, with the reason and a Retry button."],
+                "history": ["history", "No history yet", "Every finished download is recorded here and kept across restarts, even after aria2 forgets it."],
+                "search": ["search_off", "Nothing matches “" + tab.search + "”", "Older downloads that aria2 no longer holds are in History."]
+            })
+
+        readonly property var lines: copy[kind] || copy["all"]
+
+        anchors.centerIn: list
+        width: Math.min(list.width - Theme.spacingXL * 2, 380)
+        spacing: Theme.spacingS
+        visible: !!tab.service && tab.service.connected
+                 && (tab.historyMode ? historyList.count === 0 : (list.count === 0 && !tab.adding))
+
+        Rectangle {
+            anchors.horizontalCenter: parent.horizontalCenter
+            width: 56
+            height: 56
+            radius: 28
+            color: emptyState.kind === "all" ? Theme.withAlpha(Theme.primary, 0.14)
+                   : emptyState.kind === "error" ? Theme.withAlpha(Theme.success, 0.14)
+                   : Theme.surfaceContainerHigh
+
+            DankIcon {
+                anchors.centerIn: parent
+                name: emptyState.lines[0]
+                size: 28
+                color: emptyState.kind === "all" ? Theme.primary
+                       : emptyState.kind === "error" ? Theme.success
+                       : Theme.surfaceVariantText
+            }
+        }
+
+        StyledText {
+            width: parent.width
+            horizontalAlignment: Text.AlignHCenter
+            wrapMode: Text.WordWrap
+            text: emptyState.lines[1]
+            font.pixelSize: Theme.fontSizeLarge
+            font.weight: Font.Bold
+            color: Theme.surfaceText
+        }
+
+        StyledText {
+            width: parent.width
+            horizontalAlignment: Text.AlignHCenter
+            wrapMode: Text.WordWrap
+            visible: text.length > 0
+            text: emptyState.lines[2]
+            font.pixelSize: Theme.fontSizeSmall
+            color: Theme.surfaceVariantText
+        }
+
+        Row {
+            anchors.horizontalCenter: parent.horizontalCenter
+            spacing: Theme.spacingS
+            topPadding: Theme.spacingXS
+
+            DankButton {
+                visible: emptyState.kind === "all"
+                text: "Add download"
+                iconName: "add"
+                buttonHeight: 36
+                backgroundColor: Theme.primary
+                textColor: Theme.onPrimary
+                onClicked: tab.adding = true
+            }
+
+            DankButton {
+                visible: emptyState.kind === "search"
+                text: "Clear search"
+                buttonHeight: 36
+                backgroundColor: Theme.surfaceContainerHigh
+                textColor: Theme.surfaceText
+                onClicked: searchField.text = ""
+            }
+
+            DankButton {
+                visible: emptyState.kind !== "all" && emptyState.kind !== "search" && emptyState.kind !== "history"
+                text: "Show all downloads"
+                buttonHeight: 36
+                backgroundColor: Theme.surfaceContainerHigh
+                textColor: Theme.surfaceText
+                onClicked: {
+                    chips.currentIndex = 0
+                    tab.setFilter("all")
+                }
+            }
+        }
     }
 }

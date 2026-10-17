@@ -110,27 +110,34 @@ Rectangle {
         return out
     }
 
+    //: Running but nothing arrived yet: "0 B/s, no ETA" would read as a stall.
+    readonly property bool connecting: status === "active" && !dl.isMetadata
+                                       && !(dl.completed > 0) && !(dl.downloadSpeed > 0)
+
+    //: Three facts at most — size, speed, time left. Connections and seeders
+    //: are in the detail view. A failure replaces the line with its reason.
     readonly property string metaText: {
-        const bits = [Fmt.bytes(dl.completed) + " of " + (dl.total ? Fmt.bytes(dl.total) : "?") + " · " + (dl.progress || 0).toFixed(1) + "%"]
+        if (status === "error" && dl.errorMessage)
+            return dl.errorMessage
+        if (connecting)
+            return "Connecting…"
+        const bits = [(dl.total ? Fmt.bytes(dl.completed) + " of " + Fmt.bytes(dl.total) : Fmt.bytes(dl.completed))
+                      + " · " + Math.floor(dl.progress || 0) + "%"]
         if (status === "active") {
             // aria2's own figure is a long average that lags a stall; the
             // measured one is what actually arrived. One number, the truer one.
             const measured = dl.engine === "qbittorrent" ? null : dl.measuredSpeed
             const disagrees = measured !== null && measured !== undefined
                             && Math.abs(measured - dl.downloadSpeed) > Math.max(65536, dl.downloadSpeed * 0.35)
-            bits.push("↓ " + Fmt.speed(disagrees ? measured : dl.downloadSpeed))
-            if (dl.isTorrent)
-                bits.push("↑ " + Fmt.speed(dl.uploadSpeed))
-            bits.push(Fmt.eta(dl.eta) + " left")
-            bits.push((dl.connections || 0) + " connection" + (dl.connections === 1 ? "" : "s"))
-            if (dl.isTorrent)
-                bits.push((dl.numSeeders || 0) + " seeders")
+            bits.push(Fmt.speed(disagrees ? measured : dl.downloadSpeed))
+            if (dl.eta !== null && dl.eta !== undefined && dl.eta >= 0)
+                bits.push(Fmt.eta(dl.eta) + " left")
         }
         if (status === "waiting" && dl.queuePosition !== undefined && dl.queuePosition !== null)
             bits.push("#" + (dl.queuePosition + 1) + " in queue")
         if (fileMissing)
             bits.push("No longer at " + dl.path)
-        if (dl.errorMessage)
+        if (status !== "error" && dl.errorMessage)
             bits.push(dl.errorMessage)
         for (const name in ruleInfo) {
             const info = ruleInfo[name]
@@ -140,7 +147,153 @@ Rectangle {
         return bits.join("  ·  ")
     }
 
+    //: The glyph in the status tile: what kind of file it is, so a list of
+    //: downloads can be scanned by shape as well as by name.
+    readonly property string kindIcon: {
+        if (dl.isMetadata || (dl.isTorrent && !dl.name))
+            return "hub"
+        const name = String(dl.name || "").toLowerCase()
+        const ext = (name.match(/\.([a-z0-9]+)$/) || [])[1] || ""
+        if (["mkv", "mp4", "webm", "avi", "mov", "m4v", "wmv", "flv", "ts"].indexOf(ext) >= 0)
+            return "movie"
+        if (["mp3", "flac", "ogg", "opus", "wav", "m4a", "aac"].indexOf(ext) >= 0)
+            return "music_note"
+        if (["iso", "img", "qcow2", "vdi", "vmdk"].indexOf(ext) >= 0)
+            return "album"
+        if (["zip", "7z", "rar", "gz", "xz", "zst", "bz2", "tar", "tgz"].indexOf(ext) >= 0)
+            return "folder_zip"
+        if (["png", "jpg", "jpeg", "gif", "webp", "svg", "avif"].indexOf(ext) >= 0)
+            return "image"
+        if (["pdf", "epub", "doc", "docx", "odt", "txt", "md"].indexOf(ext) >= 0)
+            return "description"
+        if (["deb", "rpm", "appimage", "exe", "msi", "pkg", "flatpak"].indexOf(ext) >= 0)
+            return "inventory_2"
+        return dl.isTorrent ? "hub" : "draft"
+    }
+
+    //: The one action that fits the state, shown as a button; the rest are
+    //: behind the ⋮ toggle.
+    readonly property var primaryAction: {
+        if (status === "active")
+            return {
+                "icon": "pause",
+                "text": "Pause",
+                "run": () => service.post("/api/download/" + gid + "/pause", null, "")
+            }
+        if (status === "paused")
+            return {
+                "icon": "play_arrow",
+                "text": "Resume",
+                "run": () => service.post("/api/download/" + gid + "/resume", null, "")
+            }
+        if (status === "waiting")
+            return {
+                "icon": "vertical_align_top",
+                "text": "Start next",
+                "run": () => service.post("/api/download/" + gid + "/position", {
+                                              "pos": 0,
+                                              "how": "POS_SET"
+                                          }, "")
+            }
+        if (status === "complete" && dl.path && !fileMissing)
+            return {
+                "icon": "open_in_new",
+                "text": "Open",
+                "run": () => Quickshell.execDetached(["xdg-open", dl.path])
+            }
+        if (status === "error")
+            return {
+                "icon": "refresh",
+                "text": "Retry",
+                "run": () => service.post("/api/download/" + gid + "/retry", null, "Added again")
+            }
+        if (status === "complete" || status === "removed")
+            return {
+                "icon": "refresh",
+                "text": "Again",
+                "run": () => service.post("/api/download/" + gid + "/retry", null, "Added again")
+            }
+        return null
+    }
+
+    property bool showMore: false
+
+    //: Everything else this row can do, labelled. Entries that do not apply
+    //: to the state are left out rather than greyed.
+    readonly property var moreActions: {
+        const out = []
+        const queued = status === "waiting" || status === "paused"
+        if (status === "waiting")
+            out.push({
+                         "icon": "pause",
+                         "text": "Pause",
+                         "run": () => service.post("/api/download/" + gid + "/pause", null, "")
+                     })
+        if (queued && status !== "waiting")
+            out.push({
+                         "icon": "vertical_align_top",
+                         "text": "Move to front",
+                         "run": () => service.post("/api/download/" + gid + "/position", {
+                                                       "pos": 0,
+                                                       "how": "POS_SET"
+                                                   }, "")
+                     })
+        if (queued) {
+            out.push({
+                         "icon": "arrow_upward",
+                         "text": "Move up",
+                         "run": () => service.post("/api/download/" + gid + "/position", {
+                                                       "pos": -1,
+                                                       "how": "POS_CUR"
+                                                   }, "")
+                     })
+            out.push({
+                         "icon": "arrow_downward",
+                         "text": "Move down",
+                         "run": () => service.post("/api/download/" + gid + "/position", {
+                                                       "pos": 1,
+                                                       "how": "POS_CUR"
+                                                   }, "")
+                     })
+        }
+        // Only meaningful once bytes exist on disk; aria2 reports the final
+        // path for finished items and the .part path while running.
+        if (dl.path && !fileMissing && (status === "active" || status === "paused"))
+            out.push({
+                         "icon": "open_in_new",
+                         "text": "Open file",
+                         "run": () => Quickshell.execDetached(["xdg-open", dl.path])
+                     })
+        if (dl.dir || dl.path)
+            out.push({
+                         "icon": "folder_open",
+                         "text": "Open folder",
+                         "run": () => Quickshell.execDetached(["xdg-open", dl.dir || dl.path.replace(/\/[^/]*$/, "")])
+                     })
+        if (status === "complete" && dl.path && !fileMissing)
+            out.push({
+                         "icon": "refresh",
+                         "text": "Download again",
+                         "run": () => service.post("/api/download/" + gid + "/retry", null, "Added again")
+                     })
+        out.push({
+                     "icon": "info",
+                     "text": expanded ? "Hide details" : "Details",
+                     "run": () => toggleExpand()
+                 })
+        // A download still in flight is being *cancelled*; one that has
+        // already finished or failed is being thrown away.
+        out.push({
+                     "icon": live ? "close" : "delete",
+                     "text": live ? "Cancel and remove" : "Remove…",
+                     "danger": true,
+                     "run": () => askRemove()
+                 })
+        return out
+    }
+
     height: body.implicitHeight + Theme.spacingS * 2
+            + (showMore ? moreStrip.height + Theme.spacingS : 0)
             + (confirmingRemove ? confirmStrip.height + Theme.spacingS : 0)
             + (expanded ? detailLoader.height + Theme.spacingS : 0)
     radius: Theme.cornerRadius
@@ -172,123 +325,61 @@ Rectangle {
             onClicked: row.toggleSelected()
         }
 
-        DankActionButton {
+        //: Status at a glance: the kind of file, tinted by state. Also the
+        //: handle that opens the detail view.
+        Rectangle {
             id: chevron
 
             anchors.left: picker.right
-            anchors.leftMargin: row.selectable ? Theme.spacingXXS : 0
+            anchors.leftMargin: row.selectable ? Theme.spacingXS : 0
             anchors.top: parent.top
-            buttonSize: 26
-            iconSize: Theme.iconSizeSmall
-            iconName: row.expanded ? "expand_more" : "chevron_right"
-            tooltipText: "Details"
-            onClicked: row.toggleExpand()
+            width: 38
+            height: 38
+            radius: Theme.cornerRadius
+            color: tileArea.containsMouse ? Theme.withAlpha(row.statusColor, 0.26) : Theme.withAlpha(row.statusColor, 0.16)
+
+            DankIcon {
+                anchors.centerIn: parent
+                name: row.expanded ? "expand_less" : row.kindIcon
+                size: 20
+                color: row.fileMissing ? Theme.surfaceVariantText : row.statusColor
+            }
+
+            MouseArea {
+                id: tileArea
+
+                anchors.fill: parent
+                hoverEnabled: true
+                cursorShape: Qt.PointingHandCursor
+                onClicked: row.toggleExpand()
+            }
         }
 
         Row {
             id: actions
 
             anchors.right: parent.right
-            anchors.top: parent.top
-            spacing: 0
+            anchors.verticalCenter: chevron.verticalCenter
+            spacing: Theme.spacingXS
 
-            DankActionButton {
-                visible: row.status === "active" || row.status === "waiting"
-                buttonSize: 28
-                iconSize: Theme.iconSizeSmall
-                iconName: "pause"
-                tooltipText: "Pause"
-                onClicked: row.service.post("/api/download/" + row.gid + "/pause", null, "")
+            DankButton {
+                anchors.verticalCenter: parent.verticalCenter
+                visible: row.primaryAction !== null
+                text: row.primaryAction ? row.primaryAction.text : ""
+                iconName: row.primaryAction ? row.primaryAction.icon : ""
+                buttonHeight: 30
+                backgroundColor: Theme.surfaceContainerHigh
+                textColor: Theme.surfaceText
+                onClicked: row.primaryAction.run()
             }
 
             DankActionButton {
-                visible: row.status === "paused"
-                buttonSize: 28
+                anchors.verticalCenter: parent.verticalCenter
+                buttonSize: 30
                 iconSize: Theme.iconSizeSmall
-                iconName: "play_arrow"
-                tooltipText: "Resume"
-                onClicked: row.service.post("/api/download/" + row.gid + "/resume", null, "")
-            }
-
-            DankActionButton {
-                visible: row.status === "waiting" || row.status === "paused"
-                buttonSize: 28
-                iconSize: Theme.iconSizeSmall
-                iconName: "vertical_align_top"
-                tooltipText: "Move to the front of the queue"
-                onClicked: row.service.post("/api/download/" + row.gid + "/position", {
-                                                "pos": 0,
-                                                "how": "POS_SET"
-                                            }, "")
-            }
-
-            DankActionButton {
-                visible: row.status === "waiting" || row.status === "paused"
-                buttonSize: 28
-                iconSize: Theme.iconSizeSmall
-                iconName: "arrow_upward"
-                tooltipText: "Move up"
-                onClicked: row.service.post("/api/download/" + row.gid + "/position", {
-                                                "pos": -1,
-                                                "how": "POS_CUR"
-                                            }, "")
-            }
-
-            DankActionButton {
-                visible: row.status === "waiting" || row.status === "paused"
-                buttonSize: 28
-                iconSize: Theme.iconSizeSmall
-                iconName: "arrow_downward"
-                tooltipText: "Move down"
-                onClicked: row.service.post("/api/download/" + row.gid + "/position", {
-                                                "pos": 1,
-                                                "how": "POS_CUR"
-                                            }, "")
-            }
-
-            DankActionButton {
-                // Only meaningful once bytes exist on disk; aria2 reports the
-                // final path for finished items and the .part path while running.
-                visible: !!row.dl.path && !row.fileMissing
-                         && (row.status === "complete" || row.status === "active" || row.status === "paused")
-                buttonSize: 28
-                iconSize: Theme.iconSizeSmall
-                iconName: "open_in_new"
-                tooltipText: "Open file"
-                onClicked: Quickshell.execDetached(["xdg-open", row.dl.path])
-            }
-
-            DankActionButton {
-                visible: !!(row.dl.dir || row.dl.path)
-                buttonSize: 28
-                iconSize: Theme.iconSizeSmall
-                iconName: "folder_open"
-                tooltipText: "Open folder"
-                onClicked: {
-                    const dir = row.dl.dir || row.dl.path.replace(/\/[^/]*$/, "")
-                    Quickshell.execDetached(["xdg-open", dir])
-                }
-            }
-
-            DankActionButton {
-                visible: row.status === "error" || row.status === "complete" || row.status === "removed"
-                buttonSize: 28
-                iconSize: Theme.iconSizeSmall
-                iconName: "refresh"
-                tooltipText: "Download again with the same links and options"
-                onClicked: row.service.post("/api/download/" + row.gid + "/retry", null, "Added again")
-            }
-
-            DankActionButton {
-                buttonSize: 28
-                iconSize: Theme.iconSizeSmall
-                // A download still in flight is being *cancelled*, which is what
-                // a cross means; one that has already finished or failed is
-                // being thrown away, which is what the bin means.
-                iconName: row.live ? "close" : "delete"
-                iconColor: Theme.error
-                tooltipText: row.live ? "Cancel and remove" : "Remove…"
-                onClicked: row.askRemove()
+                iconName: row.showMore ? "close" : "more_vert"
+                tooltipText: row.showMore ? "Fewer actions" : "More actions"
+                onClicked: row.showMore = !row.showMore
             }
         }
 
@@ -296,7 +387,7 @@ Rectangle {
             id: bodyColumn
 
             anchors.left: chevron.right
-            anchors.leftMargin: Theme.spacingXS
+            anchors.leftMargin: Theme.spacingS
             anchors.right: actions.left
             anchors.rightMargin: Theme.spacingS
             anchors.top: parent.top
@@ -389,6 +480,37 @@ Rectangle {
         }
     }
 
+    // ---- more actions -----------------------------------------------------
+    Flow {
+        id: moreStrip
+
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.top: body.bottom
+        anchors.margins: Theme.spacingS
+        visible: row.showMore
+        height: visible ? implicitHeight : 0
+        spacing: Theme.spacingXS
+
+        Repeater {
+            model: row.showMore ? row.moreActions : []
+
+            DankButton {
+                required property var modelData
+
+                text: modelData.text
+                iconName: modelData.icon
+                buttonHeight: 30
+                backgroundColor: modelData.danger ? Theme.withAlpha(Theme.error, 0.12) : Theme.surfaceContainerHigh
+                textColor: modelData.danger ? Theme.error : Theme.surfaceText
+                onClicked: {
+                    row.showMore = false
+                    modelData.run()
+                }
+            }
+        }
+    }
+
     // ---- remove confirmation --------------------------------------------
     // Only ever shown for a finished download — see askRemove().
     Rectangle {
@@ -396,7 +518,7 @@ Rectangle {
 
         anchors.left: parent.left
         anchors.right: parent.right
-        anchors.top: body.bottom
+        anchors.top: moreStrip.visible ? moreStrip.bottom : body.bottom
         anchors.margins: Theme.spacingS
         visible: row.confirmingRemove
         height: visible ? 40 : 0
@@ -465,7 +587,7 @@ Rectangle {
 
         anchors.left: parent.left
         anchors.right: parent.right
-        anchors.top: confirmStrip.visible ? confirmStrip.bottom : body.bottom
+        anchors.top: confirmStrip.visible ? confirmStrip.bottom : (moreStrip.visible ? moreStrip.bottom : body.bottom)
         anchors.topMargin: Theme.spacingS
         anchors.leftMargin: Theme.spacingS
         anchors.rightMargin: Theme.spacingS

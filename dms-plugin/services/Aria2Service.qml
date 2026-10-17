@@ -57,6 +57,77 @@ Singleton {
     readonly property int waitingCount: (counts.waiting || 0) + (counts.paused || 0)
     readonly property int stoppedCount: counts.stopped || 0
     readonly property bool aria2Running: aria2.running === true
+    readonly property int pausedCount: counts.paused || 0
+    readonly property int queuedCount: counts.waiting || 0
+    readonly property int errorCount: counts.error || 0
+    readonly property int completeCount: counts.complete || 0
+
+    //: The running downloads summed up, for the bar ring, the quick menu and
+    //: the stat strip. `progress` is -1 while any running download has no size
+    //: yet (a magnet still fetching its file list), so the ring can stay away
+    //: rather than claim a fraction it does not know.
+    readonly property var activeTotals: {
+        let done = 0
+        let total = 0
+        let unknown = false
+        for (const d of downloads) {
+            if (d.status !== "active")
+                continue
+            if (!d.total || d.isMetadata) {
+                unknown = true
+                continue
+            }
+            done += d.completed || 0
+            total += d.total
+        }
+        const left = Math.max(0, total - done)
+        return {
+            "completed": done,
+            "total": total,
+            "left": left,
+            "progress": (!unknown && total > 0) ? done / total : -1,
+            "eta": downloadSpeed > 0 && total > 0 ? left / downloadSpeed : -1
+        }
+    }
+
+    //: The most interesting few downloads for the quick menu: running ones
+    //: first, then paused, then queued.
+    readonly property var topDownloads: {
+        const rank = {
+            "active": 0,
+            "paused": 1,
+            "waiting": 2
+        }
+        return downloads.filter(d => rank[d.status] !== undefined)
+                        .sort((a, b) => rank[a.status] - rank[b.status])
+                        .slice(0, 3)
+    }
+
+    //: Downloads that finished while nobody had the manager open. The bar
+    //: shows a dot until the panel is next opened. Counted from the "complete"
+    //: total, so a purge (which lowers it) never produces a false dot.
+    property int unseenFinished: 0
+    property int _lastCompleteCount: -1
+
+    onCompleteCountChanged: {
+        if (_lastCompleteCount >= 0 && completeCount > _lastCompleteCount && !viewerActive)
+            unseenFinished += completeCount - _lastCompleteCount
+        _lastCompleteCount = completeCount
+    }
+
+    onViewerActiveChanged: {
+        if (viewerActive)
+            unseenFinished = 0
+    }
+
+    //: The last minute of total download speed, one sample per snapshot, for
+    //: the stat strip's sparkline.
+    property var speedHistory: []
+
+    onSnapshotChanged: {
+        const next = speedHistory.concat([downloadSpeed])
+        speedHistory = next.length > 60 ? next.slice(next.length - 60) : next
+    }
 
     // ---- lazily fetched sections ----------------------------------------
     property var globalOptions: ({})

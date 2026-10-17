@@ -22,17 +22,41 @@ Row {
 
     spacing: Theme.spacingXS
 
-    Repeater {
-        model: Actions.GLOBAL
+    //: Pause all and Resume all share one button that flips with the state:
+    //: pause while anything runs, resume once nothing does.
+    readonly property var pauseAction: Actions.GLOBAL.find(a => a.id === "pauseAll")
+    readonly property var resumeAction: Actions.GLOBAL.find(a => a.id === "resumeAll")
+    readonly property var purgeAction: Actions.GLOBAL.find(a => a.id === "purge")
+    readonly property bool usable: !!service && service.connected && service.aria2Running
+    readonly property bool running: usable && service.activeCount > 0
+    readonly property var flipAction: running ? pauseAction : resumeAction
 
-        DankActionButton {
-            required property var modelData
+    DankActionButton {
+        iconName: actions.flipAction.icon
+        tooltipText: actions.running ? "Pause all (" + actions.service.activeCount + ")"
+                                     : "Resume all" + (actions.usable && actions.service.waitingCount > 0 ? " (" + actions.service.waitingCount + ")" : "")
+        buttonSize: 30
+        enabled: actions.usable
+        opacity: enabled ? 1 : 0.4
+        onClicked: actions.service.post(actions.flipAction.path, null, actions.flipAction.ok)
+    }
 
-            iconName: modelData.icon
-            tooltipText: Actions.tooltipFor(modelData)
-            buttonSize: 30
-            onClicked: actions.service.post(modelData.path, null, modelData.ok)
-        }
+    DankActionButton {
+        readonly property int count: actions.usable ? actions.service.stoppedCount : 0
+
+        iconName: actions.purgeAction.icon
+        tooltipText: count > 0 ? Actions.tooltipFor(actions.purgeAction) + " (" + count + ")" : "Nothing finished to clear"
+        buttonSize: 30
+        enabled: count > 0
+        opacity: enabled ? 1 : 0.4
+        onClicked: actions.service.post(actions.purgeAction.path, null, actions.purgeAction.ok)
+    }
+
+    Rectangle {
+        anchors.verticalCenter: parent.verticalCenter
+        width: 1
+        height: 18
+        color: Theme.withAlpha(Theme.outline, 0.4)
     }
 
     DankActionButton {

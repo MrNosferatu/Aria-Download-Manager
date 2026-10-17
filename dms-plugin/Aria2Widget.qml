@@ -16,7 +16,6 @@ PluginComponent {
 
     readonly property var svc: Aria2Service
     readonly property string pillMode: pluginData.pillMode || "speed"
-    readonly property bool showWhenIdle: pluginData.showWhenIdle !== false
     readonly property int popoutHeightSetting: parseInt(pluginData.popoutHeight || "540") || 540
 
     //: "popout" keeps the bar-anchored panel on left click; "window" makes the
@@ -32,40 +31,76 @@ PluginComponent {
     //: the very window we just closed.
     property bool _forcePopout: false
 
-    readonly property bool busy: svc.activeCount > 0
-    readonly property bool attention: svc.connected && !svc.aria2Running
+    readonly property bool showRing: pluginData.showProgressRing !== false
+
+    readonly property bool online: svc.connected
+    readonly property bool busy: online && svc.activeCount > 0
+    readonly property bool attention: online && !svc.aria2Running
+    //: Held work and no running work: paused or waiting downloads only. Gets
+    //: its own glyph so it never passes for idle.
+    readonly property bool held: online && !attention && !busy && svc.waitingCount > 0
 
     readonly property string barIcon: {
-        if (!svc.connected)
+        if (!online)
             return "cloud_off"
         if (attention)
             return "error"
-        // Both states keep the download glyph: the widget has to read as a
+        // Running and idle keep the download glyph: the widget has to read as a
         // downloader at a glance, and a tick mark reads as a checklist.
         if (busy)
             return "downloading"
+        if (held)
+            return svc.pausedCount > 0 ? "pause_circle" : "schedule"
         return "download"
     }
 
     readonly property color barColor: {
-        if (!svc.connected)
+        if (!online)
             return Theme.surfaceVariantText
         if (attention)
             return Theme.error
         if (busy)
             return Theme.primary
+        if (held)
+            return Theme.surfaceVariantText
         return Theme.surfaceText
     }
 
+    //: Overall progress of the running downloads for the ring, or -1 to leave
+    //: it off (nothing running, sizes unknown, or turned off in settings).
+    readonly property real ringProgress: showRing && busy ? svc.activeTotals.progress : -1
+
+    readonly property bool unseenBadge: online && !busy && svc.unseenFinished > 0
+
+    readonly property string heldText: svc.pausedCount > 0
+                                       ? svc.pausedCount + " paused"
+                                       : svc.queuedCount + " queued"
+
+    //: Words appear only when something needs saying: offline and idle are
+    //: icon-only, aria2c being down says so outright.
     readonly property string pillText: {
-        if (!svc.connected)
-            return "offline"
+        if (!online)
+            return ""
+        if (attention)
+            return "aria2c down"
         if (pillMode === "none")
             return ""
+        if (held)
+            return heldText
+        if (!busy)
+            return ""
         if (pillMode === "count")
-            return svc.activeCount + (svc.waitingCount > 0 ? "/" + (svc.activeCount + svc.waitingCount) : "")
-        return busy ? Fmt.speed(svc.downloadSpeed) : (svc.waitingCount > 0 ? svc.waitingCount + " queued" : "")
+            return String(svc.activeCount)
+        return Fmt.speed(svc.downloadSpeed)
     }
+
+    //: Count mode's second number: what is waiting behind the running ones.
+    readonly property string pillExtra: pillMode === "count" && busy && svc.waitingCount > 0
+                                        ? "+" + svc.waitingCount : ""
+
+    //: Speed changes every tick; reserving the widest it can get keeps the
+    //: pill from shoving its neighbours along the bar each second.
+    readonly property bool steadyLabel: busy && pillMode === "speed"
 
     popoutWidth: parseInt(pluginData.popoutWidth || "640") || 640
 
@@ -144,6 +179,7 @@ PluginComponent {
 
         service: root.svc
         onWindowRequested: root.showWindow()
+        onPopoutRequested: root.openPopout()
     }
 
     pillRightClickAction: (x, y, width, section, screen) => {
@@ -167,12 +203,19 @@ PluginComponent {
     ccWidgetIcon: barIcon
     ccWidgetPrimaryText: "Downloads"
     ccWidgetSecondaryText: {
-        if (!svc.connected)
+        if (!online)
             return "Manager offline"
-        if (busy)
+        if (attention)
+            return "aria2c stopped"
+        if (busy) {
+            const progress = svc.activeTotals.progress
             return svc.activeCount + " active · " + Fmt.speed(svc.downloadSpeed)
-        if (svc.waitingCount > 0)
-            return svc.waitingCount + " queued"
+                    + (progress >= 0 ? " · " + Math.floor(progress * 100) + "%" : "")
+        }
+        if (held)
+            return heldText
+        if (svc.unseenFinished > 0)
+            return svc.unseenFinished + " finished"
         return "Idle"
     }
     ccWidgetIsActive: busy
@@ -187,20 +230,43 @@ PluginComponent {
 
             spacing: Theme.spacingXS
 
-            DankIcon {
+            BarGlyph {
                 anchors.verticalCenter: parent.verticalCenter
-                name: root.barIcon
+                iconName: root.barIcon
+                tint: root.barColor
                 size: root.iconSize
+                progress: root.ringProgress
+                badge: root.unseenBadge
+                dim: !root.online
+            }
+
+            StyledText {
+                id: pillLabel
+
+                anchors.verticalCenter: parent.verticalCenter
+                text: root.pillText
+                visible: text.length > 0
+                width: root.steadyLabel ? Math.max(implicitWidth, widest.width) : implicitWidth
+                font.pixelSize: Theme.fontSizeSmall
+                font.weight: Font.Medium
                 color: root.barColor
+
+                TextMetrics {
+                    id: widest
+
+                    font: pillLabel.font
+                    // Fmt.speed never gets wider than four digits and a binary unit.
+                    text: "0000 KiB/s"
+                }
             }
 
             StyledText {
                 anchors.verticalCenter: parent.verticalCenter
-                text: root.pillText
+                text: root.pillExtra
                 visible: text.length > 0
                 font.pixelSize: Theme.fontSizeSmall
                 font.weight: Font.Medium
-                color: root.barColor
+                color: Theme.surfaceVariantText
             }
         }
     }
@@ -209,20 +275,45 @@ PluginComponent {
         Column {
             spacing: 2
 
-            DankIcon {
+            //: The vertical bar has room for a short figure only: the speed
+            //: split onto two lines, or a count. Idle and offline show nothing.
+            readonly property var parts: {
+                if (root.attention || root.pillMode === "none")
+                    return []
+                if (root.held)
+                    return [String(root.svc.waitingCount)]
+                if (!root.busy)
+                    return []
+                if (root.pillMode === "count")
+                    return [String(root.svc.activeCount)]
+                return Fmt.speed(root.svc.downloadSpeed).split(" ")
+            }
+
+            BarGlyph {
                 anchors.horizontalCenter: parent.horizontalCenter
-                name: root.barIcon
+                iconName: root.barIcon
+                tint: root.barColor
                 size: root.iconSize
+                progress: root.ringProgress
+                badge: root.unseenBadge
+                dim: !root.online
+            }
+
+            StyledText {
+                anchors.horizontalCenter: parent.horizontalCenter
+                text: parent.parts.length > 0 ? parent.parts[0] : ""
+                visible: text.length > 0
+                font.pixelSize: Theme.fontSizeSmall - 1
+                font.weight: Font.Medium
                 color: root.barColor
             }
 
             StyledText {
                 anchors.horizontalCenter: parent.horizontalCenter
-                text: root.svc.connected ? root.svc.activeCount : "–"
-                visible: root.pillMode !== "none"
-                font.pixelSize: Theme.fontSizeSmall - 1
-                font.weight: Font.Medium
-                color: root.barColor
+                text: parent.parts.length > 1 ? parent.parts[1] : ""
+                visible: text.length > 0
+                font.pixelSize: Theme.fontSizeSmall - 3
+                color: Theme.surfaceVariantText
             }
         }
     }
