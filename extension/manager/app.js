@@ -40,7 +40,16 @@ const S = {
   // whether that runs forwards. Remembered like the modes above.
   sort: localStorage.getItem('aria.sort') || 'queue',
   sortDesc: localStorage.getItem('aria.sortDesc') === 'true',
+  // The last minute of total download speed, one sample per frame, for the
+  // header's sparkline.
+  speeds: [],
+  // The download shown in the side pane on a wide window ('' for none).
+  paneGid: '',
 };
+
+//: Wide enough for rail, list and side pane; narrower falls back to tabs,
+//: chips and details that open under their row.
+const WIDE = window.matchMedia('(min-width: 1100px)');
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
@@ -202,8 +211,38 @@ function connect() {
     },
     onError(reason) {
       setPill('Manager offline', 'err', reason);
+      showTrouble(/native host/i.test(reason || '') ? 'host' : 'manager');
     },
   });
+}
+
+/* A broken link between the browser and aria2c, said plainly with the fix:
+   the native-messaging helper not registered, or the manager not running. */
+const TROUBLE = {
+  host: {
+    title: "The browser can't reach the helper",
+    text: 'Register the native-messaging helper once, then restart the browser:',
+    cmd: 'python3 -m aria_download_manager --install-native-host',
+  },
+  manager: {
+    title: "The manager isn't running",
+    text: 'The helper answered, but nothing is listening on the manager\'s socket. Start it with ./run.sh, or its systemd user unit:',
+    cmd: 'systemctl --user start aria-download-manager',
+  },
+};
+
+function showTrouble(kind) {
+  const t = TROUBLE[kind];
+  document.body.classList.toggle('offline', !!t);
+  $('#trouble').hidden = !t;
+  if (!t) return;
+  // Last known figures would read as live ones; blank them until state returns.
+  setRate('#stat-down', 0);
+  $('#stat-down').textContent = '–';
+  for (const id of ['#sb-down', '#sb-up', '#sb-left']) $(id).textContent = '';
+  $('#trouble-title').textContent = t.title;
+  $('#trouble-text').textContent = t.text;
+  $('#trouble-cmd').textContent = t.cmd;
 }
 
 function setPill(text, cls, title = '') {
@@ -223,25 +262,45 @@ function pushEvents(events, replace = false) {
 /* --------------------------------------------------------------- topbar */
 function applyState(state) {
   S.state = state;
+  showTrouble('');
   const aria2 = state.aria2 || {};
   const counts = state.counts || {};
   const busy = (counts.active ?? 0) > 0;
   if (aria2.running) {
-    setPill(busy ? 'Downloading' : 'Ready', busy ? 'busy' : 'ok',
-      `aria2c ${aria2.version || ''} · pid ${aria2.pid ?? 'external'} · ${aria2.rpc_url || ''} · up ${fmtEta(aria2.uptime)}`);
+    setPill(`aria2c ${aria2.version || ''}`.trim(), busy ? 'busy' : 'ok',
+      `pid ${aria2.pid ?? 'external'} · ${aria2.rpc_url || ''} · up ${fmtEta(aria2.uptime)}`);
   } else {
-    setPill('aria2c is not running', 'err',
+    setPill('aria2c stopped', 'err',
       aria2.last_error || 'No aria2c reachable. See the event log under Settings.');
   }
+  // aria2c down: the error and the fix above the list, which stays as it was.
+  $('#aria2-banner').hidden = !!aria2.running;
+  $('#aria2-why').textContent = aria2.last_error
+    || 'Downloads resume where they were once it is back.';
 
   const g = state.global || {};
   setRate('#stat-down', g.downloadSpeed);
   setRate('#stat-up', g.uploadSpeed);
-  const queued = (counts.waiting ?? 0) + (counts.paused ?? 0);
-  setStat('#stat-active', counts.active ?? 0);
-  setStat('#stat-waiting', queued);
-  setStat('#stat-complete', counts.complete ?? 0);
-  setStat('#stat-error', counts.error ?? 0);
+  S.speeds.push(Number(g.downloadSpeed) || 0);
+  if (S.speeds.length > 60) S.speeds.shift();
+  drawSpark();
+
+  const totals = activeTotals(state);
+  const eta = humanEta(totals.eta);
+  $('#left-cell').hidden = !(totals.left > 0);
+  $('#stat-left').textContent = `${fmtBytes(totals.left)}${eta ? ` · ${eta}` : ''}`;
+  $('#sb-down').textContent = `↓ ${fmtSpeed(g.downloadSpeed)}`;
+  $('#sb-up').textContent = `↑ ${fmtSpeed(g.uploadSpeed)}`;
+  $('#sb-left').textContent = totals.left > 0 ? `${fmtBytes(totals.left)} left${eta ? ` · ${eta}` : ''}` : '';
+
+  // One button for Pause all and Resume all: pause while anything runs,
+  // resume once nothing does.
+  const flip = $('#btn-flip');
+  const waiting = (counts.waiting ?? 0) + (counts.paused ?? 0);
+  flip.dataset.mode = busy ? 'pause' : 'resume';
+  flip.innerHTML = `${icon(busy ? 'pause' : 'play')}<span>${busy ? 'Pause all' : 'Resume all'}</span>`;
+  flip.disabled = !aria2.running || (!busy && !waiting);
+  $('#btn-purge').disabled = !(counts.stopped > 0);
 
   setCount('all', counts.total ?? (state.downloads || []).length);
   setCount('active', counts.active ?? 0);
@@ -253,9 +312,33 @@ function applyState(state) {
   const rules = state.rules || {};
   $('#rules-master').checked = !!rules.enabled;
   S.rulesEnabled = !!rules.enabled;
+  $('#rail-actions').textContent = rules.enabled ? 'on' : 'off';
+  $('#sb-actions').textContent = `Automatic actions ${rules.enabled ? 'on' : 'off'}`;
+  $('#master-hint').textContent = rules.enabled
+    ? 'Watch running downloads and step in when one stalls.'
+    : 'Off — none of the actions below will run. You can still edit them.';
 
   renderDownloads();
+  renderPane();
   renderProcInfo();
+}
+
+//: The header's sparkline: the last minute of download speed, newest right.
+function drawSpark() {
+  const values = S.speeds;
+  const svg = $('#spark');
+  if (!svg) return;
+  if (values.length < 2) {
+    $('.line', svg).setAttribute('d', '');
+    $('.area', svg).setAttribute('d', '');
+    return;
+  }
+  const peak = Math.max(1, ...values);
+  const step = 200 / 59;
+  const x0 = 200 - (values.length - 1) * step;
+  const pts = values.map((v, i) => `${(x0 + i * step).toFixed(1)} ${(34 - 32 * (v / peak)).toFixed(1)}`);
+  $('.line', svg).setAttribute('d', `M${pts.join(' L')}`);
+  $('.area', svg).setAttribute('d', `M${x0.toFixed(1)} 36 L${pts.join(' L')} L200 36 Z`);
 }
 
 function setRate(sel, value) {
@@ -271,9 +354,14 @@ function setStat(sel, value) {
   node.parentElement.classList.toggle('is-zero', !value);
 }
 
+//: Counts sit on the rail and on the narrow-window chips alike. A filter with
+//: nothing in it is dimmed rather than hidden, so the list never reflows.
 function setCount(filter, value) {
-  const node = $(`#count-${filter}`);
-  if (node) node.textContent = value ? String(value) : '';
+  for (const node of $$(`[data-count="${filter}"]`)) {
+    node.textContent = value ? String(value) : '';
+    const host = node.closest('[data-filter]');
+    if (host) host.classList.toggle('is-zero', !value && filter !== 'all');
+  }
 }
 
 /* -------------------------------------------------------------- icons */
@@ -291,6 +379,10 @@ const ICONS = {
   open: 'M19 19H5V5h7V3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14c1.1 0 2-.9 2-2v-7h-2v7zM14 3v2h3.59l-9.83 9.83 1.41 1.41L19 6.41V10h2V3h-7z',
   chevron: 'M10 6 8.59 7.41 13.17 12l-4.58 4.59L10 18l6-6z',
   check: 'M9 16.17 4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z',
+  folder: 'M20 6h-8l-2-2H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2zm0 12H4V8h16v10z',
+  more: 'M12 8a2 2 0 1 0 0-4 2 2 0 0 0 0 4zm0 2a2 2 0 1 0 0 4 2 2 0 0 0 0-4zm0 6a2 2 0 1 0 0 4 2 2 0 0 0 0-4z',
+  info: 'M11 7h2v2h-2zm0 4h2v6h-2zm1-9a10 10 0 1 0 0 20 10 10 0 0 0 0-20zm0 18a8 8 0 1 1 0-16 8 8 0 0 1 0 16z',
+  link: 'M3.9 12c0-1.71 1.39-3.1 3.1-3.1h4V7H7a5 5 0 0 0 0 10h4v-1.9H7c-1.71 0-3.1-1.39-3.1-3.1zM8 13h8v-2H8v2zm9-6h-4v1.9h4c1.71 0 3.1 1.39 3.1 3.1s-1.39 3.1-3.1 3.1h-4V17h4a5 5 0 0 0 0-10z',
   download: 'M5 20h14v-2H5v2zM19 9h-4V3H9v6H5l7 7 7-7z',
   search: 'M15.5 14h-.79l-.28-.27A6.47 6.47 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z',
   wand: 'M7.5 5.6 10 7 8.6 4.5 10 2 7.5 3.4 5 2l1.4 2.5L5 7zm12 9.8L17 14l1.4 2.5L17 19l2.5-1.4L22 19l-1.4-2.5L22 14zM22 2l-2.5 1.4L17 2l1.4 2.5L17 7l2.5-1.4L22 7l-1.4-2.5zm-7.63 5.29a.996.996 0 0 0-1.41 0L1.29 18.96a.996.996 0 0 0 0 1.41l2.34 2.34c.39.39 1.02.39 1.41 0L16.7 11.05a.996.996 0 0 0 0-1.41l-2.33-2.35zm-1.03 5.49-2.12-2.12 2.44-2.44 2.12 2.12-2.44 2.44z',
@@ -356,9 +448,17 @@ function renderDownloads() {
   const container = $('#downloads');
   $('#empty').hidden = list.length > 0;
   if (!list.length) {
-    if (S.search) setEmpty('No match', 'Nothing here has that in its name.');
-    else if (S.filter !== 'all') setEmpty(`No ${statusLabel(S.filter).toLowerCase()} downloads`, 'Try another filter.');
-    else setEmpty('Nothing here yet', 'Add a download, or start one in the browser and it lands here.');
+    // Every empty list says why it is empty and what to do next.
+    const EMPTY = {
+      all: ['No downloads yet', 'Click a download link on any site, paste one with Add, or right-click a link → Download link.'],
+      active: ['Nothing is downloading right now', 'Paused and queued downloads are under their own filters.'],
+      waiting: ['The queue is empty', 'Downloads wait here when more are added than run at once.'],
+      paused: ['Nothing is paused', ''],
+      complete: ['Nothing finished since aria2c started', 'aria2 forgets finished downloads when it restarts. History keeps them.'],
+      error: ['Nothing has failed', 'Downloads that stop with an error land here, with the reason and a Retry button.'],
+    };
+    if (S.search) setEmpty(`Nothing matches “${S.search}”`, 'Older downloads that aria2 no longer holds are in History.');
+    else setEmpty(...(EMPTY[S.filter] || EMPTY.all));
   }
 
   const seen = new Set();
@@ -391,12 +491,14 @@ function buildRow(gid) {
   row._refs = {
     name: $('.dl-name', row),
     badges: $('.dl-badges', row),
+    figure: $('.dl-figure', row),
     fill: $('.bar-fill', row),
     meta: $('.dl-meta', row),
     actions: $('.dl-actions', row),
+    more: $('.dl-more', row),
     detail: $('.dl-detail', row),
     confirm: $('.dl-confirm', row),
-    chev: $('.chev', row),
+    tile: $('.dl-tile', row),
     pick: $('.dl-pick', row),
   };
   row._refs.pick.addEventListener('change', () => {
@@ -405,80 +507,88 @@ function buildRow(gid) {
     renderBulkBar();
     row.classList.toggle('is-selected', row._refs.pick.checked);
   });
-  row._refs.chev.innerHTML = icon('chevron');
-  row._refs.chev.addEventListener('click', () => toggleDetail(gid));
+  row._refs.tile.addEventListener('click', () => toggleDetail(gid));
   row._refs.name.addEventListener('click', () => toggleDetail(gid));
   row._actionKey = '';
   return row;
 }
 
-function updateRow(row, dl) {
-  const r = row._refs;
-  row.className = `dl is-${dl.status}`;
-  if (r.name.textContent !== dl.name) {
-    r.name.textContent = dl.name;
-    r.name.title = dl.path || dl.firstUri || dl.name;
-  }
-
-  const tags = [`<span class="tag ${STATUS_TAG[dl.status] || ''}">${statusLabel(dl.status)}</span>`];
+//: The one badge worth a glance: a missing file, a rule about to act, a torrent.
+//: The status itself is the tile's colour and the meta line, not a badge.
+function badgesFor(dl) {
+  const tags = [];
   if (dl.fileExists === false) tags.push('<span class="tag tag-missing">File missing</span>');
-  // The metadata fetch disappears by itself once the torrent it describes
-  // starts, so it is labelled for the wait rather than as a download.
-  if (dl.isMetadata) tags.push('<span class="tag">Fetching details</span>');
-  else if (dl.isTorrent) tags.push(`<span class="tag">${dl.engine === 'qbittorrent' ? 'Torrent · qBittorrent' : 'Torrent'}</span>`);
-  if (dl.seeder) tags.push('<span class="tag tag-complete">Seeding</span>');
   const ruleState = S.state?.rules?.downloads?.[dl.gid] || {};
   for (const [name, info] of Object.entries(ruleState)) {
     if (info.acting) tags.push(`<span class="tag tag-rule">${escapeHtml(name)} acting</span>`);
-    else if (info.triggers) tags.push(`<span class="tag tag-rule">${escapeHtml(name)} ×${info.triggers}</span>`);
+    else if (info.elapsed > 0 && info.threshold) {
+      const left = Math.max(0, info.threshold - info.elapsed).toFixed(1);
+      tags.push(`<span class="tag tag-rule">${escapeHtml(name)} in ${left} s</span>`);
+    }
   }
-  const tagHtml = tags.join('');
-  if (r.badges._html !== tagHtml) { r.badges.innerHTML = tagHtml; r.badges._html = tagHtml; }
+  if (dl.seeder) tags.push('<span class="tag tag-complete">Seeding</span>');
+  else if (dl.isTorrent && !dl.isMetadata) tags.push(`<span class="tag">${dl.engine === 'qbittorrent' ? 'qBittorrent' : 'Torrent'}</span>`);
+  return tags.length > 2 ? [...tags.slice(0, 1), `<span class="tag">+${tags.length - 1}</span>`] : tags.slice(0, 2);
+}
 
-  r.fill.style.width = `${dl.progress}%`;
-  row.style.setProperty('--p', `${dl.progress}%`);
-  r.pick.hidden = !S.selecting;
-  r.pick.checked = S.selection.has(dl.gid);
-  row.classList.toggle('is-selected', S.selecting && r.pick.checked);
-
-  const bits = [
-    `<span class="primary">${fmtBytes(dl.completed)} of ${dl.total ? fmtBytes(dl.total) : '?'}`
-    + ` · ${dl.progress.toFixed(1)}%</span>`,
-  ];
+//: Three facts at most — size, speed, time left — or the one sentence that
+//: matters: why it failed, that it is connecting, that peers are being asked.
+function metaFor(dl) {
+  if (dl.status === 'error') return `<span class="err">${escapeHtml(dl.errorMessage || 'Failed')}</span>`;
+  if (dl.isMetadata) return `Asking peers for the file list · ${dl.connections || 0} connected`;
+  if (dl.status === 'active' && !(dl.completed > 0) && !(dl.downloadSpeed > 0)) return 'Connecting…';
+  if (dl.verifyPending || (dl.verifiedLength > 0 && dl.status === 'active' && dl.completed >= dl.total)) {
+    const pct = dl.total ? Math.floor((dl.verifiedLength / dl.total) * 100) : 0;
+    return `Verifying the file · ${pct}%`;
+  }
+  const bits = [dl.total ? `${fmtBytes(dl.completed)} of ${fmtBytes(dl.total)}` : fmtBytes(dl.completed)];
   if (dl.status === 'active') {
-    // aria2's figure is a moving average; the measured one is bytes actually
-    // written since the last tick. Both show when they disagree, because that
-    // gap is what makes a stall look like it is still running.
     // aria2's own figure is a long average that lags a stall; the measured
     // one is what actually arrived. One number, the truer one.
     const measured = dl.engine === 'qbittorrent' ? null : dl.measuredSpeed;
     const disagrees = measured != null
       && Math.abs(measured - dl.downloadSpeed) > Math.max(65536, dl.downloadSpeed * 0.35);
-    bits.push(disagrees
-      ? `<span title="Measured over the last few seconds; the engine's own average says ${fmtSpeed(dl.downloadSpeed)}">↓ ${fmtSpeed(measured)}</span>`
-      : `↓ ${fmtSpeed(dl.downloadSpeed)}`);
-    if (dl.isTorrent) bits.push(`↑ ${fmtSpeed(dl.uploadSpeed)}`);
-    bits.push(`${fmtEta(dl.eta)} left`);
-    bits.push(`${dl.connections} connection${dl.connections === 1 ? '' : 's'}`);
-    if (dl.isTorrent) bits.push(`${dl.numSeeders} seeders`);
+    bits.push(fmtSpeed(disagrees ? measured : dl.downloadSpeed));
+    if (dl.eta != null && dl.eta >= 0) bits.push(`${humanEta(dl.eta)} left`);
   }
-  if (dl.status === 'waiting' && dl.queuePosition != null) bits.push(`#${dl.queuePosition + 1} in queue`);
-  if (dl.fileExists === false && dl.path) {
-    bits.push(`<span class="err">No longer at ${escapeHtml(dl.path)}</span>`);
+  if (dl.status === 'waiting') bits.push(dl.queuePosition != null ? `#${dl.queuePosition + 1} in queue` : 'Waiting for a free slot');
+  if (dl.status === 'paused') bits.unshift('Paused');
+  if (dl.status === 'complete' && dl.finishedAt) bits.push(`finished ${new Date(dl.finishedAt * 1000).toLocaleString()}`);
+  if (dl.fileExists === false && dl.path) bits.push(`no longer at ${escapeHtml(dl.path)}`);
+  return bits.join(' · ');
+}
+
+function updateRow(row, dl) {
+  const r = row._refs;
+  row.className = `dl is-${dl.status}${dl.fileExists === false ? ' is-missing' : ''}`;
+  row.classList.toggle('is-current', S.paneGid === dl.gid && WIDE.matches);
+  const shownName = dl.isMetadata ? `Magnet · ${dl.name}` : dl.name;
+  if (r.name.textContent !== shownName) {
+    r.name.textContent = shownName;
+    r.name.title = dl.path || dl.firstUri || dl.name;
   }
-  if (dl.errorMessage) bits.push(`<span class="err">${escapeHtml(dl.errorMessage)}</span>`);
-  for (const [name, info] of Object.entries(ruleState)) {
-    if (info.elapsed > 0 && info.threshold) {
-      bits.push(`<span class="rulehint">${escapeHtml(name)} ${info.elapsed.toFixed(1)}/${info.threshold}s</span>`);
-    }
-  }
-  const metaHtml = bits.map((b) => `<span>${b}</span>`).join('');
+  const kind = dl.isMetadata || (dl.isTorrent && !dl.name) ? fileKind('x.torrent') : fileKind(dl.name);
+  const tilePath = $('path', r.tile);
+  if (tilePath.getAttribute('d') !== kind.path) tilePath.setAttribute('d', kind.path);
+  r.tile.title = `${statusLabel(dl.status)} · ${kind.label} — details`;
+
+  const tagHtml = badgesFor(dl).join('');
+  if (r.badges._html !== tagHtml) { r.badges.innerHTML = tagHtml; r.badges._html = tagHtml; }
+  r.figure.textContent = dl.status === 'complete' ? '' : dl.status === 'waiting' ? '' : `${Math.floor(dl.progress || 0)}%`;
+
+  r.fill.style.width = `${dl.isMetadata ? 30 : dl.progress}%`;
+  r.pick.hidden = !S.selecting;
+  r.pick.checked = S.selection.has(dl.gid);
+  row.classList.toggle('is-selected', S.selecting && r.pick.checked);
+
+  const metaHtml = metaFor(dl);
   if (r.meta._html !== metaHtml) { r.meta.innerHTML = metaHtml; r.meta._html = metaHtml; }
 
-  if (row._actionKey !== dl.status) {
-    row._actionKey = dl.status;
-    r.actions.innerHTML = '';
-    for (const btn of actionsFor(dl)) r.actions.append(btn);
+  const key = `${dl.status}|${dl.fileExists}|${dl.isMetadata}`;
+  if (row._actionKey !== key) {
+    row._actionKey = key;
+    r.actions.replaceChildren(...actionsFor(dl));
+    if (!r.more.hidden) r.more.replaceChildren(...moreFor(dl));
   }
 }
 
@@ -496,14 +606,18 @@ function askRemove(dl) {
   const gone = dl.fileExists === false;
   host.innerHTML = `<span class="question">${gone
     ? 'The file is already gone. Remove this entry?'
-    : 'Remove this download. Keep the file, or delete it too?'}</span>`;
+    : 'Remove this download. Keep the file on disk?'}</span>`;
   const cancel = mkBtn2('Cancel', 'btn btn-sm btn-text', () => { host.hidden = true; });
-  const keep = mkBtn2('Keep file', 'btn btn-sm',
-    () => { host.hidden = true; removeDownload(dl.gid, false, 'Removed, file kept'); });
-  const del = mkBtn2('Delete file', 'btn btn-sm btn-danger btn-primary',
-    () => { host.hidden = true; removeDownload(dl.gid, true, 'Removed with its file'); });
-  del.disabled = gone;
-  host.append(cancel, keep, del);
+  if (gone) {
+    host.append(cancel, mkBtn2('Remove entry', 'btn btn-sm btn-primary',
+      () => { host.hidden = true; removeDownload(dl.gid, false, 'Removed'); }));
+  } else {
+    const keep = mkBtn2('Keep file', 'btn btn-sm btn-primary',
+      () => { host.hidden = true; removeDownload(dl.gid, false, 'Removed, file kept'); });
+    const del = mkBtn2('Delete file', 'btn btn-sm btn-danger',
+      () => { host.hidden = true; removeDownload(dl.gid, true, 'Removed with its file'); });
+    host.append(cancel, del, keep);
+  }
   host.hidden = false;
 }
 
@@ -525,41 +639,97 @@ function mkBtn(iconName, title, handler, cls = 'btn btn-icon btn-sm') {
   return btn;
 }
 
+function mkAction(iconName, label, handler, cls = 'btn btn-sm') {
+  const btn = document.createElement('button');
+  btn.className = cls;
+  btn.innerHTML = `${icon(iconName)}<span>${escapeHtml(label)}</span>`;
+  btn.title = label;
+  btn.addEventListener('click', handler);
+  return btn;
+}
+
+const post = (path, body, ok) => act(path, { method: 'POST', body }, ok).catch(() => {});
+
+//: The one action that fits the state, labelled — the rest are in ⋮.
+function primaryFor(dl) {
+  const gid = dl.gid;
+  if (dl.isMetadata) return null;
+  if (dl.status === 'active') return ['pause', 'Pause', () => post(`/api/download/${gid}/pause`)];
+  if (dl.status === 'paused') return ['play', 'Resume', () => post(`/api/download/${gid}/resume`)];
+  if (dl.status === 'waiting') {
+    return ['top', 'Start next', () => post(`/api/download/${gid}/position`, { pos: 0, how: 'POS_SET' })];
+  }
+  if (dl.status === 'complete' && dl.fileExists !== false && dl.path) {
+    return ['open', 'Open', () => post(`/api/download/${gid}/open`, { folder: false })];
+  }
+  if (dl.status === 'error') return ['retry', 'Retry', () => post(`/api/download/${gid}/retry`, null, 'Added again')];
+  if (dl.status === 'complete' || dl.status === 'removed') {
+    return ['retry', 'Again', () => post(`/api/download/${gid}/retry`, null, 'Added again')];
+  }
+  return null;
+}
+
 function actionsFor(dl) {
+  const out = [];
+  const primary = primaryFor(dl);
+  if (primary) out.push(mkAction(primary[0], primary[1], primary[2]));
+  out.push(mkBtn('more', 'More actions', () => toggleMore(dl.gid)));
+  return out;
+}
+
+//: Everything else this row can do, with words. What does not apply to the
+//: state is left out rather than greyed.
+function moreFor(dl) {
   const gid = dl.gid;
   const out = [];
-  if (dl.status === 'active' || dl.status === 'waiting') {
-    out.push(mkBtn('pause', 'Pause', () => act(`/api/download/${gid}/pause`, { method: 'POST' })));
-  }
+  const queued = dl.status === 'waiting' || dl.status === 'paused';
+  const live = queued || dl.status === 'active';
+  if (dl.status === 'waiting') out.push(mkAction('pause', 'Pause', () => post(`/api/download/${gid}/pause`)));
   if (dl.status === 'paused') {
-    out.push(mkBtn('play', 'Resume', () => act(`/api/download/${gid}/resume`, { method: 'POST' })));
+    out.push(mkAction('top', 'Move to front',
+      () => post(`/api/download/${gid}/position`, { pos: 0, how: 'POS_SET' })));
   }
-  if (dl.status === 'waiting' || dl.status === 'paused') {
-    out.push(mkBtn('top', 'Move to the front of the queue',
-      () => act(`/api/download/${gid}/position`, { method: 'POST', body: { pos: 0, how: 'POS_SET' } })));
-    out.push(mkBtn('up', 'Move up',
-      () => act(`/api/download/${gid}/position`, { method: 'POST', body: { pos: -1, how: 'POS_CUR' } })));
-    out.push(mkBtn('down', 'Move down',
-      () => act(`/api/download/${gid}/position`, { method: 'POST', body: { pos: 1, how: 'POS_CUR' } })));
+  if (queued) {
+    out.push(mkAction('up', 'Move up', () => post(`/api/download/${gid}/position`, { pos: -1, how: 'POS_CUR' })));
+    out.push(mkAction('down', 'Move down', () => post(`/api/download/${gid}/position`, { pos: 1, how: 'POS_CUR' })));
   }
-  if (dl.status === 'complete' && dl.path && dl.fileExists !== false) {
-    out.push(mkBtn('open', 'Open the file', () => window.open(`file://${dl.path}`, '_blank')));
+  if ((dl.dir || dl.path) && dl.fileExists !== false) {
+    out.push(mkAction('folder', 'Show in folder', () => post(`/api/download/${gid}/open`, { folder: true })));
   }
-  if (dl.status === 'error' || dl.status === 'complete' || dl.status === 'removed') {
-    out.push(mkBtn('retry', 'Download again with the same links and options',
-      () => act(`/api/download/${gid}/retry`, { method: 'POST' }, 'Added again')));
+  if (dl.firstUri) {
+    out.push(mkAction('link', 'Copy link', () => navigator.clipboard.writeText(dl.firstUri)
+      .then(() => toast('Link copied', 'ok'), () => {})));
   }
+  if (dl.status === 'complete' && dl.fileExists !== false) {
+    out.push(mkAction('retry', 'Download again', () => post(`/api/download/${gid}/retry`, null, 'Added again')));
+  }
+  out.push(mkAction('info', S.expanded.has(gid) || S.paneGid === gid ? 'Hide details' : 'Details', () => {
+    toggleMore(gid);
+    toggleDetail(gid);
+  }));
   // A download still in flight is being cancelled (a cross); one that has
   // stopped is being thrown away (the bin). A half-written part file is never
   // worth keeping, so cancelling takes it along.
-  const live = dl.status === 'active' || dl.status === 'waiting' || dl.status === 'paused';
-  out.push(mkBtn(live ? 'close' : 'trash',
-    live ? 'Cancel and remove' : 'Remove…',
-    () => (live
-      ? removeDownload(gid, true, 'Cancelled and cleaned up')
-      : askRemove(dl)),
-    'btn btn-icon btn-sm btn-danger'));
+  out.push(mkAction(live ? 'close' : 'trash', live ? 'Cancel and remove' : 'Remove…', () => {
+    toggleMore(gid);
+    if (live) removeDownload(gid, true, 'Cancelled and cleaned up');
+    else askRemove(dl);
+  }, 'btn btn-sm btn-danger'));
   return out;
+}
+
+function toggleMore(gid) {
+  const row = S.rows.get(gid);
+  if (!row) return;
+  const more = row._refs.more;
+  // One menu open at a time; opening a second closes the first.
+  for (const [other, r] of S.rows) if (other !== gid) r._refs.more.hidden = true;
+  if (more.hidden) {
+    const dl = (S.state?.downloads || []).find((d) => d.gid === gid);
+    if (!dl) return;
+    more.replaceChildren(...moreFor(dl));
+  }
+  more.hidden = !more.hidden;
 }
 
 const capitalise = (text) => {
@@ -572,6 +742,16 @@ const escapeHtml = (text) => String(text ?? '').replace(/[&<>"']/g,
 
 /* ------------------------------------------------------------- detail */
 function toggleDetail(gid) {
+  if (WIDE.matches) {
+    // A wide window shows the details beside the list instead of under the row.
+    S.paneGid = S.paneGid === gid ? '' : gid;
+    S.detailDrafts.delete(gid);
+    $('#pane-body').innerHTML = S.paneGid ? '<p class="hint">Loading…</p>' : '';
+    renderPane();
+    for (const [g, r] of S.rows) r.classList.toggle('is-current', g === S.paneGid);
+    if (S.paneGid) refreshPane();
+    return;
+  }
   const row = S.rows.get(gid);
   if (!row) return;
   const open = S.expanded.has(gid);
@@ -579,14 +759,60 @@ function toggleDetail(gid) {
     S.expanded.delete(gid);
     S.detailDrafts.delete(gid);
     row._refs.detail.hidden = true;
-    row._refs.chev.classList.remove('open');
+    row._refs.tile.classList.remove('open');
   } else {
     S.expanded.add(gid);
     row._refs.detail.hidden = false;
-    row._refs.chev.classList.add('open');
+    row._refs.tile.classList.add('open');
     row._refs.detail.innerHTML = '<p class="hint">Loading…</p>';
     refreshDetail(gid);
   }
+}
+
+//: The side pane's head: the selected download's tile, name, state and its
+//: actions with words. Repainted on every frame; the body refreshes on a timer.
+function renderPane() {
+  const dl = S.paneGid && (S.state?.downloads || []).find((d) => d.gid === S.paneGid);
+  if (S.paneGid && !dl) S.paneGid = '';
+  $('#pane-empty').hidden = !!dl;
+  $('#pane-head').hidden = !dl;
+  $('#pane-body').hidden = !dl;
+  if (!dl) return;
+  const kind = dl.isMetadata ? fileKind('x.torrent') : fileKind(dl.name);
+  $('#pane-tile').className = `dl-tile is-${dl.status}`;
+  $('path', $('#pane-tile')).setAttribute('d', kind.path);
+  $('#pane-name').textContent = dl.isMetadata ? `Magnet · ${dl.name}` : dl.name;
+  $('#pane-name').title = dl.path || dl.name;
+  $('#pane-status').innerHTML = `${statusLabel(dl.status)}${dl.status === 'complete' ? '' : ` · ${Math.floor(dl.progress || 0)}%`}`;
+  const key = `${dl.gid}|${dl.status}|${dl.fileExists}`;
+  if ($('#pane-actions')._key !== key) {
+    $('#pane-actions')._key = key;
+    const primary = primaryFor(dl);
+    const live = ['active', 'waiting', 'paused'].includes(dl.status);
+    const buttons = [];
+    if (primary) buttons.push(mkAction(primary[0], primary[1], primary[2], 'btn btn-sm btn-tonal'));
+    if ((dl.dir || dl.path) && dl.fileExists !== false) {
+      buttons.push(mkAction('folder', 'Folder', () => post(`/api/download/${dl.gid}/open`, { folder: true }), 'btn btn-sm btn-outline'));
+    }
+    buttons.push(mkBtn(live ? 'close' : 'trash', live ? 'Cancel and remove' : 'Remove…', () => {
+      if (live) removeDownload(dl.gid, true, 'Cancelled and cleaned up');
+      else askRemove(dl);
+    }, 'btn btn-icon btn-sm btn-danger'));
+    $('#pane-actions').replaceChildren(...buttons);
+  }
+}
+
+async function refreshPane() {
+  const gid = S.paneGid;
+  if (!gid) return;
+  let data;
+  try {
+    data = await api(`/api/download/${gid}`);
+  } catch (err) {
+    $('#pane-body').innerHTML = `<p class="hint err">${escapeHtml(err.message)}</p>`;
+    return;
+  }
+  if (S.paneGid === gid) renderDetail($('#pane-body'), gid, data);
 }
 
 async function refreshDetail(gid) {
@@ -825,7 +1051,10 @@ function buildDownloadOptions(gid, opts, isTorrent, qb, status) {
   return block;
 }
 
-setInterval(() => { for (const gid of S.expanded) refreshDetail(gid); }, 2000);
+setInterval(() => {
+  for (const gid of S.expanded) refreshDetail(gid);
+  if (S.paneGid) refreshPane();
+}, 2000);
 
 /* ------------------------------------------------------------ add dialog */
 function setAddMode(mode) {
@@ -1398,24 +1627,34 @@ function renderHistory() {
   const rows = sortHistory(data.entries || []);
   $('#empty').hidden = rows.length > 0;
   if (!rows.length) setEmpty('No history yet', 'Finished downloads are remembered here, even after a restart.');
+  // Same shape as a download row: tile, name, one line, one action and the
+  // rest beside it — Open when the file is there, Again when it is not.
   host.innerHTML = rows.map((e) => {
-    const tag = e.status === 'complete' ? 'tag-complete'
-      : e.status === 'error' ? 'tag-error' : '';
-    return `<article class="job state-${e.status}">
-      <div class="hist-row">
-        <span class="job-name">${escapeHtml(e.name || e.key)}</span>
-        <span class="tag ${tag}">${statusLabel(e.status)}</span>
-        <span class="spacer"></span>
-        <span class="job-actions">
-          ${e.url ? `<button class="btn btn-icon btn-sm" data-hist="readd" data-key="${escapeHtml(e.key)}" title="Download again" aria-label="Download again">${icon('retry')}</button>` : ''}
-          <button class="btn btn-icon btn-sm btn-danger" data-hist="remove" data-key="${escapeHtml(e.key)}" title="Forget this entry" aria-label="Forget this entry">${icon('trash')}</button>
-        </span>
-      </div>
-      <div class="job-meta">
-        <span>${fmtBytes(e.completed)}${e.total && e.total !== e.completed ? ` of ${fmtBytes(e.total)}` : ''}</span>
-        <span>${e.finished_at ? new Date(e.finished_at * 1000).toLocaleString() : ''}</span>
-        ${e.path ? `<span title="${escapeHtml(e.path)}">${escapeHtml(e.dir || '')}</span>` : ''}
-        ${e.error ? `<span class="err">${escapeHtml(e.error)}</span>` : ''}
+    const kind = fileKind(e.name || e.key);
+    const missing = e.file_exists === false;
+    const failed = e.status === 'error';
+    const meta = [
+      `${fmtBytes(e.completed)}${e.total && e.total !== e.completed ? ` of ${fmtBytes(e.total)}` : ''}`,
+      e.finished_at ? new Date(e.finished_at * 1000).toLocaleString() : '',
+      e.dir ? escapeHtml(e.dir.replace(/^\/home\/[^/]+/, '~')) : '',
+    ].filter(Boolean).join(' · ');
+    const key = escapeHtml(e.key);
+    const primary = failed || missing
+      ? (e.url ? `<button class="btn btn-sm" data-hist="readd" data-key="${key}">${icon('retry')}${failed ? 'Retry' : 'Again'}</button>` : '')
+      : `<button class="btn btn-sm" data-hist="open" data-key="${key}">${icon('open')}Open</button>`;
+    return `<article class="dl is-${failed ? 'error' : missing ? 'missing' : 'complete'}">
+      <div class="dl-main">
+        <span class="dl-tile" aria-hidden="true"><svg class="ico" viewBox="0 0 24 24"><path d="${kind.path}"/></svg></span>
+        <div class="dl-body">
+          <div class="dl-title"><span class="dl-name" title="${escapeHtml(e.path || e.name || '')}">${escapeHtml(e.name || e.key)}</span>
+            <span class="dl-badges">${missing ? '<span class="tag tag-missing">File missing</span>' : ''}</span></div>
+          <div class="dl-meta">${failed ? `<span class="err">${escapeHtml(e.error || 'Failed')}</span>` : meta}</div>
+        </div>
+        <div class="dl-actions">
+          ${primary}
+          ${!missing && !failed ? `<button class="btn btn-icon btn-sm" data-hist="folder" data-key="${key}" title="Show in folder" aria-label="Show in folder">${icon('folder')}</button>` : ''}
+          <button class="btn btn-icon btn-sm btn-danger" data-hist="remove" data-key="${key}" title="Forget this entry" aria-label="Forget this entry">${icon('trash')}</button>
+        </div>
       </div>
     </article>`;
   }).join('');
@@ -1423,12 +1662,14 @@ function renderHistory() {
   for (const btn of $$('[data-hist]', host)) {
     btn.addEventListener('click', async () => {
       const key = btn.dataset.key;
-      if (btn.dataset.hist === 'readd') {
-        await act('/api/history/readd', { method: 'POST', body: { key } }, 'Added again');
-      } else {
-        await act('/api/history/remove', { method: 'POST', body: { key } });
-      }
-      loadHistory();
+      const what = btn.dataset.hist;
+      try {
+        if (what === 'readd') await act('/api/history/readd', { method: 'POST', body: { key } }, 'Added again');
+        else if (what === 'open') await act('/api/history/open', { method: 'POST', body: { key, folder: false } });
+        else if (what === 'folder') await act('/api/history/open', { method: 'POST', body: { key, folder: true } });
+        else await act('/api/history/remove', { method: 'POST', body: { key } });
+      } catch { return; }
+      if (what === 'readd' || what === 'remove') loadHistory();
     });
   }
 }
@@ -1489,7 +1730,6 @@ async function loadRules() {
 function renderRules() {
   const host = $('#rules-list');
   host.innerHTML = '';
-  $('#rules-badge').textContent = S.rules.filter((r) => r.enabled !== false).length;
 
   if (!S.rules.length) {
     host.innerHTML = `<p class="empty">${icon('wand')}<b>No actions yet</b><span>A common one pauses and resumes a download that stalls under 50 KiB/s for 3 seconds. Add one to start.</span></p>`;
@@ -1790,8 +2030,25 @@ async function runBulkRemove(keepFinishedFiles) {
 }
 
 /* ------------------------------------------------------------------ wire */
+//: One filter, whichever control picked it: a rail entry or a narrow-window chip.
+function setFilter(filter) {
+  S.filter = filter;
+  $$('[data-filter]').forEach((c) => c.classList.toggle('active', c.dataset.filter === filter));
+  for (const [, row] of S.rows) row.remove();
+  S.rows.clear();
+  $('#downloads').innerHTML = '';
+  S.selection.clear();
+  renderBulkBar();
+  renderSortControl();
+  if (S.filter === 'history') loadHistory();
+  else { $('#history-bar').hidden = true; renderDownloads(); }
+}
+
 function switchTab(name) {
   $$('.tab').forEach((t) => t.classList.toggle('active', t.dataset.tab === name));
+  $$('.rail [data-tab]').forEach((t) => t.classList.toggle('active', t.dataset.tab === name));
+  $$('.rail [data-filter]').forEach((t) => t.classList.toggle('active', name === 'downloads' && t.dataset.filter === S.filter));
+  document.body.dataset.tab = name;
   $$('.tabpane').forEach((p) => p.classList.toggle('active', p.id === `tab-${name}`));
   if (name === 'settings') { loadGlobalOptions(); loadRouting(); }
   if (name === 'rules') loadRules();
@@ -1807,19 +2064,26 @@ function init() {
   setAddMode(S.addMode);
   setSettingsMode(S.settingsMode);
 
-  $$('.tab').forEach((tab) => tab.addEventListener('click', () => switchTab(tab.dataset.tab)));
-  $$('.filterbar .chip').forEach((chip) => chip.addEventListener('click', () => {
-    $$('.filterbar .chip').forEach((c) => c.classList.toggle('active', c === chip));
-    S.filter = chip.dataset.filter;
-    for (const [, row] of S.rows) row.remove();
-    S.rows.clear();
-    $('#downloads').innerHTML = '';
-    S.selection.clear();
-    renderBulkBar();
-    renderSortControl();
-    if (S.filter === 'history') loadHistory();
-    else { $('#history-bar').hidden = true; renderDownloads(); }
+  $$('.tab, .rail [data-tab]').forEach((tab) => tab.addEventListener('click', () => switchTab(tab.dataset.tab)));
+  $$('[data-filter]').forEach((chip) => chip.addEventListener('click', () => {
+    switchTab('downloads');
+    setFilter(chip.dataset.filter);
   }));
+  $('#btn-add-rail').addEventListener('click', openAdd);
+  $('#pane-close').addEventListener('click', () => { if (S.paneGid) toggleDetail(S.paneGid); });
+  // Crossing the wide/narrow line moves the details between pane and row.
+  WIDE.addEventListener('change', () => {
+    if (S.paneGid && !WIDE.matches) { const gid = S.paneGid; S.paneGid = ''; renderPane(); toggleDetail(gid); }
+    for (const gid of [...S.expanded]) if (WIDE.matches) { toggleDetail(gid); toggleDetail(gid); }
+  });
+  $('#trouble-retry').addEventListener('click', () => {
+    api('/api/state').then(applyState).catch((err) => toast(err.message, 'error'));
+  });
+  $('#trouble-copy').addEventListener('click', () => {
+    navigator.clipboard.writeText($('#trouble-cmd').textContent).then(() => toast('Copied', 'ok'), () => {});
+  });
+  $('#banner-restart').addEventListener('click', () => post('/api/aria2/restart', null, 'aria2c restarted'));
+  $('#banner-log').addEventListener('click', () => revealLog());
   $('#sort-field').addEventListener('change', (e) => setSort(e.target.value));
   $('#sort-dir').addEventListener('click', () => {
     const field = $('#sort-field').value;
@@ -1867,8 +2131,11 @@ function init() {
   for (const btn of $$('#add-mode [data-mode]')) btn.addEventListener('click', () => setAddMode(btn.dataset.mode));
   for (const btn of $$('#settings-mode [data-mode]')) btn.addEventListener('click', () => setSettingsMode(btn.dataset.mode));
 
-  $('#btn-pause-all').addEventListener('click', () => act('/api/global/pause-all', { method: 'POST' }, 'Paused everything'));
-  $('#btn-resume-all').addEventListener('click', () => act('/api/global/resume-all', { method: 'POST' }, 'Resumed everything'));
+  $('#btn-flip').addEventListener('click', (e) => {
+    const pause = e.currentTarget.dataset.mode === 'pause';
+    post(pause ? '/api/global/pause-all' : '/api/global/resume-all', null,
+      pause ? 'Paused everything' : 'Resumed everything');
+  });
   $('#btn-purge').addEventListener('click', () => act('/api/global/purge', { method: 'POST' }, 'Cleared finished and failed'));
 
   $('#btn-opt-reload').addEventListener('click', loadGlobalOptions);
@@ -1903,7 +2170,23 @@ function init() {
   api('/api/log').then((data) => { S.triggers = data.triggers || []; pushEvents(data.events || [], true); }).catch(() => {});
   loadRules().catch(() => {});
 
+  // Opening the manager is looking: the toolbar icon's finished-download dot goes.
+  const ext = globalThis.browser || globalThis.chrome;
+  ext?.runtime?.sendMessage?.({ type: 'seen' })?.catch?.(() => {});
+
+  // The popup's "Open log" lands here with #log.
+  if (location.hash === '#log') revealLog();
+  else if (location.hash === '#rules' || location.hash === '#settings') switchTab(location.hash.slice(1));
+  else switchTab('downloads');
+
   connect();
+}
+
+//: Settings, Advanced, scrolled to the event log.
+function revealLog() {
+  switchTab('settings');
+  if (S.settingsMode !== 'advanced') setSettingsMode('advanced');
+  requestAnimationFrame(() => $('#loglist')?.scrollIntoView({ behavior: 'smooth', block: 'center' }));
 }
 
 document.addEventListener('DOMContentLoaded', init);

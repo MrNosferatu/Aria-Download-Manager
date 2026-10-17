@@ -12,62 +12,68 @@
 </head>
 <body>
 
-<!-- Header and tab bar are one masthead and stick as one block, so the tab
-     bar never has to know how tall the header is. -->
+<!-- The header leads with what the page is open for — the live rate — and
+     carries the two actions that apply to everything. Sections and filters live
+     in the rail on a wide window, in tabs and chips on a narrow one. -->
 <div class="masthead">
 <header class="topbar">
-  <div class="brand">
-    <span class="logo" aria-hidden="true"><svg class="ico" viewBox="0 0 24 24"><path d="M5 20h14v-2H5v2zM19 9h-4V3H9v6H5l7 7 7-7z"/></svg></span>
-    <div>
-      <h1>Aria Download Manager</h1>
-      <span id="aria2-pill" class="status">Connecting…</span>
-    </div>
-  </div>
-
-  <!-- The live rate is why the page is open, so it leads. -->
-  <div class="throughput">
-    <div class="rate down"><label>Down</label><b id="stat-down" class="quiet">–</b></div>
-    <div class="rate up"><label>Up</label><b id="stat-up" class="quiet">–</b></div>
-  </div>
-
-  <div class="stats">
-    <div class="stat"><label>Active</label><b id="stat-active">0</b></div>
-    <div class="stat"><label>Queued</label><b id="stat-waiting">0</b></div>
-    <div class="stat"><label>Done</label><b id="stat-complete">0</b></div>
-    <div class="stat"><label>Failed</label><b id="stat-error">0</b></div>
-  </div>
-
-  <div class="topactions">
-    <button id="btn-pause-all" class="btn btn-icon" title="Pause everything" aria-label="Pause everything"><svg class="ico" viewBox="0 0 24 24"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg></button>
-    <button id="btn-resume-all" class="btn btn-icon" title="Resume everything" aria-label="Resume everything"><svg class="ico" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg></button>
-    <button id="btn-purge" class="btn btn-icon" title="Clear finished and failed from the list" aria-label="Clear finished and failed from the list"><svg class="ico" viewBox="0 0 24 24"><path d="M16 11h-1V3a2 2 0 0 0-4 0v8h-1a5 5 0 0 0-5 5v7h16v-7a5 5 0 0 0-5-5zm2 12h-2v-4h-2v4h-2v-4h-2v4H8v-4H6v-3a3 3 0 0 1 3-3h6a3 3 0 0 1 3 3v7z"/></svg></button>
-    <button id="btn-add" class="btn btn-primary"><svg class="ico" viewBox="0 0 24 24"><path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>Add download</button>
-  </div>
-</header>
-
-<nav class="tabs">
-  <button class="tab active" data-tab="downloads"><svg class="ico" viewBox="0 0 24 24"><path d="M5 20h14v-2H5v2zM19 9h-4V3H9v6H5l7 7 7-7z"/></svg>Downloads</button>
-  <button class="tab" data-tab="rules"><svg class="ico" viewBox="0 0 24 24"><path d="M7.5 5.6 10 7 8.6 4.5 10 2 7.5 3.4 5 2l1.4 2.5L5 7zm12 9.8L17 14l1.4 2.5L17 19l2.5-1.4L22 19l-1.4-2.5L22 14zM22 2l-2.5 1.4L17 2l1.4 2.5L17 7l2.5-1.4L22 7l-1.4-2.5zm-7.63 5.29a.996.996 0 0 0-1.41 0L1.29 18.96a.996.996 0 0 0 0 1.41l2.34 2.34c.39.39 1.02.39 1.41 0L16.7 11.05a.996.996 0 0 0 0-1.41l-2.33-2.35zm-1.03 5.49-2.12-2.12 2.44-2.44 2.12 2.12-2.44 2.44z"/></svg>Actions <span id="rules-badge" class="badge">0</span></button>
-  <button class="tab" data-tab="settings"><svg class="ico" viewBox="0 0 24 24"><path d="M3 17v2h6v-2H3zM3 5v2h10V5H3zm10 16v-2h8v-2h-8v-2h-2v6h2zM7 9v2H3v2h4v2h2V9H7zm14 4v-2H11v2h10zm-6-4h2V7h4V5h-4V3h-2v6z"/></svg>Settings</button>
+  <span class="logo" aria-hidden="true"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 20h14v-2H5v2zM19 9h-4V3H9v6H5l7 7 7-7z"/></svg></span>
+  <div class="rate"><label>Download</label><b id="stat-down" class="quiet">–</b></div>
+  <svg id="spark" class="spark" viewBox="0 0 200 36" preserveAspectRatio="none" aria-hidden="true"><path class="area" d=""/><path class="line" d=""/></svg>
+  <div class="rate small"><label>Upload</label><b id="stat-up" class="quiet">–</b></div>
+  <div class="rate small" id="left-cell" hidden><label>Left</label><b id="stat-left">–</b></div>
   <div class="spacer"></div>
-  <label class="tabtoggle" title="Turn every action on or off at once">
-    <span>Actions</span>
-    <span class="switch"><input type="checkbox" id="rules-master"><span class="track"><span class="knob"></span></span></span>
-  </label>
+  <button id="btn-flip" class="btn btn-tonal" data-mode="pause"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg><span>Pause all</span></button>
+  <button id="btn-purge" class="btn btn-icon" title="Clear finished and failed from the list" aria-label="Clear finished and failed from the list"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M16 11h-1V3c0-1.1-.9-2-2-2h-2c-1.1 0-2 .9-2 2v8H8c-2.76 0-5 2.24-5 5v7h18v-7c0-2.76-2.24-5-5-5zm3 10h-2v-3c0-.55-.45-1-1-1s-1 .45-1 1v3h-2v-3c0-.55-.45-1-1-1s-1 .45-1 1v3H9v-3c0-.55-.45-1-1-1s-1 .45-1 1v3H5v-5c0-1.65 1.35-3 3-3h8c1.65 0 3 1.35 3 3v5z"/></svg></button>
+  <button id="btn-add" class="btn btn-primary add-narrow"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>Add</button>
+</header>
+<nav class="tabs">
+  <button class="tab active" data-tab="downloads"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 20h14v-2H5v2zM19 9h-4V3H9v6H5l7 7 7-7z"/></svg>Downloads</button>
+  <button class="tab" data-tab="rules"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M7.5 5.6 10 7 8.6 4.5 10 2 7.5 3.4 5 2l1.4 2.5L5 7zm12 9.8L17 14l1.4 2.5L17 19l2.5-1.4L22 19l-1.4-2.5L22 14zM22 2l-2.5 1.4L17 2l1.4 2.5L17 7l2.5-1.4L22 7l-1.4-2.5zm-7.63 5.29a.996.996 0 0 0-1.41 0L1.29 18.96a.996.996 0 0 0 0 1.41l2.34 2.34c.39.39 1.02.39 1.41 0L16.7 11.05a.996.996 0 0 0 0-1.41l-2.33-2.35zm-1.03 5.49-2.12-2.12 2.44-2.44 2.12 2.12-2.44 2.44z"/></svg>Actions</button>
+  <button class="tab" data-tab="settings"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 17v2h6v-2H3zM3 5v2h10V5H3zm10 16v-2h8v-2h-8v-2h-2v6h2zM7 9v2H3v2h4v2h2V9H7zm14 4v-2H11v2h10zm-6-4h2V7h4V5h-4V3h-2v6z"/></svg>Settings</button>
 </nav>
 </div>
 
+<div class="layout">
+<nav class="rail" aria-label="Sections">
+  <button id="btn-add-rail" class="btn btn-primary"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>Add download</button>
+  <button class="nav active" data-filter="all"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M19 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V5a2 2 0 0 0-2-2zm0 12h-4a3 3 0 0 1-6 0H5V5h14v10z"/></svg><span>All</span><span class="n" data-count="all"></span></button>
+  <button class="nav" data-filter="active"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M18.32 4.26A9.95 9.95 0 0 0 13 2.05v2.02c1.46.18 2.79.76 3.9 1.62l1.42-1.43zM19.93 11h2.02a9.95 9.95 0 0 0-2.21-5.32L18.31 7.1A7.94 7.94 0 0 1 19.93 11zm-1.62 5.9 1.43 1.43A9.95 9.95 0 0 0 21.95 13h-2.02a7.94 7.94 0 0 1-1.62 3.9zM13 19.93v2.02a9.95 9.95 0 0 0 5.32-2.21l-1.43-1.43A7.86 7.86 0 0 1 13 19.93zM15.59 10.59 13 13.17V7h-2v6.17l-2.59-2.59L7 12l5 5 5-5-1.41-1.41zM11 19.93v2.02c-5.05-.5-9-4.76-9-9.95s3.95-9.45 9-9.95v2.02C7.05 4.56 4 7.92 4 12s3.05 7.44 7 7.93z"/></svg><span>Active</span><span class="n" data-count="active"></span></button>
+  <button class="nav" data-filter="waiting"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M11.99 2C6.47 2 2 6.48 2 12s4.47 10 9.99 10C17.52 22 22 17.52 22 12S17.52 2 11.99 2zM12 20c-4.42 0-8-3.58-8-8s3.58-8 8-8 8 3.58 8 8-3.58 8-8 8zm.5-13H11v6l5.25 3.15.75-1.23-4.5-2.67z"/></svg><span>Queued</span><span class="n" data-count="waiting"></span></button>
+  <button class="nav" data-filter="paused"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 16h2V8H9v8zm3-14C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8zm1-4h2V8h-2v8z"/></svg><span>Paused</span><span class="n" data-count="paused"></span></button>
+  <button class="nav" data-filter="complete"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8zm4.59-12.42L10 14.17l-2.59-2.58L6 13l4 4 8-8z"/></svg><span>Done</span><span class="n" data-count="complete"></span></button>
+  <button class="nav bad" data-filter="error"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z"/></svg><span>Failed</span><span class="n" data-count="error"></span></button>
+  <button class="nav" data-filter="history"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M13 3a9 9 0 0 0-9 9H1l3.89 3.89.07.14L9 12H6c0-3.87 3.13-7 7-7s7 3.13 7 7-3.13 7-7 7c-1.93 0-3.68-.79-4.94-2.06l-1.42 1.42A8.954 8.954 0 0 0 13 21a9 9 0 0 0 0-18zm-1 5v5l4.28 2.54.72-1.21-3.5-2.08V8H12z"/></svg><span>History</span><span class="n"></span></button>
+  <button class="nav gap" data-tab="rules"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M7.5 5.6 10 7 8.6 4.5 10 2 7.5 3.4 5 2l1.4 2.5L5 7zm12 9.8L17 14l1.4 2.5L17 19l2.5-1.4L22 19l-1.4-2.5L22 14zM22 2l-2.5 1.4L17 2l1.4 2.5L17 7l2.5-1.4L22 7l-1.4-2.5zm-7.63 5.29a.996.996 0 0 0-1.41 0L1.29 18.96a.996.996 0 0 0 0 1.41l2.34 2.34c.39.39 1.02.39 1.41 0L16.7 11.05a.996.996 0 0 0 0-1.41l-2.33-2.35zm-1.03 5.49-2.12-2.12 2.44-2.44 2.12 2.12-2.44 2.44z"/></svg><span>Actions</span><span class="n" id="rail-actions"></span></button>
+  <button class="nav" data-tab="settings"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 17v2h6v-2H3zM3 5v2h10V5H3zm10 16v-2h8v-2h-8v-2h-2v6h2zM7 9v2H3v2h4v2h2V9H7zm14 4v-2H11v2h10zm-6-4h2V7h4V5h-4V3h-2v6z"/></svg><span>Settings</span><span class="n"></span></button>
+</nav>
+
 <main>
+  <!-- A broken link between the browser and aria2c: which one, and the fix.
+       Shown instead of the sections, which would all be empty. -->
+  <section id="trouble" class="trouble-page" hidden>
+    <span class="t-ico" aria-hidden="true"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z"/></svg></span>
+    <h2 id="trouble-title"></h2>
+    <p id="trouble-text" class="hint"></p>
+    <div class="cmdrow" id="trouble-cmdrow"><code id="trouble-cmd"></code><button id="trouble-copy" class="btn btn-sm">Copy</button></div>
+    <button id="trouble-retry" class="btn btn-primary">Try again</button>
+  </section>
+  <div id="aria2-banner" class="banner err" hidden>
+    <div><b>aria2c stopped</b><span id="aria2-why" class="hint"></span></div>
+    <span class="spacer"></span>
+    <button id="banner-log" class="btn btn-text">Open log</button>
+    <button id="banner-restart" class="btn btn-primary">Restart aria2c</button>
+  </div>
   <!-- ---------------- downloads ---------------- -->
   <section id="tab-downloads" class="tabpane active">
     <div class="filterbar">
       <div class="chiprow">
-        <button class="chip active" data-filter="all">All <span class="n" id="count-all"></span></button>
-        <button class="chip" data-filter="active">Active <span class="n" id="count-active"></span></button>
-        <button class="chip" data-filter="waiting">Queued <span class="n" id="count-waiting"></span></button>
-        <button class="chip" data-filter="paused">Paused <span class="n" id="count-paused"></span></button>
-        <button class="chip" data-filter="complete">Done <span class="n" id="count-complete"></span></button>
-        <button class="chip" data-filter="error">Failed <span class="n" id="count-error"></span></button>
+        <button class="chip active" data-filter="all">All <span class="n" data-count="all"></span></button>
+        <button class="chip" data-filter="active">Active <span class="n" data-count="active"></span></button>
+        <button class="chip" data-filter="waiting">Queued <span class="n" data-count="waiting"></span></button>
+        <button class="chip" data-filter="paused">Paused <span class="n" data-count="paused"></span></button>
+        <button class="chip" data-filter="complete">Done <span class="n" data-count="complete"></span></button>
+        <button class="chip" data-filter="error">Failed <span class="n" data-count="error"></span></button>
         <button class="chip chip-history" data-filter="history" title="Everything the manager has recorded, kept across restarts"><svg class="ico check" viewBox="0 0 24 24"><path d="M13 3a9 9 0 0 0-9 9H1l3.89 3.89.07.14L9 12H6c0-3.87 3.13-7 7-7s7 3.13 7 7-3.13 7-7 7c-1.93 0-3.68-.79-4.94-2.06l-1.42 1.42A8.954 8.954 0 0 0 13 21a9 9 0 0 0 0-18zm-1 5v5l4.28 2.54.72-1.21-3.5-2.08V8H12z"/></svg>History</button>
       </div>
       <div class="spacer"></div>
@@ -114,6 +120,12 @@
 
   <!-- ---------------- rules ---------------- -->
   <section id="tab-rules" class="tabpane">
+    <!-- The master switch heads the section it controls, saying what it does. -->
+    <label class="card mastercard" for="rules-master">
+      <span class="text"><b>Automatic actions</b>
+        <span class="hint" id="master-hint">Watch running downloads and step in when one stalls.</span></span>
+      <span class="switch"><input type="checkbox" id="rules-master"><span class="track"><span class="knob"></span></span></span>
+    </label>
     <div class="panehead">
       <div>
         <h2>Actions</h2>
@@ -205,6 +217,33 @@
   </section>
 </main>
 
+<!-- The selected download, beside the list on a wide window (inline below its
+     row on a narrow one). -->
+<aside id="pane" class="pane">
+  <div id="pane-empty" class="pane-empty">
+    <span class="hint">Pick a download to see its details here.</span>
+  </div>
+  <div id="pane-head" class="pane-head" hidden>
+    <div class="row">
+      <span id="pane-tile" class="dl-tile" aria-hidden="true"><svg class="ico" viewBox="0 0 24 24"><path d=""/></svg></span>
+      <div class="pane-titles"><b id="pane-name"></b><span id="pane-status" class="hint"></span></div>
+      <button id="pane-close" class="btn btn-icon btn-sm" title="Close" aria-label="Close details"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg></button>
+    </div>
+    <div id="pane-actions" class="row wrap"></div>
+  </div>
+  <div id="pane-body" class="dl-detail"></div>
+</aside>
+</div>
+
+<footer class="statusbar" aria-label="Totals">
+  <span id="sb-down" class="sb-down">↓ –</span>
+  <span id="sb-up">↑ –</span>
+  <span id="sb-left"></span>
+  <span class="spacer"></span>
+  <span id="aria2-pill" class="status">Connecting…</span>
+  <span id="sb-actions"></span>
+</footer>
+
 <!-- ---------------- add dialog ---------------- -->
 <dialog id="add-dialog">
   <form id="add-form" method="dialog">
@@ -269,22 +308,25 @@
   <article class="dl">
     <div class="dl-main">
       <input type="checkbox" class="dl-pick" hidden aria-label="Select">
-      <button class="chev btn btn-icon btn-sm" title="Details" aria-label="Details"></button>
+      <button class="dl-tile" title="Details" aria-label="Details"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d=""/></svg></button>
       <div class="dl-body">
         <div class="dl-title">
           <span class="dl-name"></span>
           <span class="dl-badges"></span>
+          <span class="dl-figure"></span>
         </div>
         <div class="progress"><i class="bar-fill"></i></div>
         <div class="dl-meta"></div>
       </div>
       <div class="dl-actions"></div>
     </div>
+    <div class="dl-more" hidden></div>
     <div class="dl-confirm" hidden></div>
     <div class="dl-detail" hidden></div>
   </article>
 </template>
 
+<script src="../lib/present.js"></script>
 <script src="../lib/link.js"></script>
 <script src="../lib/filetree-core.js"></script>
 <script src="../lib/filetree-view.js"></script>

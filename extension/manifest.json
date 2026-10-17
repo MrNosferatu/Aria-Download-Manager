@@ -32,6 +32,7 @@
     "service_worker": "background.js",
     "scripts": [
       "lib/common.js",
+      "lib/present.js",
       "lib/link.js",
       "background.js"
     ]

@@ -5,7 +5,7 @@
 
 // Chrome runs this as a service worker and needs the shared code pulled in;
 // Firefox lists both files in manifest background.scripts instead.
-if (typeof importScripts === 'function') importScripts('lib/common.js', 'lib/link.js');
+if (typeof importScripts === 'function') importScripts('lib/common.js', 'lib/present.js', 'lib/link.js');
 
 const RECENT_LIMIT = 20;
 

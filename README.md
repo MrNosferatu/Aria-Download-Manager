@@ -582,6 +582,7 @@ dms-plugin/       DankMaterialShell bar widget (optional; QML front-end over the
 extension/        browser extension (Firefox + Chromium, MV3)
   manager/        the full manager page, opened from the popup
   lib/link.js     the native-messaging connection, shared by the background and the page
+  lib/present.js  display helpers (file kinds, time left, totals) shared by every page
 tests/            fake aria2, suites, UI render harness
 systemd/          user service unit
 ```
