@@ -13,6 +13,10 @@ before the download starts:
   wrong folder.
 
 A folder the caller chose explicitly always wins: this only fills in a blank.
+An add that asks for it (``auto-route``, the dialogs' "Auto · by type") is
+sorted even with sorting turned off in Settings. A link whose name says
+nothing (``download?id=…``) has its real filename asked of the server before
+it is added (see api.py), so it starts in its type's folder.
 """
 
 from __future__ import annotations
@@ -23,6 +27,9 @@ import posixpath
 from pathlib import Path
 from typing import Any
 from urllib.parse import unquote, urlsplit
+
+#: The add option asking for sorting by type whatever Settings say.
+AUTO_ROUTE = "auto-route"
 
 #: Every download lands in exactly one of these.
 CATEGORIES = ("archive", "music", "video", "image", "other")
@@ -187,6 +194,14 @@ class Router:
                     return category
         return "other"
 
+    def needs_name(self, uri: str, options: dict) -> bool:
+        """A plain link whose name tells nothing: worth asking the server."""
+        if options.get("dir") or options.get("out") or not (self.enabled or self.forced(options)):
+            return False
+        if str(uri).strip().lower().startswith(("magnet:", "data:")):
+            return False
+        return not extension_of(name_from_uri(uri))
+
     def category_of_torrent(self, payload: bytes) -> str:
         files = torrent_files(payload)
         if not files:
@@ -202,9 +217,16 @@ class Router:
             return root
         return folder if os.path.isabs(folder) else os.path.join(root, folder)
 
+    @staticmethod
+    def forced(options: dict) -> bool:
+        """The add asked to be sorted by type whatever Settings say."""
+        return str(options.get(AUTO_ROUTE, "")).lower() == "true"
+
     def apply(self, options: dict, uris: Any = None, torrent: Any = None) -> dict:
         """Fill in `dir` for a new download, unless one was chosen already."""
-        if not self.enabled or options.get("dir"):
+        forced = self.forced(options)
+        options.pop(AUTO_ROUTE, None)  # the manager's word, not aria2's
+        if not (self.enabled or forced) or options.get("dir"):
             return options
         category = None
         if torrent:
@@ -225,14 +247,14 @@ class Router:
         return options
 
     # ---- magnets ----------------------------------------------------------
-    def expect(self, gid: str, resume: bool) -> None:
+    def expect(self, gid: str, resume: bool, forced: bool = False) -> None:
         """Watch for the torrent this metadata download turns into."""
-        if self.enabled and gid:
+        if (self.enabled or forced) and gid:
             self.expected[gid] = resume
 
     def wants_paused_metadata(self, options: dict, uris: Any) -> bool:
         """Should this add hold its torrent until the folder is known?"""
-        if not self.enabled or options.get("dir") or options.get("pause-metadata"):
+        if not (self.enabled or self.forced(options)) or options.get("dir") or options.get("pause-metadata"):
             return False
         return any(str(u).strip().lower().startswith("magnet:") for u in (uris or []))
 

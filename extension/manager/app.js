@@ -17,6 +17,13 @@ const S = {
   detailDrafts: new Map(),
   // The add dialog's number-and-unit fields.
   addUnits: null,
+  // The add dialog's folders (GET /api/folders), the chip picked ('' until
+  // one is: then the links decide), each link's own folder, and what the
+  // server said each link is.
+  addFolders: null,
+  addChoice: '',
+  addOverrides: {},
+  addProbe: {},
   rules: [],
   // The rules as last saved (JSON), what Discard goes back to.
   rulesSaved: '[]',
@@ -397,6 +404,14 @@ const ICONS = {
   chevron: 'M10 6 8.59 7.41 13.17 12l-4.58 4.59L10 18l6-6z',
   check: 'M9 16.17 4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z',
   folder: 'M20 6h-8l-2-2H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2zm0 12H4V8h16v10z',
+  home: 'M10 20v-6h4v6h5v-8h3L12 3 2 12h3v8z',
+  auto: 'M19 9l1.25-2.75L23 5l-2.75-1.25L19 1l-1.25 2.75L15 5l2.75 1.25L19 9zm-7.5.5L9 4 6.5 9.5 1 12l5.5 2.5L9 20l2.5-5.5L17 12l-5.5-2.5zM19 15l-1.25 2.75L15 19l2.75 1.25L19 23l1.25-2.75L23 19l-2.75-1.25L19 15z',
+  newfolder: 'M20 6h-8l-2-2H4c-1.11 0-1.99.89-1.99 2L2 18c0 1.11.89 2 2 2h16c1.11 0 2-.89 2-2V8c0-1.11-.89-2-2-2zm-1 8h-3v3h-2v-3h-3v-2h3V9h2v3h3v2z',
+  movie: 'M18 4l2 4h-3l-2-4h-2l2 4h-3l-2-4H8l2 4H7L5 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V4h-4z',
+  music: 'M12 3v10.55c-.59-.34-1.27-.55-2-.55-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4V7h4V3h-6z',
+  image: 'M21 19V5c0-1.1-.9-2-2-2H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2zM8.5 13.5l2.5 3.01L14.5 12l4.5 6H5l3.5-4.5z',
+  zip: 'M20 6h-8l-2-2H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2zm-2 6h-2v2h2v2h-2v2h-2v-2h2v-2h-2v-2h2v-2h-2V8h2v2h2v2z',
+  unknown: 'M11 18h2v-2h-2v2zm1-16C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8zm0-14c-2.21 0-4 1.79-4 4h2c0-1.1.9-2 2-2s2 .9 2 2c0 2-3 1.75-3 5h2c0-2.25 3-2.5 3-5 0-2.21-1.79-4-4-4z',
   more: 'M12 8a2 2 0 1 0 0-4 2 2 0 0 0 0 4zm0 2a2 2 0 1 0 0 4 2 2 0 0 0 0-4zm0 6a2 2 0 1 0 0 4 2 2 0 0 0 0-4z',
   info: 'M11 7h2v2h-2zm0 4h2v6h-2zm1-9a10 10 0 1 0 0 20 10 10 0 0 0 0-20zm0 18a8 8 0 1 1 0-16 8 8 0 0 1 0 16z',
   link: 'M3.9 12c0-1.71 1.39-3.1 3.1-3.1h4V7H7a5 5 0 0 0 0 10h4v-1.9H7c-1.71 0-3.1-1.39-3.1-3.1zM8 13h8v-2H8v2zm9-6h-4v1.9h4c1.71 0 3.1 1.39 3.1 3.1s-1.39 3.1-3.1 3.1h-4V17h4a5 5 0 0 0 0-10z',
@@ -1139,15 +1154,174 @@ function setAddMode(mode) {
 
 function openAdd() {
   $('#add-download-only').checked = Boolean(S.state?.torrent?.downloadOnly);
+  S.addChoice = '';
+  S.addOverrides = {};
   $('#add-dialog').showModal();
   $('#add-uris').focus();
+  api('/api/folders').then((info) => { S.addFolders = info; renderAddFolders(); }).catch(() => {});
+  renderAddFolders();
+}
+
+/* ---- where added links go (board 5) ---- */
+const ADD_ICONS = { archive: 'zip', music: 'music', video: 'movie', image: 'image', unknown: 'unknown' };
+const ADD_KINDS = { video: 'Video', music: 'Audio', archive: 'Archive', image: 'Image', other: 'File' };
+const addLinks = () => $('#add-uris').value.split('\n').map((l) => l.trim()).filter(Boolean);
+const isTorrentUri = (u) => /^magnet:/i.test(u) || /\.torrent([?#]|$)/i.test(u);
+
+function addNameOf(url) {
+  const last = String(url).split(/[?#]/)[0].replace(/\/+$/, '').split('/').pop() || '';
+  try { return decodeURIComponent(last); } catch { return last; }
+}
+
+// archive | music | video | image | other, or unknown for a name that says
+// nothing (download?id=…), which the server decides on start.
+function addCategoryOf(name) {
+  const ext = (/\.([a-z0-9]+)$/i.exec(String(name || '')) || [])[1];
+  if (!ext) return 'unknown';
+  for (const [category, list] of Object.entries(S.addFolders?.extensions || {})) {
+    if (list.includes(ext.toLowerCase())) return category;
+  }
+  return 'other';
+}
+
+function addFolderFor(category) {
+  const preset = (S.addFolders?.presets || []).find((p) => p.category === category);
+  return preset ? preset.path : (S.addFolders?.base || '');
+}
+
+const addLabel = (path) => (!path || path === S.addFolders?.base
+  ? String(S.addFolders?.base || 'Download folder').replace(/^\/home\/[^/]+/, '~')
+  : `${String(path).replace(/\/+$/, '').split('/').pop()}/`);
+
+// The plain links (torrents are sorted by their largest file on their own).
+const addPlain = () => addLinks().filter((u) => !isTorrentUri(u));
+const addMixed = () => new Set(addPlain().map((u) => addCategoryOf(addNameOf(u)))).size >= 2;
+
+// Two or more types go Auto · by type, unless sorting is off in Settings (then
+// it is offered, not picked); one type goes to its folder.
+function addChoice() {
+  if (S.addChoice) return S.addChoice;
+  const kinds = [...new Set(addPlain().map((u) => addCategoryOf(addNameOf(u))))];
+  if (kinds.length >= 2) return S.addFolders?.sorting ? 'auto' : (S.addFolders?.base || '');
+  return addFolderFor(kinds[0] || 'other');
+}
+
+function addDestOf(url) {
+  if (S.addOverrides[url]) return S.addOverrides[url];
+  const choice = addChoice();
+  return choice === 'auto' ? addFolderFor(addCategoryOf(addNameOf(url))) : choice;
+}
+
+async function pickAddFolder(start) {
+  try {
+    const out = await api('/api/pick-folder', { method: 'POST', body: { start: start || S.addFolders?.base || '' } });
+    return out.path || '';
+  } catch (err) {
+    toast(err.message, 'error');
+    return '';
+  }
+}
+
+function renderAddFolders() {
+  const info = S.addFolders || {};
+  const links = addLinks();
+  const choice = addChoice();
+  const presets = (info.presets || []).filter((p) => p.path !== info.base);
+  const custom = choice && choice !== 'auto' && choice !== info.base && !presets.some((p) => p.path === choice);
+  const chips = [];
+  if (addMixed()) chips.push(['auto', 'auto', 'Auto · by type']);
+  chips.push([info.base || '', 'home', addLabel(info.base)]);
+  for (const p of presets) chips.push([p.path, ADD_ICONS[p.category] || 'folder', p.label]);
+  chips.push(['__pick', 'newfolder', custom ? addLabel(choice) : 'Other folder…']);
+  const host = $('#add-folders');
+  host.innerHTML = chips.map(([value, ico, label]) => {
+    const on = value === '__pick' ? custom : value === choice;
+    return `<button type="button" class="chip add-chip${on ? ' on' : ''}" data-folder="${escapeHtml(value)}" aria-pressed="${on}">${icon(ico)}<span>${escapeHtml(label)}</span></button>`;
+  }).join('');
+  for (const btn of host.querySelectorAll('[data-folder]')) {
+    btn.addEventListener('click', async () => {
+      let value = btn.dataset.folder;
+      if (value === '__pick') value = await pickAddFolder(custom ? choice : '');
+      if (!value && btn.dataset.folder === '__pick') return;
+      S.addChoice = value;
+      S.addOverrides = {};
+      renderAddFolders();
+    });
+  }
+  const plain = addPlain();
+  $('#add-folder-hint').textContent = choice === 'auto'
+    ? `Each link goes to its type’s folder inside ${addLabel(info.base)}`
+    : plain.length > 1 ? `All ${plain.length} go to ${String(choice || info.base || '').replace(/^\/home\/[^/]+/, '~')}${addMixed() ? '; Auto puts them back by type' : ''}` : '';
+  // A name belongs to one file: with more links it waits.
+  $('#add-out').disabled = links.length > 1;
+  $('#add-submit').textContent = links.length > 1 ? `Add ${links.length} downloads` : 'Add';
+  $('#add-out').placeholder = links.length > 1 ? 'Save as — only with one link' : 'Name from the server';
+  renderAddWhere();
+}
+
+function renderAddWhere() {
+  const plain = addPlain();
+  const box = $('#add-where');
+  box.hidden = plain.length < 2;
+  if (box.hidden) return;
+  const tally = new Map();
+  for (const url of plain) {
+    const label = addLabel(addDestOf(url));
+    tally.set(label, (tally.get(label) || 0) + 1);
+  }
+  $('#add-where-count').textContent = [...tally].map(([label, n]) => `${n} → ${label}`).join(' · ');
+  const list = $('#add-where-list');
+  list.innerHTML = plain.map((url) => {
+    const probe = S.addProbe?.[url] || {};
+    const name = probe.name || addNameOf(url);
+    const category = addCategoryOf(probe.name && addCategoryOf(addNameOf(url)) === 'unknown' ? probe.name : addNameOf(url));
+    const unknown = category === 'unknown';
+    const kind = unknown ? 'Unknown · decided on start' : `${ADD_KINDS[category] || 'File'}${probe.size ? ` · ${fmtBytes(probe.size)}` : ''}`;
+    const dest = addDestOf(url);
+    const own = Boolean(S.addOverrides[url]);
+    return `<div class="add-where-row">${icon(ADD_ICONS[category] || 'download')}
+      <span class="text"><span class="name">${escapeHtml(unknown ? url.split('/').pop() : name)}</span><span class="hint">${escapeHtml(kind)}</span></span>
+      <button type="button" class="add-dest${own ? ' own' : ''}" data-url="${escapeHtml(url)}" aria-label="Folder for ${escapeHtml(name)}: ${escapeHtml(addLabel(dest))}">${
+        icon(dest === S.addFolders?.base ? 'home'
+          : ADD_ICONS[((S.addFolders?.presets || []).find((p) => p.path === dest) || {}).category] || 'folder')}<span>${
+        escapeHtml(addLabel(dest))}</span>${icon('drop')}</button></div>`;
+  }).join('');
+  for (const btn of list.querySelectorAll('.add-dest')) {
+    btn.addEventListener('click', () => {
+      const url = btn.dataset.url;
+      const info = S.addFolders || {};
+      const folders = [info.base || '', ...(info.presets || []).filter((p) => p.path !== info.base).map((p) => p.path)];
+      const r = btn.getBoundingClientRect();
+      const setOwn = (path) => { S.addOverrides = { ...S.addOverrides, [url]: path }; renderAddWhere(); };
+      popMenu(r.left, r.bottom + 4, [
+        ...folders.map((f) => [f === info.base ? 'home' : 'folder', addLabel(f), () => setOwn(f)]),
+        null,
+        ['newfolder', 'Other folder…', async () => { const p = await pickAddFolder(addDestOf(url)); if (p) setOwn(p); }],
+      ]);
+    });
+  }
+}
+
+// Sizes and real names for the list, asked once per link while typing.
+let addProbeTimer = 0;
+function probeAddLinks() {
+  clearTimeout(addProbeTimer);
+  addProbeTimer = setTimeout(() => {
+    S.addProbe ??= {};
+    for (const url of addPlain().slice(0, 40)) {
+      if (S.addProbe[url]) continue;
+      S.addProbe[url] = {};
+      api('/api/intake/probe', { method: 'POST', body: { url } })
+        .then((info) => { S.addProbe[url] = info || {}; renderAddWhere(); })
+        .catch(() => {});
+    }
+  }, 500);
 }
 
 function collectAddOptions() {
   const options = {};
   const put = (key, value) => { if (value != null && String(value).trim()) options[key] = String(value).trim(); };
-  put('dir', $('#add-dir').value);
-  put('out', $('#add-out').value);
+  if (!$('#add-out').disabled) put('out', $('#add-out').value);
   put('max-connection-per-server', $('#add-conn').value);
   put('split', $('#add-split').value);
   put('min-split-size', S.addUnits.minSplit.read());
@@ -1196,11 +1370,35 @@ async function submitAdd() {
         method: 'POST',
         body: { data, kind, filename: file.name, uris, options, position, paused },
       });
-    } else {
+    } else if ($('#add-mirrors').checked) {
+      const choice = addChoice();
+      if (choice === 'auto') options['auto-route'] = 'true';
+      else if (choice) options.dir = choice;
       added = await api('/api/downloads', {
         method: 'POST',
-        body: { uris, options, position, paused, mirrors: $('#add-mirrors').checked },
+        body: { uris, options, position, paused, mirrors: true },
       });
+    } else {
+      // One request per destination: a link's own folder, its type's under
+      // Auto (the manager places it, asking the server for the name of one
+      // whose link says nothing), or the folder picked for all.
+      const groups = new Map();
+      for (const url of uris) {
+        const own = S.addOverrides[url];
+        const choice = addChoice();
+        const key = own ? `dir:${own}` : choice === 'auto' && !isTorrentUri(url) ? 'auto' : choice === 'auto' ? 'torrent' : `dir:${choice}`;
+        if (!groups.has(key)) groups.set(key, []);
+        groups.get(key).push(url);
+      }
+      const gids = [];
+      for (const [key, list] of groups) {
+        const own = { ...options };
+        if (key === 'auto' || key === 'torrent') own['auto-route'] = 'true';
+        else if (key.slice(4)) own.dir = key.slice(4);
+        const out = await api('/api/downloads', { method: 'POST', body: { uris: list, options: own, position, paused } });
+        gids.push(...(out?.gids || []));
+      }
+      added = { gids };
     }
     if (pickFiles) {
       // Open the new row's files as soon as it (or, for a magnet, the
@@ -2944,6 +3142,7 @@ function init() {
 
   $('#btn-add').addEventListener('click', openAdd);
   $('#add-cancel').addEventListener('click', () => $('#add-dialog').close());
+  $('#add-uris').addEventListener('input', () => { renderAddFolders(); probeAddLinks(); });
   $('#add-submit').addEventListener('click', submitAdd);
   $('#add-dialog').addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) submitAdd();

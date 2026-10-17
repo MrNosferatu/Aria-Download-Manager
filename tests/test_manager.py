@@ -1130,6 +1130,22 @@ def test_routing(tmp_dir: Path) -> None:
     check("a URL with no filename is left alone", "dir" not in got, json.dumps(got))
     got = router.apply({"out": "renamed.mp3"}, uris=["https://host/get?id=9"])
     check("the chosen output name decides", got.get("dir") == "/dl/Music", json.dumps(got))
+    check("a link whose name says nothing is worth asking the server about",
+          router.needs_name("https://host/download?id=9", {})
+          and not router.needs_name("https://host/film.mkv", {})
+          and not router.needs_name("magnet:?xt=urn:btih:abc", {})
+          and not router.needs_name("https://host/download?id=9", {"dir": "/elsewhere"}))
+    off_path = tmp_dir / "routing-off.yaml"
+    off_path.write_text(yaml.safe_dump({"aria2": {"options": {"dir": "/dl"}}, "routing": {"enabled": False}}))
+    off = Router(Config(off_path), None, lambda *a, **k: None)
+    got = off.apply({}, uris=["https://host/film.mkv"])
+    check("sorting off leaves a link in the download folder", "dir" not in got, json.dumps(got))
+    got = off.apply({"auto-route": "true"}, uris=["https://host/film.mkv"])
+    check("Auto · by type sorts it all the same, and is not passed to aria2",
+          got.get("dir") == "/dl/Video" and "auto-route" not in got, json.dumps(got))
+    check("and holds a magnet until its folder is known",
+          off.wants_paused_metadata({"auto-route": "true"}, ["magnet:?xt=urn:btih:abc"])
+          and not off.wants_paused_metadata({}, ["magnet:?xt=urn:btih:abc"]))
     got = router.apply({"dir": "/elsewhere"}, uris=["https://host/film.mkv"])
     check("a folder chosen by hand always wins", got["dir"] == "/elsewhere")
     got = router.apply({}, uris=["magnet:?xt=urn:btih:abc"])

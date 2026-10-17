@@ -600,6 +600,52 @@ def create_app(cfg: Config) -> FastAPI:
                 rest.append(uri)
         return gids, rest
 
+    async def _probe_link(url: str, headers: dict[str, str], seconds: float = 15) -> dict[str, Any]:
+        """A HEAD (or a one-byte ranged GET) for a link's size, name and kind."""
+        info: dict[str, Any] = {"ok": True, "kind": "file", "size": None, "name": "",
+                                "contentType": "", "resumable": None, "finalUrl": url}
+        timeout = aiohttp.ClientTimeout(total=seconds)
+        try:
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                res = await session.head(url, headers=headers, allow_redirects=True)
+                if res.status >= 400:
+                    res.release()
+                    res = await session.get(url, allow_redirects=True,
+                                            headers={**headers, "Range": "bytes=0-0"})
+                async with res:
+                    if res.status < 400:
+                        info.update(probe_headers(res.status, res.headers))
+                        info["finalUrl"] = str(res.url)
+                    else:
+                        info["error"] = f"the server answered {res.status}"
+        except (aiohttp.ClientError, asyncio.TimeoutError, ValueError) as exc:
+            info["error"] = str(exc) or exc.__class__.__name__
+        return info
+
+    async def _route_by_server_name(uri: str, options: dict) -> dict:
+        """Sort a link whose name says nothing by the name its server gives.
+
+        Asked before the add, so the file starts in its type's folder and
+        nothing is ever written to the wrong one. A server that does not
+        answer in time leaves it in the download folder.
+        """
+        headers: dict[str, str] = {}
+        for line in options.get("header") or []:
+            key, _, value = str(line).partition(":")
+            if value:
+                headers[key.strip()] = value.strip()
+        if options.get("referer"):
+            headers["Referer"] = str(options["referer"])
+        if options.get("user-agent"):
+            headers["User-Agent"] = str(options["user-agent"])
+        info = await _probe_link(uri, headers, seconds=6)
+        name = info.get("name") or os.path.basename(str(info.get("finalUrl", "")).split("?")[0])
+        if routing_mod.extension_of(name):
+            folder = router.folder_for(router.category_of(name))
+            if folder != router.base_dir():
+                options = dict(options, dir=folder)
+        return options
+
     async def _add_uris(req: AddRequest) -> dict:
         uris = split_uris(req.uris, req.url)
         if not uris:
@@ -626,10 +672,13 @@ def create_app(cfg: Config) -> FastAPI:
         else:
             for index, uri in enumerate(uris):
                 position = None if req.position is None else req.position + index
-                gids.append(await rpc.add_uri([uri], dict(options), position))
+                one = dict(options)
+                if router.needs_name(uri, one):
+                    one = await _route_by_server_name(uri, one)
+                gids.append(await rpc.add_uri([uri], one, position))
         if hold or chooses_files:
             for gid in gids:
-                router.expect(gid, resume=hold and not chooses_files)
+                router.expect(gid, resume=hold and not chooses_files, forced=router.forced(options))
         gids = qb_gids + gids
         poller.poke()
         store.add_event(
@@ -1424,24 +1473,7 @@ def create_app(cfg: Config) -> FastAPI:
             headers["Referer"] = req.referer
         if req.userAgent:
             headers["User-Agent"] = req.userAgent
-        info: dict[str, Any] = {"ok": True, "kind": "file", "size": None, "name": "",
-                                "contentType": "", "resumable": None, "finalUrl": req.url}
-        timeout = aiohttp.ClientTimeout(total=15)
-        try:
-            async with aiohttp.ClientSession(timeout=timeout) as session:
-                res = await session.head(req.url, headers=headers, allow_redirects=True)
-                if res.status >= 400:
-                    res.release()
-                    res = await session.get(req.url, allow_redirects=True,
-                                            headers={**headers, "Range": "bytes=0-0"})
-                async with res:
-                    if res.status < 400:
-                        info.update(probe_headers(res.status, res.headers))
-                        info["finalUrl"] = str(res.url)
-                    else:
-                        info["error"] = f"the server answered {res.status}"
-        except (aiohttp.ClientError, asyncio.TimeoutError, ValueError) as exc:
-            info["error"] = str(exc) or exc.__class__.__name__
+        info = await _probe_link(req.url, headers)
         if not info["name"]:
             info["name"] = os.path.basename(str(info["finalUrl"]).split("?")[0].rstrip("/"))
         # A link named as a file that answers with a web page: the site only
@@ -1478,8 +1510,11 @@ def create_app(cfg: Config) -> FastAPI:
         # the dialogs start there (a .zip in Archives), and the user can still
         # pick another.
         suggested = router.folder_for(router.category_of(name)) if name else ""
+        # The extensions behind each type, so a dialog adding many links can
+        # say where each one goes before adding them.
         return {"base": base, "sorting": router.enabled, "presets": presets,
-                "suggested": suggested, "picker": compositor.picker_available()}
+                "suggested": suggested, "picker": compositor.picker_available(),
+                "extensions": router.extensions()}
 
     @app.post("/api/pick-folder")
     async def pick_folder(req: PickFolderRequest):

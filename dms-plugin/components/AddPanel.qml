@@ -22,7 +22,8 @@ Column {
     property string stage: "form"
     property var formOptions: ({})
     property var formPosition: null
-    //: The folder chosen on the form: "" leaves it to the manager.
+    //: The folder chosen on the form: "auto" for by type, a path, or "" until
+    //: a chip is picked — then it follows the links (see defaultDir).
     property string formDir: ""
     //: The links as checked: {url, mirrors, name, size, contentType,
     //: resumable, state: "ok" | "page" | "fail", error, suggested}.
@@ -33,7 +34,10 @@ Column {
     //: Torrents added held, waiting for their file choice.
     property var held: []
     property var folderInfo: ({})
+    //: Where the checked links go: "auto" (each to its type's folder) or a
+    //: path; `overrides` holds a link's own folder, by its URL.
     property string reviewDir: ""
+    property var overrides: ({})
     property string torrentDirPath: ""
 
     readonly property string home: Quickshell.env("HOME") || ""
@@ -49,6 +53,87 @@ Column {
 
     Component.onCompleted: loadFolders("", "")
     onServiceChanged: loadFolders("", "")
+
+    // ---- types and folders (board 5) ---------------------------------------
+    //: A link's own file name, from its URL.
+    function nameOf(url) {
+        const last = String(url).split(/[?#]/)[0].replace(/\/+$/, "").split("/").pop() || ""
+        try {
+            return decodeURIComponent(last)
+        } catch (e) {
+            return last
+        }
+    }
+
+    //: archive | music | video | image | other, or "unknown" for a name that
+    //: says nothing (download?id=…), which the server decides on start.
+    function categoryOf(name) {
+        const ext = (/\.([a-z0-9]+)$/i.exec(String(name || "")) || [])[1]
+        if (!ext)
+            return "unknown"
+        const table = folderInfo.extensions || ({})
+        for (const category in table) {
+            if (table[category].indexOf(ext.toLowerCase()) >= 0)
+                return category
+        }
+        return "other"
+    }
+
+    function folderFor(category) {
+        const preset = (folderInfo.presets || []).find(p => p.category === category)
+        return preset ? preset.path : (folderInfo.base || "")
+    }
+
+    //: Links of two or more types go Auto · by type (unless sorting is off in
+    //: Settings, when it is offered but not picked); one type goes to its
+    //: folder, as before.
+    function defaultDir(names) {
+        const kinds = [...new Set(names.map(n => categoryOf(n)))]
+        if (kinds.length >= 2)
+            return folderInfo.sorting ? "auto" : (folderInfo.base || "")
+        return folderFor(kinds[0] || "other")
+    }
+
+    function mixed(names) {
+        return new Set(names.map(n => categoryOf(n))).size >= 2
+    }
+
+    readonly property var plainNames: parsedLinks.filter(u => !isTorrentLink(u)).map(u => nameOf(u))
+    //: The chip the form shows: the one picked, else what the links call for.
+    readonly property string formChoice: formDir || defaultDir(plainNames)
+
+    //: "Video/", or the download folder written out.
+    function folderLabel(path) {
+        if (!path || path === folderInfo.base)
+            return Fmt.homePath(folderInfo.base || "", home)
+        return String(path).replace(/\/+$/, "").split("/").pop() + "/"
+    }
+
+    readonly property var kindWords: ({
+                                          "video": "Video",
+                                          "music": "Audio",
+                                          "archive": "Archive",
+                                          "image": "Image"
+                                      })
+    readonly property var categoryIcons: ({
+                                              "archive": "folder_zip",
+                                              "music": "music_note",
+                                              "video": "movie",
+                                              "image": "image",
+                                              "unknown": "help"
+                                          })
+
+    //: Where a checked link lands: its own folder, its type's under Auto, or
+    //: the folder picked for all.
+    function destOf(entry) {
+        if (overrides[entry.url])
+            return overrides[entry.url]
+        if (reviewDir === "auto")
+            return folderFor(categoryOf(entry.name))
+        return reviewDir || folderInfo.base || ""
+    }
+
+    readonly property bool reviewMixed: mixed(okEntries.map(e => e.name))
 
     // ---- the form ----------------------------------------------------------
     function isTorrentLink(uri) {
@@ -92,8 +177,12 @@ Column {
             if (value && String(value).trim())
                 options[key] = String(value).trim()
         }
-        put("dir", formDir)
-        put("out", outField.text)
+        if (formChoice === "auto")
+            options["auto-route"] = "true"
+        else if (formDir)
+            put("dir", formDir)
+        if (parsedLinks.length <= 1)
+            put("out", outField.text)
         put("max-connection-per-server", connField.text)
         put("split", splitField.text)
         put("min-split-size", minSplitField.value)
@@ -315,7 +404,10 @@ Column {
     //: then back to the form.
     function next() {
         if (entries.length) {
-            reviewDir = formOptions["dir"] || ""
+            // A chip picked on the form stands; otherwise the checked names
+            // decide, now that the server has said what each link is.
+            reviewDir = formDir || defaultDir(okEntries.map(e => e.name))
+            overrides = ({})
             stage = "review"
         } else if (held.length) {
             torrentDirPath = formOptions["dir"] || ""
@@ -373,16 +465,22 @@ Column {
         const options = Object.assign({}, formOptions)
         const name = options["out"]
         delete options["out"]  // a name only ever belongs to a single file
-        if (reviewDir)
-            options["dir"] = reviewDir
-        else
-            delete options["dir"]
+        delete options["dir"]
+        delete options["auto-route"]
         const list = anyway ? entries : okEntries
         const gids = []
         let waiting = list.length
         let index = 0
         for (const entry of list) {
             const own = Object.assign({}, options)
+            // Its own folder, or by type: the manager places it, asking the
+            // server for the real name of one whose link says nothing.
+            if (overrides[entry.url])
+                own["dir"] = overrides[entry.url]
+            else if (reviewDir === "auto")
+                own["auto-route"] = "true"
+            else if (reviewDir)
+                own["dir"] = reviewDir
             if (list.length === 1 && name)
                 own["out"] = name
             service.request("POST", "/api/downloads", {
@@ -718,7 +816,8 @@ Column {
                 width: parent.width
                 info: panel.folderInfo
                 home: panel.home
-                path: panel.formDir
+                autoOffered: panel.mixed(panel.plainNames)
+                path: panel.formChoice
                 onChosen: chosenPath => panel.formDir = chosenPath
             }
         }
@@ -746,16 +845,20 @@ Column {
                     width: parent.width
                     info: panel.folderInfo
                     home: panel.home
-                    path: panel.formDir
+                    autoOffered: panel.mixed(panel.plainNames)
+                    path: panel.formChoice
                     onChosen: chosenPath => panel.formDir = chosenPath
                 }
 
+                //: A name belongs to one file: with more links it waits.
                 AddField {
                     id: outField
 
                     width: parent.width
+                    enabled: panel.parsedLinks.length <= 1
+                    opacity: enabled ? 1 : 0.6
                     label: "Save as"
-                    placeholderText: "Save as (one file only)"
+                    placeholderText: enabled ? "Save as (one file only)" : "Save as — only with one link"
                 }
             }
 
@@ -1097,8 +1200,280 @@ Column {
             color: Theme.surfaceText
         }
 
+        // ---- many links: where each one goes (board 5) ----
+        Column {
+            width: parent.width
+            visible: panel.okEntries.length >= 2
+            spacing: 8
+
+            Row {
+                spacing: 6
+
+                DankIcon {
+                    anchors.verticalCenter: parent.verticalCenter
+                    name: "folder"
+                    size: 18
+                    color: Theme.primary
+                }
+
+                StyledText {
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: "Save to"
+                    font.pixelSize: Theme.fontSizeSmall + 1
+                    font.weight: Font.DemiBold
+                    color: Theme.primary
+                }
+            }
+
+            //: Picking a chip sends them all there; a link's own folder is
+            //: dropped with it.
+            FolderChips {
+                width: parent.width
+                info: panel.folderInfo
+                home: panel.home
+                autoOffered: panel.reviewMixed
+                path: panel.reviewDir
+                onChosen: chosenPath => {
+                    panel.reviewDir = chosenPath
+                    panel.overrides = ({})
+                }
+            }
+
+            StyledText {
+                width: parent.width
+                text: panel.reviewDir === "auto" ? "Each link goes to its type’s folder inside " + Fmt.homePath(panel.folderInfo.base || "", panel.home)
+                                                 : "All " + panel.okEntries.length + " go to " + Fmt.homePath(panel.reviewDir || panel.folderInfo.base || "", panel.home)
+                                                   + (panel.reviewMixed ? "; Auto puts them back by type" : "")
+                font.pixelSize: Theme.fontSizeSmall
+                color: Theme.outline
+                wrapMode: Text.WordWrap
+            }
+
+            Rectangle {
+                width: parent.width
+                height: whereColumn.implicitHeight + 8
+                radius: 14
+                color: Theme.surfaceContainerHigh
+
+                Column {
+                    id: whereColumn
+
+                    readonly property string counts: {
+                        const tally = ({})
+                        const order = []
+                        for (const e of panel.okEntries) {
+                            const label = panel.folderLabel(panel.destOf(e))
+                            if (!tally[label]) {
+                                tally[label] = 0
+                                order.push(label)
+                            }
+                            tally[label]++
+                        }
+                        return order.map(l => tally[l] + " → " + l).join(" · ")
+                    }
+
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.top: parent.top
+                    anchors.topMargin: 4
+
+                    Item {
+                        width: parent.width
+                        height: 40
+
+                        StyledText {
+                            id: whereTitle
+
+                            anchors.left: parent.left
+                            anchors.leftMargin: 14
+                            anchors.verticalCenter: parent.verticalCenter
+                            text: "Where each one goes"
+                            font.pixelSize: Theme.fontSizeSmall + 1
+                            font.weight: Font.Bold
+                            color: Theme.surfaceText
+                        }
+
+                        StyledText {
+                            anchors.left: whereTitle.right
+                            anchors.leftMargin: 12
+                            anchors.right: parent.right
+                            anchors.rightMargin: 14
+                            anchors.verticalCenter: parent.verticalCenter
+                            horizontalAlignment: Text.AlignRight
+                            text: whereColumn.counts
+                            font.pixelSize: Theme.fontSizeSmall - 1
+                            color: Theme.surfaceVariantText
+                            wrapMode: Text.NoWrap
+                            elide: Text.ElideLeft
+                        }
+
+                        Rectangle {
+                            anchors.left: parent.left
+                            anchors.right: parent.right
+                            anchors.bottom: parent.bottom
+                            height: 1
+                            color: Theme.outlineVariant
+                            opacity: 0.6
+                        }
+                    }
+
+                    Repeater {
+                        model: panel.okEntries
+
+                        Item {
+                            id: whereRow
+
+                            required property var modelData
+                            readonly property string category: panel.categoryOf(modelData.name)
+                            readonly property string dest: panel.destOf(modelData)
+                            readonly property bool own: !!panel.overrides[modelData.url]
+
+                            width: whereColumn.width
+                            height: 46
+
+                            DankIcon {
+                                id: whereIcon
+
+                                anchors.left: parent.left
+                                anchors.leftMargin: 14
+                                anchors.verticalCenter: parent.verticalCenter
+                                name: panel.categoryIcons[whereRow.category] || Fmt.kindIcon(whereRow.modelData.name, false, false)
+                                size: 20
+                                color: Theme.surfaceVariantText
+                            }
+
+                            Column {
+                                anchors.left: whereIcon.right
+                                anchors.leftMargin: 12
+                                anchors.right: destChip.left
+                                anchors.rightMargin: 10
+                                anchors.verticalCenter: parent.verticalCenter
+                                spacing: 1
+
+                                //: A name that says nothing is shown as its link ends.
+                                StyledText {
+                                    width: parent.width
+                                    text: whereRow.category === "unknown" ? (String(whereRow.modelData.url).split("/").pop() || whereRow.modelData.name)
+                                                                          : whereRow.modelData.name
+                                    font.pixelSize: Theme.fontSizeSmall + 1
+                                    color: Theme.surfaceText
+                                    wrapMode: Text.NoWrap
+                                    elide: Text.ElideMiddle
+                                }
+
+                                StyledText {
+                                    width: parent.width
+                                    text: whereRow.category === "unknown" ? "Unknown · decided on start"
+                                                                          : (panel.kindWords[whereRow.category] || Fmt.kindLabel(whereRow.modelData.name, whereRow.modelData.contentType))
+                                                                            + (whereRow.modelData.size ? " · " + Fmt.bytes(whereRow.modelData.size) : "")
+                                    font.pixelSize: Theme.fontSizeSmall - 1
+                                    color: Theme.surfaceVariantText
+                                    wrapMode: Text.NoWrap
+                                    elide: Text.ElideRight
+                                }
+                            }
+
+                            //: Its destination; a change of its own gets an accent border.
+                            Rectangle {
+                                id: destChip
+
+                                anchors.right: parent.right
+                                anchors.rightMargin: 10
+                                anchors.verticalCenter: parent.verticalCenter
+                                width: Math.min(170, destRow.implicitWidth + 16)
+                                height: 30
+                                radius: 8
+                                color: whereRow.own ? Theme.withAlpha(Theme.primary, 0.10) : Theme.surfaceContainerLow
+                                border.width: 1
+                                border.color: whereRow.own ? Theme.primary : Theme.outlineVariant
+
+                                Row {
+                                    id: destRow
+
+                                    anchors.left: parent.left
+                                    anchors.leftMargin: 8
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    spacing: 4
+
+                                    DankIcon {
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        name: whereRow.dest === panel.folderInfo.base ? "home"
+                                                                                      : (panel.categoryIcons[((panel.folderInfo.presets || []).find(p => p.path === whereRow.dest) || {}).category] || "folder")
+                                        size: 15
+                                        color: Theme.surfaceVariantText
+                                    }
+
+                                    StyledText {
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        width: Math.min(implicitWidth, 110)
+                                        text: panel.folderLabel(whereRow.dest)
+                                        font.pixelSize: Theme.fontSizeSmall
+                                        color: Theme.surfaceText
+                                        wrapMode: Text.NoWrap
+                                        elide: Text.ElideMiddle
+                                    }
+
+                                    DankIcon {
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        name: "arrow_drop_down"
+                                        size: 18
+                                        color: Theme.surfaceVariantText
+                                    }
+                                }
+
+                                MouseArea {
+                                    anchors.fill: parent
+                                    cursorShape: Qt.PointingHandCursor
+                                    onClicked: destMenu.toggle()
+                                }
+
+                                MenuPopup {
+                                    id: destMenu
+
+                                    readonly property var folders: [panel.folderInfo.base || ""].concat((panel.folderInfo.presets || []).filter(p => p.path !== panel.folderInfo.base).map(p => p.path))
+
+                                    alignEnd: true
+                                    menuWidth: 220
+                                    entries: folders.map(f => ({
+                                                                   "text": panel.folderLabel(f),
+                                                                   "checked": f === whereRow.dest
+                                                               })).concat([{
+                                                                               "separator": true
+                                                                           }, {
+                                                                               "icon": "create_new_folder",
+                                                                               "text": "Other folder…"
+                                                                           }])
+                                    onTriggered: index => {
+                                        const url = whereRow.modelData.url
+                                        const setOwn = path => {
+                                            const next = Object.assign({}, panel.overrides)
+                                            next[url] = path
+                                            panel.overrides = next
+                                        }
+                                        if (index < folders.length) {
+                                            setOwn(folders[index])
+                                            return
+                                        }
+                                        Proc.runCommand("ariaDownloadManager.destFolder", ["zenity", "--file-selection", "--directory",
+                                                                                            "--title=Choose a folder for " + whereRow.modelData.name,
+                                                                                            "--filename=" + String(whereRow.dest).replace(/\/*$/, "/")],
+                                                        (stdout, exitCode) => {
+                                                            if (exitCode === 0 && stdout.trim())
+                                                                setOwn(stdout.trim())
+                                                        }, 0)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         Repeater {
-            model: panel.entries
+            //: With many links the list above says where the good ones go;
+            //: a card stays for each that needs a word.
+            model: panel.okEntries.length >= 2 ? panel.entries.filter(e => e.state !== "ok") : panel.entries
 
             Rectangle {
                 id: card
@@ -1106,9 +1481,8 @@ Column {
                 required property var modelData
 
                 readonly property bool ok: modelData.state === "ok"
-                //: Where it will actually land: the folder picked, else the
-                //: type's folder when the manager sorts, else the download folder.
-                readonly property string dest: Fmt.homePath(panel.reviewDir || (panel.folderInfo.sorting ? modelData.suggested : panel.folderInfo.base) || "", panel.home)
+                //: Where it will actually land.
+                readonly property string dest: Fmt.homePath(panel.destOf(modelData), panel.home)
 
                 width: parent.width
                 height: cardColumn.implicitHeight + 24
@@ -1481,12 +1855,15 @@ Column {
                 text: "Save to"
             }
 
+            //: Sorting on, the torrent goes by its largest file unless a
+            //: folder is picked.
             FolderChips {
                 width: parent.width
                 info: panel.folderInfo
                 home: panel.home
-                path: panel.torrentDirPath
-                onChosen: chosenPath => panel.torrentDirPath = chosenPath
+                autoOffered: !!panel.folderInfo.sorting
+                path: panel.torrentDirPath || (panel.folderInfo.sorting ? "auto" : (panel.folderInfo.base || ""))
+                onChosen: chosenPath => panel.torrentDirPath = chosenPath === "auto" ? "" : chosenPath
             }
         }
 

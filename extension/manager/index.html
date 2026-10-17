@@ -288,8 +288,20 @@
         <input type="file" id="add-file" accept=".torrent,.meta4,.metalink">
       </label>
 
+      <!-- Where they go (board 5): Auto · by type first when the links mix
+           types, the folders, and Other folder…; then, for many links, where
+           each one goes, each changeable. -->
+      <div class="field add-saveto">
+        <span>Save to</span>
+        <div class="add-chips" id="add-folders" role="group" aria-label="Save to"></div>
+        <span class="hint" id="add-folder-hint"></span>
+      </div>
+      <section class="add-where" id="add-where" hidden>
+        <div class="add-where-head"><b>Where each one goes</b><span class="hint" id="add-where-count"></span></div>
+        <div id="add-where-list"></div>
+      </section>
+
       <div class="grid2">
-        <label class="field"><span>Save to</span><input id="add-dir" placeholder="Manager's download folder"></label>
         <label class="field" data-level="advanced"><span>Save as <small>single file only</small></span><input id="add-out" placeholder="Name from the server"></label>
         <label class="field" data-level="advanced"><span>Connections per server</span><input id="add-conn" type="number" min="1" max="16" placeholder="16"></label>
         <label class="field" data-level="advanced"><span>Parts per download</span><input id="add-split" type="number" min="1" placeholder="16"></label>
