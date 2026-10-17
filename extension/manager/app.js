@@ -19,7 +19,13 @@ const S = {
   // The add dialog's number-and-unit fields.
   addUnits: null,
   rules: [],
+  // The rules as last saved (JSON), what Discard goes back to.
+  rulesSaved: '[]',
   rulesEnabled: true,
+  speedSource: 'hybrid',
+  // Which action card is open (-1: none), and whether as JSON.
+  openRule: -1,
+  ruleJson: false,
   config: null,
   history: null,
   // The "sort into folders" card: what the manager holds, and the edits made
@@ -385,6 +391,9 @@ const ICONS = {
   link: 'M3.9 12c0-1.71 1.39-3.1 3.1-3.1h4V7H7a5 5 0 0 0 0 10h4v-1.9H7c-1.71 0-3.1-1.39-3.1-3.1zM8 13h8v-2H8v2zm9-6h-4v1.9h4c1.71 0 3.1 1.39 3.1 3.1s-1.39 3.1-3.1 3.1h-4V17h4a5 5 0 0 0 0-10z',
   download: 'M5 20h14v-2H5v2zM19 9h-4V3H9v6H5l7 7 7-7z',
   search: 'M15.5 14h-.79l-.28-.27A6.47 6.47 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z',
+  speed: 'M20.38 8.57l-1.23 1.85a8 8 0 0 1-.22 7.58H5.07A8 8 0 0 1 15.58 6.85l1.85-1.23A10 10 0 0 0 3.35 19a2 2 0 0 0 1.72 1h13.85a2 2 0 0 0 1.74-1 10 10 0 0 0-.27-10.44zm-9.79 6.84a2 2 0 0 0 2.83 0l5.66-8.49-8.49 5.66a2 2 0 0 0 0 2.83z',
+  add: 'M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z',
+  code: 'M9.4 16.6 4.8 12l4.6-4.6L8 6l-6 6 6 6 1.4-1.4zm5.2 0 4.6-4.6-4.6-4.6L16 6l6 6-6 6-1.4-1.4z',
   wand: 'M7.5 5.6 10 7 8.6 4.5 10 2 7.5 3.4 5 2l1.4 2.5L5 7zm12 9.8L17 14l1.4 2.5L17 19l2.5-1.4L22 19l-1.4-2.5L22 14zM22 2l-2.5 1.4L17 2l1.4 2.5L17 7l2.5-1.4L22 7l-1.4-2.5zm-7.63 5.29a.996.996 0 0 0-1.41 0L1.29 18.96a.996.996 0 0 0 0 1.41l2.34 2.34c.39.39 1.02.39 1.41 0L16.7 11.05a.996.996 0 0 0 0-1.41l-2.33-2.35zm-1.03 5.49-2.12-2.12 2.44-2.44 2.12 2.12-2.44 2.44z',
 };
 
@@ -1675,23 +1684,6 @@ function renderHistory() {
 }
 
 /* ----------------------------------------------------------------- rules */
-const KNOWN_STATUSES = ['active', 'waiting', 'paused', 'error', 'complete', 'removed'];
-
-// [path, label, kind, placeholder]. The placeholder is an example or what a
-// blank field means, so an empty card still explains itself.
-const RULE_FIELDS = [
-  ['when.speed_below', 'Speed below', 'speed', 'e.g. 50'],
-  ['when.for_seconds', 'For at least (s)', 'number', 'e.g. 3'],
-  ['when.min_age_seconds', 'Ignore the first (s)', 'number', 'Grace after start, e.g. 8'],
-  ['cooldown_seconds', 'Cooldown (s)', 'number', 'Between fires, e.g. 25'],
-  ['resume_after_seconds', 'Resume after (s)', 'number', 'Pause length, e.g. 1.5'],
-  ['max_triggers', 'Max times', 'number', '0 = no limit'],
-  ['when.min_progress', 'Only past (%)', 'number', 'Blank = from the start'],
-  ['when.max_progress', 'Only before (%)', 'number', 'Blank = until the end'],
-  ['when.connections_below', 'Connections below', 'number', 'Blank = any'],
-  ['when.name_matches', 'Name matches (regex)', 'text', 'Blank = every name, e.g. \\.iso$'],
-];
-
 const ACTION_LABEL = {
   pause_resume: 'Pause, then resume',
   force_pause_resume: 'Force pause, then resume',
@@ -1713,224 +1705,152 @@ function setPath(obj, path, value) {
   else node[last] = value;
 }
 
+/* An action reads as one sentence with its values inline, worded as the
+   DankBar's editor words it (dms-plugin/lib/Rules.js), so both read alike:
+   "When an active download of any kind stays below 50 KiB/s for 3 s, pause,
+   then resume it after 1.5 s." The rarer conditions are removable chips. */
+const ACTION_WORDS = {
+  pause_resume: 'pause, then resume it',
+  force_pause_resume: 'force-pause, then resume it',
+  restart: 'remove it and add it again',
+  set_option: 'change its options',
+  stop: 'pause it and leave it paused',
+  log_only: 'only log it',
+};
+const ACTION_DONE = {
+  pause_resume: 'paused and resumed',
+  force_pause_resume: 'force-paused and resumed',
+  restart: 'restarted',
+  set_option: 'options changed',
+  stop: 'paused',
+  log_only: 'logged',
+};
+const RESUMES = new Set(['pause_resume', 'force_pause_resume']);
+
+// [statuses, words]. A saved list that is none of these is offered as itself.
+const STATUS_CHOICES = [
+  [['active'], 'an active'],
+  [['waiting'], 'a queued'],
+  [['active', 'waiting'], 'an active or queued'],
+  [['paused'], 'a paused'],
+];
+const KIND_CHOICES = [['any', 'of any kind'], ['torrent', 'that is a torrent'], ['http', 'that is not a torrent']];
+
+// [path, words before, words after, value it starts at, input kind]
+const RULE_EXTRAS = [
+  ['when.min_age_seconds', 'Ignore the first', 's', 8, 'number'],
+  ['cooldown_seconds', 'Cooldown', 's', 25, 'number'],
+  ['max_triggers', 'At most', 'times', 20, 'number'],
+  ['when.min_progress', 'Only past', '%', 5, 'number'],
+  ['when.max_progress', 'Only before', '%', 95, 'number'],
+  ['when.connections_below', 'Fewer than', 'connections', 2, 'number'],
+  ['when.name_matches', 'Name matches', '', '\\.iso$', 'text'],
+];
+
+// The empty tab's starting points; each is added and opened in one click.
+const RULE_TEMPLATES = [
+  { icon: 'speed', title: 'Kick stalled downloads', rule: {
+    name: 'Stall kick', enabled: true, description: 'Pause and resume a download that stalls',
+    when: { statuses: ['active'], speed_below: 51200, for_seconds: 3, min_age_seconds: 8 },
+    action: 'pause_resume', resume_after_seconds: 1.5, cooldown_seconds: 25, max_triggers: 20 } },
+  { icon: 'retry', title: 'Restart dead torrents', rule: {
+    name: 'Dead torrent', enabled: true, description: 'Start a torrent over when it stops getting data',
+    when: { statuses: ['active'], torrent_only: true, speed_below: 1024, for_seconds: 120, min_progress: 5 },
+    action: 'restart', cooldown_seconds: 600, max_triggers: 3 } },
+  { icon: 'down', title: 'Slow down big files', rule: {
+    name: 'Slow ISOs', enabled: true, description: 'Keep disk images from taking the whole line',
+    when: { statuses: ['active'], name_matches: '\\.iso$', speed_above: 2097152, for_seconds: 5 },
+    action: 'set_option', options: { 'max-download-limit': '2M' }, max_triggers: 1 } },
+];
+
+const blank = (v) => v === undefined || v === null || v === '';
+
+// What a set_option action sets, in words where the option is a common one.
+function optionWords(options) {
+  return Object.entries(options).map(([key, value]) => {
+    if (key === 'max-download-limit') return `limit it to ${fmtSpeed(parseSize(value) || 0)}`;
+    if (key === 'max-upload-limit') return `limit its uploads to ${fmtSpeed(parseSize(value) || 0)}`;
+    if (key === 'max-connection-per-server') return `use ${value} connections per server`;
+    return `set ${key} = ${value}`;
+  }).join(', ');
+}
+
+// "Under 50 KiB/s for 3 s → pause, then resume it after 1.5 s"
+function ruleSummary(rule) {
+  const when = rule.when || {};
+  const lead = [];
+  if (when.torrent_only) lead.push('Torrents');
+  else if (when.http_only) lead.push('Normal downloads');
+  if (when.name_matches) lead.push(`named /${when.name_matches}/`);
+  let cond = '';
+  if (!blank(when.speed_below)) cond = `under ${fmtSpeed(Number(when.speed_below))}`;
+  else if (!blank(when.speed_above)) cond = `over ${fmtSpeed(Number(when.speed_above))}`;
+  else if (!blank(when.connections_below)) cond = `under ${when.connections_below} connections`;
+  if (when.for_seconds) cond += ` for ${when.for_seconds} s`;
+  if (when.min_progress) cond += ` past ${when.min_progress}%`;
+  let action = rule.action === 'set_option' && Object.keys(rule.options || {}).length
+    ? optionWords(rule.options)
+    : ACTION_WORDS[rule.action || 'pause_resume'] || actionLabel(rule.action);
+  if (RESUMES.has(rule.action || 'pause_resume') && rule.resume_after_seconds) action += ` after ${rule.resume_after_seconds} s`;
+  const head = capitalise((lead.length ? `${lead.join(', ')}: ` : '') + cond.trim());
+  return `${head || 'Always'} → ${action}`;
+}
+
+function firedToday(name) {
+  const midnight = new Date();
+  midnight.setHours(0, 0, 0, 0);
+  const since = midnight.getTime() / 1000;
+  return S.triggers.filter((t) => t.rule === name && t.ts >= since).length;
+}
+
+function triggerText(t) {
+  // A log line already says what was done: "[Stall kick] paused and resumed debian.iso".
+  if (t.logLine) return `${String(t.name).replace(/^\[[^\]]*\]\s*/, '')} · ${fmtSpeed(t.speed)}`;
+  const done = ACTION_DONE[t.action] || String(t.action || '').replace(/_/g, ' ');
+  return `${t.name} · ${fmtSpeed(t.speed)}${done ? ` → ${done}` : ''}${t.detail ? ` (${t.detail})` : ''}`;
+}
+
+/* -------------------------------------------------------- load and save */
 async function loadRules() {
   try {
     const data = await api('/api/rules');
     S.rules = data.rules || [];
+    S.rulesSaved = JSON.stringify(S.rules);
     S.rulesEnabled = !!data.enabled;
-    if (data.speed_source) $('#rules-speed-source').value = data.speed_source;
-    S.triggers = data.triggers || [];
+    S.speedSource = data.speed_source || 'hybrid';
+    S.triggers = data.triggers || S.triggers;
     $('#rules-master').checked = S.rulesEnabled;
+    paintMeasure();
     renderRules();
   } catch (err) {
     toast(err.message, 'error');
   }
 }
 
-function renderRules() {
-  const host = $('#rules-list');
-  host.innerHTML = '';
-
-  if (!S.rules.length) {
-    host.innerHTML = `<p class="empty">${icon('wand')}<b>No actions yet</b><span>A common one pauses and resumes a download that stalls under 50 KiB/s for 3 seconds. Add one to start.</span></p>`;
+function paintMeasure() {
+  for (const btn of document.querySelectorAll('#rules-measure [data-source]')) {
+    btn.setAttribute('aria-pressed', String(btn.dataset.source === S.speedSource));
   }
-
-  S.rules.forEach((rule, index) => {
-    const card = document.createElement('div');
-    card.className = `rule${rule.enabled === false ? ' disabled' : ''}`;
-
-    const head = document.createElement('div');
-    head.className = 'rule-head';
-    const { box: toggleBox, input: toggle } = boolSwitch(rule.enabled !== false, false);
-    toggleBox.title = 'Action on or off';
-    toggle.addEventListener('change', () => { rule.enabled = toggle.checked; renderRules(); });
-
-    const name = document.createElement('input');
-    name.className = 'rname';
-    name.value = rule.name || '';
-    name.placeholder = 'Action name';
-    name.addEventListener('change', () => { rule.name = name.value.trim(); });
-
-    const del = mkBtn('trash', 'Delete action', () => {
-      S.rules.splice(index, 1);
-      renderRules();
-    }, 'btn btn-icon btn-sm btn-danger');
-
-    head.append(toggleBox, name, del);
-    card.append(head);
-
-    const body = document.createElement('div');
-    body.className = 'rule-body';
-    card.append(body);
-
-    const action = document.createElement('select');
-    action.innerHTML = ACTIONS
-      .map((a) => `<option value="${a}">${escapeHtml(actionLabel(a))}</option>`).join('');
-    action.value = rule.action || 'pause_resume';
-    action.addEventListener('change', () => { rule.action = action.value; renderRules(); });
-
-    const actionField = document.createElement('label');
-    actionField.className = 'field rule-action';
-    const actionLab = document.createElement('span');
-    actionLab.textContent = 'What it does';
-    actionField.append(actionLab, action);
-    body.append(actionField);
-
-    const grid = document.createElement('div');
-    grid.className = 'rule-grid';
-    for (const [path, label, kind, placeholder] of RULE_FIELDS) {
-      const field = document.createElement('label');
-      field.className = 'field';
-      const span = document.createElement('span');
-      span.textContent = label;
-      if (kind === 'speed') {
-        const current = getPath(rule, path);
-        const unitField = unitInput('speed', current ?? null, () => {
-          const value = unitField.read();
-          setPath(rule, path, value === '' || !Number.isFinite(Number(value)) ? value : Number(value));
-        }, placeholder);
-        field.append(span, unitField.el);
-        grid.append(field);
-        continue;
-      }
-      const input = document.createElement('input');
-      if (kind === 'number') input.type = 'number';
-      input.placeholder = placeholder || '';
-      input.value = getPath(rule, path) ?? '';
-      input.addEventListener('change', () => {
-        let value = input.value.trim();
-        if (value === '') { setPath(rule, path, ''); return; }
-        if (kind === 'number') value = Number(value);
-        setPath(rule, path, value);
-      });
-      field.append(span, input);
-      grid.append(field);
-    }
-    body.append(grid);
-
-    /* aria2's status vocabulary is a short fixed list, so it is offered as
-       chips, the same control the filter bar uses. Anything already saved in
-       config.yaml is kept even if it is not a known name. */
-    const statuses = document.createElement('div');
-    statuses.className = 'field';
-    statuses.innerHTML = '<span>Applies to</span>';
-    const chosen = ((rule.when || {}).statuses || ['active']).slice();
-    const names = KNOWN_STATUSES.concat(chosen.filter((s) => !KNOWN_STATUSES.includes(s)));
-    const chipRow = document.createElement('div');
-    chipRow.className = 'chiprow';
-    for (const st of names) {
-      const chip = document.createElement('button');
-      chip.type = 'button';
-      chip.className = `chip${chosen.includes(st) ? ' active' : ''}`;
-      chip.innerHTML = `<span class="check" aria-hidden="true">${icon('check')}</span>${escapeHtml(statusLabel(st))}`;
-      chip.addEventListener('click', () => {
-        const at = chosen.indexOf(st);
-        if (at >= 0) chosen.splice(at, 1); else chosen.push(st);
-        const next = chosen.length ? chosen : ['active'];
-        setPath(rule, 'when.statuses', next.slice());
-        chip.classList.toggle('active', chosen.includes(st));
-        if (!chosen.length) renderRules();
-      });
-      chipRow.append(chip);
-    }
-    statuses.append(chipRow);
-    body.append(statuses);
-
-    /* Torrents and plain downloads fail in different ways, so a rule can be
-       aimed at one of them. Stored as aria2-side flags the engine already
-       understood (torrent_only / http_only); both chips on means either. */
-    const kinds = document.createElement('div');
-    kinds.className = 'field';
-    kinds.innerHTML = '<span>Download type</span>';
-    const kindRow = document.createElement('div');
-    kindRow.className = 'chiprow';
-    const kindState = () => {
-      const when = rule.when || {};
-      return { torrent: !when.http_only, normal: !when.torrent_only };
-    };
-    for (const [key, label] of [['torrent', 'Torrents'], ['normal', 'Normal downloads']]) {
-      const chip = document.createElement('button');
-      chip.type = 'button';
-      chip.className = `chip${kindState()[key] ? ' active' : ''}`;
-      chip.innerHTML = `<span class="check" aria-hidden="true">${icon('check')}</span>${label}`;
-      chip.addEventListener('click', () => {
-        const state = kindState();
-        state[key] = !state[key];
-        // Neither one selected would mean a rule that can never fire; turning
-        // the last one off puts it back to both, as the statuses do.
-        if (!state.torrent && !state.normal) { state.torrent = state.normal = true; }
-        setPath(rule, 'when.torrent_only', state.torrent && !state.normal ? true : '');
-        setPath(rule, 'when.http_only', state.normal && !state.torrent ? true : '');
-        renderRules();
-      });
-      kindRow.append(chip);
-    }
-    kinds.append(kindRow);
-    body.append(kinds);
-
-    const descField = document.createElement('label');
-    descField.className = 'field';
-    const descLab = document.createElement('span');
-    descLab.textContent = 'Note';
-    const desc = document.createElement('input');
-    desc.className = 'rule-desc';
-    desc.placeholder = 'What this action is for (optional)';
-    desc.value = rule.description || '';
-    desc.addEventListener('change', () => { rule.description = desc.value; });
-    descField.append(descLab, desc);
-    body.append(descField);
-
-    if (rule.action === 'set_option') {
-      const hint = document.createElement('p');
-      hint.className = 'hint';
-      hint.textContent = '"Change its options" needs an "options" mapping. Add it under Raw JSON below.';
-      body.append(hint);
-    }
-
-    const details = document.createElement('details');
-    details.className = 'rule-json';
-    details.innerHTML = '<summary>Raw JSON</summary>';
-    const area = document.createElement('textarea');
-    area.rows = 10;
-    area.value = JSON.stringify(rule, null, 2);
-    area.addEventListener('change', () => {
-      try {
-        S.rules[index] = JSON.parse(area.value);
-        renderRules();
-      } catch (err) {
-        toast(`That is not valid JSON: ${err.message}`, 'error');
-      }
-    });
-    details.append(area);
-    body.append(details);
-
-    host.append(card);
-  });
-
-  renderTriggers();
 }
 
-function renderTriggers() {
-  $('#rule-triggers').innerHTML = S.triggers.length
-    ? S.triggers.map((t) => `
-        <div class="logline rule">
-          <time>${fmtTime(t.ts)}</time><span class="lvl">action</span>
-          <span class="msg"><b>${escapeHtml(t.rule)}</b> · ${escapeHtml(actionLabel(t.action))} → ${escapeHtml(t.name)} at ${fmtSpeed(t.speed)}${t.detail ? ` (${escapeHtml(t.detail)})` : ''}</span>
-        </div>`).join('')
-    : '<p class="hint">No action has fired yet.</p>';
+/* Unsaved edits show as a bar with Save and Discard, and only then; it names
+   the action when just one changed. */
+function rulesChanged() {
+  const saved = JSON.parse(S.rulesSaved || '[]');
+  const changed = S.rules.filter((rule, i) => JSON.stringify(rule) !== JSON.stringify(saved[i]));
+  const removed = Math.max(0, saved.length - S.rules.length);
+  const n = changed.length + removed;
+  $('#rules-savebar').hidden = n === 0;
+  $('#rules-dirty').textContent = n === 1 && changed.length === 1
+    ? `Unsaved changes to ${changed[0].name || 'an action'}`
+    : `${n} unsaved change${n === 1 ? '' : 's'}`;
 }
 
 async function saveRules() {
   try {
-    const data = await api('/api/rules', {
-      method: 'POST',
-      body: {
-        rules: S.rules,
-        enabled: $('#rules-master').checked,
-        speed_source: $('#rules-speed-source').value,
-      },
-    });
+    const data = await api('/api/rules', { method: 'POST', body: { rules: S.rules } });
     S.rules = data.rules;
+    S.rulesSaved = JSON.stringify(S.rules);
     toast('Actions saved', 'ok');
     renderRules();
   } catch (err) {
@@ -1938,18 +1858,284 @@ async function saveRules() {
   }
 }
 
-function addRule() {
-  S.rules.push({
-    name: `action-${S.rules.length + 1}`,
-    enabled: true,
-    description: '',
-    when: { statuses: ['active'], speed_below: 51200, for_seconds: 3, min_age_seconds: 8 },
-    action: 'pause_resume',
-    resume_after_seconds: 1.5,
-    cooldown_seconds: 25,
-    max_triggers: 20,
-  });
+function discardRules() {
+  S.rules = JSON.parse(S.rulesSaved || '[]');
+  S.openRule = Math.min(S.openRule ?? -1, S.rules.length - 1);
   renderRules();
+}
+
+function uniqueRuleName(base) {
+  const names = new Set(S.rules.map((r) => r.name));
+  if (!names.has(base)) return base;
+  let n = 2;
+  while (names.has(`${base} ${n}`)) n += 1;
+  return `${base} ${n}`;
+}
+
+function addRule(template = RULE_TEMPLATES[0].rule) {
+  const rule = structuredClone(template);
+  rule.name = uniqueRuleName(rule.name);
+  S.rules.push(rule);
+  S.openRule = S.rules.length - 1;
+  renderRules();
+}
+
+/* ------------------------------------------------------------- render */
+function renderRules() {
+  const host = $('#rules-list');
+  host.innerHTML = '';
+  if (!S.rules.length) host.append(ruleTemplates());
+  S.rules.forEach((rule, index) => host.append(ruleCard(rule, index)));
+  rulesChanged();
+}
+
+function ruleTemplates() {
+  const box = document.createElement('div');
+  box.className = 'card rule-empty';
+  box.innerHTML = `<div class="rule-empty-head">${icon('wand')}<b>Let the manager babysit downloads</b>
+    <span class="hint">Start from one of these — each opens ready to edit.</span></div>`;
+  for (const t of RULE_TEMPLATES) {
+    const row = document.createElement('button');
+    row.type = 'button';
+    row.className = 'rule-template';
+    row.innerHTML = `<span class="tile">${icon(t.icon)}</span>
+      <span class="text"><b>${escapeHtml(t.title)}</b><span class="hint">${escapeHtml(ruleSummary(t.rule))}</span></span>${icon('add')}`;
+    row.addEventListener('click', () => addRule(t.rule));
+    box.append(row);
+  }
+  return box;
+}
+
+function ruleCard(rule, index) {
+  const open = S.openRule === index;
+  const card = document.createElement('div');
+  card.className = `rule${rule.enabled === false ? ' disabled' : ''}${open ? ' open' : ''}`;
+
+  const head = document.createElement('div');
+  head.className = 'rule-head';
+  const { box: toggleBox, input: toggle } = boolSwitch(rule.enabled !== false, false);
+  toggleBox.title = 'Action on or off';
+  toggle.addEventListener('change', () => { rule.enabled = toggle.checked; renderRules(); });
+  head.append(toggleBox);
+
+  if (open) {
+    const name = document.createElement('input');
+    name.className = 'rname';
+    name.value = rule.name || '';
+    name.placeholder = 'Action name';
+    name.setAttribute('aria-label', 'Action name');
+    name.addEventListener('input', () => { rule.name = name.value.trim(); rulesChanged(); });
+    head.append(name,
+      mkBtn('code', 'Edit as JSON', () => { S.ruleJson = !S.ruleJson; renderRules(); },
+        `btn btn-icon btn-sm${S.ruleJson ? ' on' : ''}`),
+      mkBtn('trash', 'Delete action', () => {
+        S.rules.splice(index, 1);
+        S.openRule = -1;
+        renderRules();
+      }, 'btn btn-icon btn-sm btn-danger'));
+  } else {
+    const fired = firedToday(rule.name);
+    const text = document.createElement('button');
+    text.type = 'button';
+    text.className = 'rule-fold';
+    text.innerHTML = `<b>${escapeHtml(rule.name || 'Unnamed action')}</b>
+      <span class="hint">${escapeHtml(ruleSummary(rule))}</span>`;
+    text.addEventListener('click', () => { S.openRule = index; renderRules(); });
+    head.append(text);
+    if (fired) {
+      const badge = document.createElement('span');
+      badge.className = 'hint rule-fired';
+      badge.textContent = `fired ${fired === 1 ? 'once' : fired === 2 ? 'twice' : `${fired}×`} today`;
+      head.append(badge);
+    }
+  }
+  head.append(mkBtn('chevron', open ? 'Fold' : 'Edit', () => {
+    S.openRule = open ? -1 : index;
+    renderRules();
+  }, 'btn btn-icon btn-sm rule-chev'));
+  card.append(head);
+  if (!open) return card;
+
+  const body = document.createElement('div');
+  body.className = 'rule-body';
+  card.append(body);
+  if (S.ruleJson) body.append(ruleJsonEditor(rule, index));
+  else body.append(ruleSentence(rule), ruleExtras(rule));
+
+  const desc = document.createElement('input');
+  desc.className = 'rule-desc';
+  desc.placeholder = 'A note on what this action is for (optional)';
+  desc.value = rule.description || '';
+  desc.addEventListener('input', () => { rule.description = desc.value; rulesChanged(); });
+  if (!S.ruleJson) body.append(desc);
+
+  const fired = S.triggers.filter((t) => t.rule === rule.name).slice(0, 5);
+  const log = document.createElement('div');
+  log.className = 'rule-log';
+  log.innerHTML = `<span class="label">This action's recent triggers</span>${fired.length
+    ? fired.map((t) => `<div class="trig"><time>${fmtTime(t.ts)}</time><span>${escapeHtml(triggerText(t))}</span></div>`).join('')
+    : '<span class="hint">Not fired yet.</span>'}`;
+  body.append(log);
+  return card;
+}
+
+// One inline value inside the sentence: a small input that edits a path.
+function token(rule, path, kind, placeholder) {
+  if (kind === 'speed') {
+    const field = unitInput('speed', getPath(rule, path) ?? null, () => {
+      const value = field.read();
+      setPath(rule, path, value === '' || !Number.isFinite(Number(value)) ? value : Number(value));
+      rulesChanged();
+    }, placeholder);
+    field.el.classList.add('tok');
+    return field.el;
+  }
+  const input = document.createElement('input');
+  input.className = `tok${kind === 'text' ? ' tok-text' : ''}`;
+  if (kind === 'number') { input.type = 'number'; input.min = '0'; input.step = 'any'; }
+  input.placeholder = placeholder || '';
+  input.value = getPath(rule, path) ?? '';
+  input.setAttribute('aria-label', placeholder || path);
+  input.addEventListener('input', () => {
+    const text = input.value.trim();
+    setPath(rule, path, text === '' ? '' : kind === 'number' ? Number(text) : text);
+    rulesChanged();
+  });
+  return input;
+}
+
+function tokSelect(choices, value, onPick, label) {
+  const select = document.createElement('select');
+  select.className = 'tok tok-select';
+  select.setAttribute('aria-label', label);
+  select.innerHTML = choices.map(([v, words]) => `<option value="${escapeHtml(v)}">${escapeHtml(words)}</option>`).join('');
+  select.value = value;
+  select.addEventListener('change', () => { fitSelect(select); onPick(select.value); });
+  requestAnimationFrame(() => fitSelect(select));
+  return select;
+}
+
+/* A select is as wide as its longest option; in a sentence it should be as
+   wide as the words it shows. */
+const fitCanvas = document.createElement('canvas').getContext('2d');
+function fitSelect(select) {
+  const style = getComputedStyle(select);
+  fitCanvas.font = `${style.fontWeight} ${style.fontSize} ${style.fontFamily}`;
+  const text = select.selectedOptions[0]?.text || '';
+  const pad = parseFloat(style.paddingLeft) + parseFloat(style.paddingRight);
+  select.style.width = `${Math.ceil(fitCanvas.measureText(text).width + pad + 4)}px`;
+}
+
+function ruleSentence(rule) {
+  const when = rule.when ??= {};
+  const p = document.createElement('p');
+  p.className = 'rule-sentence';
+  const words = (text) => p.append(document.createTextNode(text));
+
+  const statuses = when.statuses || ['active'];
+  const key = statuses.join('+');
+  const choices = STATUS_CHOICES.map(([list, w]) => [list.join('+'), w]);
+  if (!choices.some(([v]) => v === key)) choices.push([key, `a ${statuses.map(statusLabel).join(' or ').toLowerCase()}`]);
+  words('When ');
+  p.append(tokSelect(choices, key, (v) => { when.statuses = v.split('+'); rulesChanged(); }, 'Which downloads'));
+  words(' download ');
+  const kind = when.torrent_only ? 'torrent' : when.http_only ? 'http' : 'any';
+  p.append(tokSelect(KIND_CHOICES, kind, (v) => {
+    setPath(rule, 'when.torrent_only', v === 'torrent' ? true : '');
+    setPath(rule, 'when.http_only', v === 'http' ? true : '');
+    rulesChanged();
+  }, 'What kind'));
+  words(' stays ');
+  const above = blank(when.speed_below) && !blank(when.speed_above);
+  const speedPath = above ? 'when.speed_above' : 'when.speed_below';
+  p.append(tokSelect([['below', 'below'], ['above', 'above']], above ? 'above' : 'below', (v) => {
+    const value = getPath(rule, speedPath);
+    setPath(rule, speedPath, '');
+    setPath(rule, v === 'above' ? 'when.speed_above' : 'when.speed_below', value);
+    renderRules();
+  }, 'Below or above'));
+  words(' ');
+  p.append(token(rule, speedPath, 'speed', 'any speed'));
+  words(' for ');
+  p.append(token(rule, 'when.for_seconds', 'number', '0'));
+  words(' s, ');
+  const action = rule.action || 'pause_resume';
+  p.append(tokSelect(Object.entries(ACTION_WORDS), action, (v) => { rule.action = v; renderRules(); }, 'What it does'));
+  if (RESUMES.has(action)) {
+    words(' after ');
+    p.append(token(rule, 'resume_after_seconds', 'number', '1.5'));
+    words(' s');
+  }
+  words('.');
+  if (action === 'set_option') {
+    const hint = document.createElement('span');
+    hint.className = 'hint rule-note';
+    const opts = Object.entries(rule.options || {}).map(([k, v]) => `${k} = ${v}`).join(', ');
+    hint.textContent = opts
+      ? `Sets ${opts}. Edit the options as JSON ({} above).`
+      : 'Which options it changes is set as JSON ({} above), under "options".';
+    p.append(hint);
+  }
+  return p;
+}
+
+function ruleExtras(rule) {
+  const row = document.createElement('div');
+  row.className = 'chiprow rule-extras';
+  const unused = [];
+  for (const [path, before, after, start, kind] of RULE_EXTRAS) {
+    if (blank(getPath(rule, path))) { unused.push([path, before, after, start]); continue; }
+    const chip = document.createElement('span');
+    chip.className = 'chip rule-cond';
+    chip.append(document.createTextNode(`${before} `), token(rule, path, kind, String(start)));
+    if (after) chip.append(document.createTextNode(after === '%' ? '%' : ` ${after}`));
+    const x = document.createElement('button');
+    x.type = 'button';
+    x.className = 'x';
+    x.setAttribute('aria-label', `Remove "${before}"`);
+    x.textContent = '×';
+    x.addEventListener('click', () => { setPath(rule, path, ''); renderRules(); });
+    chip.append(x);
+    row.append(chip);
+  }
+  if (unused.length) {
+    const add = document.createElement('select');
+    add.className = 'chip rule-add-cond';
+    add.setAttribute('aria-label', 'Add a condition');
+    add.innerHTML = `<option value="">+ Condition</option>${unused
+      .map(([path, before, after]) => `<option value="${path}">${escapeHtml(`${before} …${after ? ` ${after}` : ''}`)}</option>`).join('')}`;
+    requestAnimationFrame(() => fitSelect(add));
+    add.addEventListener('change', () => {
+      const pick = unused.find(([path]) => path === add.value);
+      if (!pick) return;
+      setPath(rule, pick[0], pick[3]);
+      renderRules();
+    });
+    row.append(add);
+  }
+  return row;
+}
+
+function ruleJsonEditor(rule, index) {
+  const wrap = document.createElement('div');
+  wrap.className = 'rule-json';
+  const area = document.createElement('textarea');
+  area.rows = 14;
+  area.spellcheck = false;
+  area.value = JSON.stringify(rule, null, 2);
+  const problem = document.createElement('span');
+  problem.className = 'hint err';
+  area.addEventListener('input', () => {
+    try {
+      S.rules[index] = JSON.parse(area.value);
+      problem.textContent = '';
+      rulesChanged();
+    } catch (err) {
+      problem.textContent = `Not valid JSON yet: ${err.message}`;
+    }
+  });
+  wrap.append(area, problem);
+  return wrap;
 }
 
 /* ------------------------------------------------------------------- log */
@@ -1962,9 +2148,11 @@ function renderLog() {
     </div>`).join('') || '<p class="hint">Nothing logged yet.</p>';
   if (S.events.some((e) => e.level === 'rule')) {
     S.triggers = S.events.filter((e) => e.level === 'rule').map((e) => ({
-      ts: e.ts, rule: e.rule || '?', action: e.action || '', name: e.message, speed: e.speed || 0, detail: '',
+      ts: e.ts, rule: e.rule || '?', action: e.action || '', name: e.message, speed: e.speed || 0, detail: '', logLine: true,
     }));
-    if ($('#tab-rules').classList.contains('active')) renderTriggers();
+    // A fresh trigger shows under its action, unless that would pull the
+    // field being typed in out from under the cursor.
+    if ($('#tab-rules').classList.contains('active') && !$('#rules-list').contains(document.activeElement)) renderRules();
   }
 }
 
@@ -2146,12 +2334,17 @@ function init() {
     await act('/api/aria2/restart', { method: 'POST' }, 'aria2c restarted');
   });
 
-  $('#rules-speed-source').addEventListener('change', async (e) => {
-    await act('/api/rules', { method: 'POST', body: { speed_source: e.target.value } },
-      `Speed judged by: ${e.target.selectedOptions[0].textContent}`);
-  });
-  $('#btn-rule-add').addEventListener('click', addRule);
+  for (const btn of document.querySelectorAll('#rules-measure [data-source]')) {
+    btn.addEventListener('click', async () => {
+      S.speedSource = btn.dataset.source;
+      paintMeasure();
+      await act('/api/rules', { method: 'POST', body: { speed_source: S.speedSource } },
+        `Speed measured by ${btn.textContent.trim()}`);
+    });
+  }
+  $('#btn-rule-add').addEventListener('click', () => addRule());
   $('#btn-rules-save').addEventListener('click', saveRules);
+  $('#btn-rules-discard').addEventListener('click', discardRules);
   $('#rules-master').addEventListener('change', async (e) => {
     await act('/api/rules', { method: 'POST', body: { enabled: e.target.checked } },
       e.target.checked ? 'Actions on' : 'Actions off');

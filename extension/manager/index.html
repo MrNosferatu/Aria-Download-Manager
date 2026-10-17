@@ -120,32 +120,38 @@
 
   <!-- ---------------- rules ---------------- -->
   <section id="tab-rules" class="tabpane">
-    <!-- The master switch heads the section it controls, saying what it does. -->
-    <label class="card mastercard" for="rules-master">
-      <span class="text"><b>Automatic actions</b>
-        <span class="hint" id="master-hint">Watch running downloads and step in when one stalls.</span></span>
-      <span class="switch"><input type="checkbox" id="rules-master"><span class="track"><span class="knob"></span></span></span>
-    </label>
+    <!-- The master switch heads the section it controls, saying what it does;
+         how speed is measured belongs to every action, so it sits here too. -->
+    <div class="card mastercard">
+      <label class="master-row" for="rules-master">
+        <span class="text"><b>Automatic actions</b>
+          <span class="hint" id="master-hint">Watch running downloads and step in when one stalls.</span></span>
+        <span class="switch"><input type="checkbox" id="rules-master"><span class="track"><span class="knob"></span></span></span>
+      </label>
+      <div class="measure-row">
+        <span class="hint" title="Hybrid: what reaches the disk, falling back to aria2's figure. Disk: what reaches the disk only. aria2: aria2's own moving average.">Measure speed by</span>
+        <div class="seg seg-sm" role="group" aria-label="Measure speed by" id="rules-measure">
+          <button type="button" data-source="hybrid" aria-pressed="true"><svg class="ico" viewBox="0 0 24 24"><path d="M9 16.17 4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>Hybrid</button>
+          <button type="button" data-source="measured" aria-pressed="false"><svg class="ico" viewBox="0 0 24 24"><path d="M9 16.17 4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>Disk</button>
+          <button type="button" data-source="aria2" aria-pressed="false"><svg class="ico" viewBox="0 0 24 24"><path d="M9 16.17 4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>aria2</button>
+        </div>
+      </div>
+    </div>
     <div class="panehead">
       <div>
         <h2>Actions</h2>
+        <p class="hint">Each reads as a sentence: when a download does this, do that.</p>
       </div>
       <div class="panehead-actions">
-        <label class="inline-field" title="Hybrid: measured write speed, falling back to aria2's figure. Write speed: measured only. Reported speed: aria2's moving average.">
-          <span>Speed by</span>
-          <select id="rules-speed-source">
-            <option value="hybrid">Hybrid</option>
-            <option value="measured">Write speed</option>
-            <option value="aria2">Reported speed</option>
-          </select>
-        </label>
         <button id="btn-rule-add" class="btn"><svg class="ico" viewBox="0 0 24 24"><path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>New action</button>
-        <button id="btn-rules-save" class="btn btn-primary">Save actions</button>
       </div>
     </div>
     <div id="rules-list" class="stack"></div>
-    <div class="panehead"><h2>Recent triggers</h2></div>
-    <div id="rule-triggers" class="loglist card"></div>
+    <div id="rules-savebar" class="savebar" hidden>
+      <span id="rules-dirty"></span>
+      <button id="btn-rules-discard" class="btn btn-text">Discard</button>
+      <button id="btn-rules-save" class="btn btn-primary">Save</button>
+    </div>
   </section>
 
   <!-- ---------------- settings ---------------- -->
