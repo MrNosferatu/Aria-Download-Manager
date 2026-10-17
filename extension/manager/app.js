@@ -178,7 +178,8 @@ function unitInput(kind, raw, onEdit, placeholder) {
     select.value = String(u);
     changed();
   });
-  return { el: wrap, read };
+  const reset = () => { input.value = amount; select.value = String(unit); };
+  return { el: wrap, read, reset };
 }
 
 function toast(message, kind = '') {
@@ -393,6 +394,8 @@ const ICONS = {
   search: 'M15.5 14h-.79l-.28-.27A6.47 6.47 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z',
   speed: 'M20.38 8.57l-1.23 1.85a8 8 0 0 1-.22 7.58H5.07A8 8 0 0 1 15.58 6.85l1.85-1.23A10 10 0 0 0 3.35 19a2 2 0 0 0 1.72 1h13.85a2 2 0 0 0 1.74-1 10 10 0 0 0-.27-10.44zm-9.79 6.84a2 2 0 0 0 2.83 0l5.66-8.49-8.49 5.66a2 2 0 0 0 0 2.83z',
   add: 'M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z',
+  remove: 'M19 13H5v-2h14v2z',
+  undo: 'M12.5 8c-2.65 0-5.05.99-6.9 2.6L2 7v9h9l-3.62-3.62A7.95 7.95 0 0 1 12.5 10.5c3.54 0 6.55 2.31 7.6 5.5l2.37-.78A10.51 10.51 0 0 0 12.5 8z',
   code: 'M9.4 16.6 4.8 12l4.6-4.6L8 6l-6 6 6 6 1.4-1.4zm5.2 0 4.6-4.6-4.6-4.6L16 6l6 6-6 6-1.4-1.4z',
   wand: 'M7.5 5.6 10 7 8.6 4.5 10 2 7.5 3.4 5 2l1.4 2.5L5 7zm12 9.8L17 14l1.4 2.5L17 19l2.5-1.4L22 19l-1.4-2.5L22 14zM22 2l-2.5 1.4L17 2l1.4 2.5L17 7l2.5-1.4L22 7l-1.4-2.5zm-7.63 5.29a.996.996 0 0 0-1.41 0L1.29 18.96a.996.996 0 0 0 0 1.41l2.34 2.34c.39.39 1.02.39 1.41 0L16.7 11.05a.996.996 0 0 0 0-1.41l-2.33-2.35zm-1.03 5.49-2.12-2.12 2.44-2.44 2.12 2.12-2.44 2.44z',
 };
@@ -1265,12 +1268,14 @@ function optionField(key, label, kind, value, desc) {
   if (pending !== undefined) value = pending;
   const lab = document.createElement('label');
   lab.innerHTML = `${escapeHtml(label)}`
+    + (pending !== undefined ? ' <span class="tag tag-pending">After restart</span>' : '')
     + (desc ? `<em>${escapeHtml(desc)}</em>` : '')
-    + (label === key ? '' : `<small>${key}</small>`)
-    + (pending !== undefined ? ' <span class="tag tag-pending">Applies after restart</span>' : '');
+    + (label === key ? '' : `<small>${key}</small>`);
   const original = value ?? '';
   let read;
+  let reset;
   let control;
+  const mark = () => wrap.classList.toggle('dirty', !sameOptionValue(read(), original));
 
   if (kind === 'bool') {
     // aria2 does not report every option. An unset one stays visibly undecided
@@ -1284,9 +1289,15 @@ function optionField(key, label, kind, value, desc) {
       unset = false;
       box.classList.remove('unset');
       note.textContent = '';
-      wrap.classList.toggle('dirty', read() !== original);
+      mark();
     });
     read = () => (unset ? '' : (input.checked ? 'true' : 'false'));
+    reset = () => {
+      unset = original === '';
+      input.checked = original === 'true';
+      box.classList.toggle('unset', unset);
+      note.textContent = unset ? 'Not set' : '';
+    };
     control = document.createElement('span');
     control.className = 'boolcell';
     control.append(note, box);
@@ -1297,27 +1308,48 @@ function optionField(key, label, kind, value, desc) {
     input.innerHTML = (unset ? '<option value="">Not set</option>' : '')
       + choices.map((v) => `<option value="${v}">${v}</option>`).join('');
     input.value = unset ? '' : value;
-    input.addEventListener('change', () => wrap.classList.toggle('dirty', input.value !== original));
+    input.addEventListener('change', mark);
     read = () => input.value;
+    reset = () => { input.value = unset ? '' : original; };
     control = input;
   } else if (UNIT_OPTIONS[key]) {
-    const unitField = unitInput(UNIT_OPTIONS[key], original === '' ? null : original,
-      () => wrap.classList.toggle('dirty', !sameOptionValue(unitField.read(), original)));
+    const unitField = unitInput(UNIT_OPTIONS[key], original === '' ? null : original, mark);
     read = unitField.read;
+    reset = unitField.reset;
     control = unitField.el;
   } else {
     const input = document.createElement('input');
-    if (kind === 'number') input.type = 'number';
     input.value = original;
-    const mark = () => wrap.classList.toggle('dirty', input.value !== original);
     input.addEventListener('input', mark);
-    input.addEventListener('change', mark);
     read = () => input.value;
+    reset = () => { input.value = original; };
     control = input;
+    if (kind === 'number') {
+      // A count is nudged more often than typed: − and + either side.
+      input.type = 'number';
+      input.min = '0';
+      control = document.createElement('span');
+      control.className = 'stepper';
+      const nudge = (by) => {
+        input.value = String(Math.max(0, (Number(input.value) || 0) + by));
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+      };
+      control.append(mkBtn('remove', 'Fewer', () => nudge(-1), 'btn btn-icon btn-sm'), input,
+        mkBtn('add', 'More', () => nudge(1), 'btn btn-icon btn-sm'));
+    }
   }
 
-  S.optInputs.set(key, { read, original, wrap });
-  wrap.append(lab, control);
+  const ctl = document.createElement('span');
+  ctl.className = 'optctl';
+  const undo = mkBtn('undo', `Back to ${original === '' ? 'not set' : original}`, () => {
+    reset();
+    mark();
+    settingsChanged();
+  }, 'btn btn-icon btn-sm undo');
+  ctl.append(undo, control);
+
+  S.optInputs.set(key, { read, original, wrap, label });
+  wrap.append(lab, ctl);
   return wrap;
 }
 
@@ -1326,6 +1358,7 @@ function setSettingsMode(mode) {
   localStorage.setItem('aria.settingsMode', mode);
   $('#tab-settings').classList.toggle('mode-advanced', mode === 'advanced');
   for (const btn of $$('#settings-mode [data-mode]')) btn.setAttribute('aria-pressed', String(btn.dataset.mode === mode));
+  buildToc();
   if (S.state) loadGlobalOptions();
 }
 
@@ -1363,6 +1396,7 @@ async function loadGlobalOptions() {
       simple.append(optionField(key, label, kind, S.globalOptions[key], desc));
     }
     renderRouting();  // its "dir" field registers with the rest
+    settingsChanged();
     return;
   }
 
@@ -1370,16 +1404,18 @@ async function loadGlobalOptions() {
   const groupsHost = $('#options-groups');
   groupsHost.innerHTML = '';
   const covered = new Set();
-  for (const [title, opts] of OPTION_GROUPS) {
-    const group = document.createElement('div');
+  OPTION_GROUPS.forEach(([title, opts], i) => {
+    const group = document.createElement('section');
     group.className = 'optgroup';
+    group.id = `set-group-${i}`;
+    group.dataset.toc = title;
     group.innerHTML = `<h3>${title}</h3>`;
     for (const [key, label, kind, desc] of opts) {
       covered.add(key);
       group.append(optionField(key, label, kind, S.globalOptions[key], desc));
     }
     groupsHost.append(group);
-  }
+  });
   const advanced = $('#options-advanced');
   advanced.innerHTML = '';
   const rest = Object.keys(S.globalOptions).sort().filter((k) => !covered.has(k));
@@ -1399,6 +1435,93 @@ async function loadGlobalOptions() {
   }
   applyOptionFilter();
   renderRouting();
+  buildToc();
+  settingsChanged();
+}
+
+/* --------------------------------------------- settings: save bar, nav */
+//: An option's value as the save bar says it: "16", "2.0 MiB/s", "not set".
+function optionWordsFor(key, value) {
+  if (value === '' || value == null) return 'not set';
+  const unit = UNIT_OPTIONS[key];
+  if (unit && /^\d+$/.test(String(value))) {
+    if (unit === 'speed') return Number(value) ? fmtSpeed(Number(value)) : 'no limit';
+    return fmtBytes(Number(value));
+  }
+  return String(value);
+}
+
+function settingsChanged() {
+  const changes = [];
+  for (const [key, { read, original, label }] of S.optInputs) {
+    const now = read();
+    if (!sameOptionValue(now, original)) changes.push(`${label} ${optionWordsFor(key, original)} → ${optionWordsFor(key, now)}`);
+  }
+  if (S.routingDirty) changes.push('Folders & sorting');
+  const n = changes.length;
+  $('#settings-savebar').hidden = n === 0;
+  $('#settings-dirty').textContent = n === 1
+    ? `1 unsaved change · ${changes[0]}`
+    : `${n} unsaved changes`;
+  $('#settings-dirty').title = changes.join('\n');
+}
+
+async function discardSettings() {
+  S.routingDirty = false;
+  await loadRouting();
+  await loadGlobalOptions();
+}
+
+/* The section list down the left: built from the cards shown in the current
+   mode, so Simple lists three and Advanced lists them all. */
+function buildToc() {
+  const toc = $('#settings-toc');
+  if (!toc) return;
+  const sections = $$('#tab-settings [data-toc]');
+  const errors = S.events.filter((e) => e.level === 'error').length;
+  toc.replaceChildren(...sections.filter(visibleInMode).map((el) => {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'nav';
+    btn.dataset.target = el.id;
+    btn.textContent = el.dataset.toc;
+    if (el.id === 'set-log' && errors) {
+      const n = document.createElement('span');
+      n.className = 'n bad';
+      n.textContent = `${errors} error${errors === 1 ? '' : 's'}`;
+      btn.append(n);
+    }
+    btn.addEventListener('click', () => {
+      if (el.tagName === 'DETAILS') el.open = true;
+      el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+    return btn;
+  }));
+  // After layout: until the cards fill in, the page is short enough to read as scrolled to the end.
+  requestAnimationFrame(spyToc);
+}
+
+//: Whether a section shows in the current Simple / Advanced mode.
+function visibleInMode(el) {
+  const level = el.closest('[data-level]')?.dataset.level;
+  if (el.id === 'set-basics') return S.settingsMode !== 'advanced';
+  return level !== 'advanced' || S.settingsMode === 'advanced';
+}
+
+//: Marks the section at the top of the window in the list.
+function spyToc() {
+  const buttons = $$('#settings-toc .nav');
+  if (!buttons.length) return;
+  const head = $('.masthead')?.offsetHeight || 0;
+  let current = buttons[0];
+  // At the very bottom the last sections can't reach the top; the last one is it.
+  const atEnd = window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 4;
+  if (atEnd) current = buttons[buttons.length - 1];
+  else for (const btn of buttons) {
+    const el = document.getElementById(btn.dataset.target);
+    if (el && el.getBoundingClientRect().top - head < 120) current = btn;
+  }
+  for (const btn of buttons) btn.classList.toggle('active', btn === current);
 }
 
 function applyOptionFilter() {
@@ -1542,12 +1665,15 @@ async function loadRouting() {
   renderRouting();
 }
 
+// A category's tile: the same file-kind icons the download rows use.
+const CATEGORY_KIND = { archive: 'archive', music: 'audio', video: 'video', image: 'picture', other: 'file' };
+
 function renderRouting() {
   const data = S.routing;
   if (!data) return;
   // aria2's own download folder leads the card: every folder below is
   // relative to it, so the two belong together. It stays an ordinary option
-  // field, saved by the page's Save button like the rest.
+  // field, saved with the rest.
   const defaultHost = $('#route-default');
   defaultHost.innerHTML = '';
   defaultHost.append(optionField('dir', 'Download folder', 'text', S.globalOptions.dir,
@@ -1556,37 +1682,75 @@ function renderRouting() {
   $('#route-enabled').onchange = (e) => {
     data.enabled = e.target.checked;
     S.routingDirty = true;
+    $('#route-folders').classList.toggle('off', !data.enabled);
   };
 
+  /* One row per type: its folder, then the extensions that count as it, as
+     chips — × takes one out, typing and Enter puts one in. */
   const host = $('#route-folders');
+  host.classList.toggle('off', !data.enabled);
   host.innerHTML = '';
-  for (const category of data.categories) {
-    const field = optionFieldShell(CATEGORY_LABELS[category] || capitalise(category),
-      category === 'other' ? 'Anything no other folder claims' : '');
+  const dirty = () => { S.routingDirty = true; settingsChanged(); };
+  for (const category of data.categories || Object.keys(data.folders || {})) {
+    const row = document.createElement('div');
+    row.className = 'route';
+    const kind = FILE_KINDS[CATEGORY_KIND[category] || 'file'];
+    const head = document.createElement('div');
+    head.className = 'route-head';
+    head.innerHTML = `<span class="dl-tile kind-${CATEGORY_KIND[category] || 'file'}"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="${kind[1]}"/></svg></span>
+      <b>${escapeHtml(CATEGORY_LABELS[category] || capitalise(category))}</b><span class="arrow">→</span>`;
     const input = document.createElement('input');
     input.value = data.folders[category] ?? '';
-    input.placeholder = 'Download folder';
-    input.addEventListener('input', () => {
-      data.folders[category] = input.value.trim();
-      S.routingDirty = true;
-    });
-    field.append(input);
-    host.append(field);
-  }
+    input.placeholder = category === 'other' ? 'The download folder' : 'Subfolder';
+    input.setAttribute('aria-label', `Folder for ${CATEGORY_LABELS[category] || category}`);
+    input.addEventListener('input', () => { data.folders[category] = input.value.trim(); dirty(); });
+    head.append(input);
+    row.append(head);
 
-  const extHost = $('#route-extensions');
-  extHost.innerHTML = '';
-  for (const [category, values] of Object.entries(data.extensions)) {
-    const field = optionFieldShell(CATEGORY_LABELS[category] || capitalise(category), '');
-    const input = document.createElement('input');
-    input.value = values.join(' ');
-    input.placeholder = data.defaults.extensions[category].join(' ');
-    input.addEventListener('input', () => {
-      data.extensions[category] = input.value.split(/[\s,]+/).filter(Boolean);
-      S.routingDirty = true;
-    });
-    field.append(input);
-    extHost.append(field);
+    if (category !== 'other' && data.extensions) {
+      const chips = document.createElement('div');
+      chips.className = 'chiprow route-exts';
+      const paint = () => {
+        const list = data.extensions[category] || [];
+        const nodes = list.map((ext) => {
+          const chip = document.createElement('span');
+          chip.className = 'chip removable';
+          chip.textContent = ext;
+          const x = document.createElement('button');
+          x.type = 'button';
+          x.className = 'x';
+          x.textContent = '×';
+          x.setAttribute('aria-label', `Remove ${ext}`);
+          x.addEventListener('click', () => {
+            data.extensions[category] = list.filter((e) => e !== ext);
+            paint();
+            dirty();
+          });
+          chip.append(x);
+          return chip;
+        });
+        const add = document.createElement('input');
+        add.className = 'chip-input';
+        add.placeholder = '+ add';
+        add.setAttribute('aria-label', `Add an extension to ${CATEGORY_LABELS[category] || category}`);
+        const take = () => {
+          const items = add.value.split(/[\s,]+/).map((v) => v.trim().replace(/^\*?\./, '').toLowerCase()).filter(Boolean);
+          if (!items.length) return;
+          data.extensions[category] = [...new Set([...(data.extensions[category] || []), ...items])];
+          paint();
+          dirty();
+          chips.querySelector('.chip-input')?.focus();
+        };
+        add.addEventListener('keydown', (e) => {
+          if (e.key === 'Enter' || e.key === ',') { e.preventDefault(); take(); }
+        });
+        add.addEventListener('blur', take);
+        chips.replaceChildren(...nodes, add);
+      };
+      paint();
+      row.append(chips);
+    }
+    host.append(row);
   }
 }
 
@@ -1607,6 +1771,7 @@ async function saveRouting() {
   S.routing = saved;
   S.routingDirty = false;
   renderRouting();
+  settingsChanged();
   return saved;
 }
 
@@ -2140,12 +2305,20 @@ function ruleJsonEditor(rule, index) {
 
 /* ------------------------------------------------------------------- log */
 function renderLog() {
-  const host = $('#loglist');
-  host.innerHTML = S.events.map((e) => `
+  const show = S.logShow || 'all';
+  const counts = { all: S.events.length, error: 0, rule: 0 };
+  for (const e of S.events) if (e.level in counts) counts[e.level] += 1;
+  for (const chip of $$('#log-filter [data-show]')) {
+    chip.classList.toggle('active', chip.dataset.show === show);
+    $('.n', chip).textContent = counts[chip.dataset.show] || '';
+  }
+  const shown = show === 'all' ? S.events : S.events.filter((e) => e.level === show);
+  $('#loglist').innerHTML = shown.map((e) => `
     <div class="logline ${e.level}">
       <time>${fmtTime(e.ts)}</time><span class="lvl">${e.level}</span>
       <span class="msg">${escapeHtml(e.message)}</span>
-    </div>`).join('') || '<p class="hint">Nothing logged yet.</p>';
+    </div>`).join('') || `<p class="hint">${show === 'all' ? 'Nothing logged yet.' : 'Nothing of this kind logged.'}</p>`;
+  if ($('#tab-settings').classList.contains('active')) buildToc();
   if (S.events.some((e) => e.level === 'rule')) {
     S.triggers = S.events.filter((e) => e.level === 'rule').map((e) => ({
       ts: e.ts, rule: e.rule || '?', action: e.action || '', name: e.message, speed: e.speed || 0, detail: '', logLine: true,
@@ -2350,6 +2523,18 @@ function init() {
       e.target.checked ? 'Actions on' : 'Actions off');
   });
   $('#btn-log-clear').addEventListener('click', () => { S.events = []; renderLog(); });
+  for (const chip of $$('#log-filter [data-show]')) {
+    chip.addEventListener('click', () => { S.logShow = chip.dataset.show; renderLog(); });
+  }
+  $('#btn-log-copy').addEventListener('click', () => {
+    const text = S.events.map((e) => `${fmtDate(e.ts)}  ${e.level.toUpperCase().padEnd(5)}  ${e.message}`).join('\n');
+    navigator.clipboard.writeText(text).then(() => toast('Log copied', 'ok'), (err) => toast(err.message, 'error'));
+  });
+  $('#btn-opt-discard').addEventListener('click', discardSettings);
+  // Every edit in the settings tab updates the save bar.
+  $('#tab-settings').addEventListener('input', settingsChanged);
+  $('#tab-settings').addEventListener('change', settingsChanged);
+  window.addEventListener('scroll', () => { if (document.body.dataset.tab === 'settings') spyToc(); }, { passive: true });
 
   document.addEventListener('keydown', (e) => {
     if (e.key === 'n' && !e.ctrlKey && !e.metaKey && !/^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName)) {

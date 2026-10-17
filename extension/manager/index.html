@@ -159,7 +159,7 @@
     <div class="panehead">
       <div>
         <h2>Settings</h2>
-        <p class="hint" id="settings-lead">Simple shows what most people tune. Advanced shows every aria2 option, the process, and the event log.</p>
+        <p class="hint" id="options-note"></p>
       </div>
       <div class="panehead-actions">
         <div class="seg" role="group" aria-label="Detail level" id="settings-mode">
@@ -168,57 +168,73 @@
         </div>
         <label class="search" data-level="advanced"><svg class="ico" viewBox="0 0 24 24"><path d="M15.5 14h-.79l-.28-.27A6.47 6.47 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg><input id="opt-search" placeholder="Find an option" aria-label="Find an option"></label>
         <button id="btn-opt-reload" class="btn btn-icon" title="Reload from aria2" aria-label="Reload from aria2"><svg class="ico" viewBox="0 0 24 24"><path d="M17.65 6.35A7.96 7.96 0 0 0 12 4a8 8 0 1 0 7.73 10h-2.08A6 6 0 1 1 12 6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/></svg></button>
-        <button id="btn-opt-save" class="btn btn-primary">Save changes</button>
       </div>
     </div>
 
-    <p id="options-note" class="hint options-note"></p>
+    <!-- Sections down the left, options on the right; Save shows only when
+         there is something to save. -->
+    <div class="settings-grid">
+      <nav id="settings-toc" class="settings-toc" aria-label="Settings sections"></nav>
+      <div class="settings-body">
+        <!-- Simple: the handful of options that decide how downloads behave. -->
+        <section id="set-basics" class="card setcard" data-toc="Basics">
+          <div class="card-head"><h2>Basics</h2></div>
+          <div id="options-simple"></div>
+        </section>
 
-    <!-- Simple: the handful of options that decide how downloads behave. -->
-    <div id="options-simple" class="card" data-level="simple"></div>
+        <!-- Where finished files go, by what they are. A manager feature, not an
+             aria2 option, so it sits in its own card rather than in the lists. -->
+        <section id="set-folders" class="card setcard" data-toc="Folders &amp; sorting">
+          <div class="card-head">
+            <h2>Folders &amp; sorting</h2>
+            <label class="setting"><span class="text"><span class="label">Sort by type</span></span>
+              <span class="switch"><input type="checkbox" id="route-enabled"><span class="track"><span class="knob"></span></span></span></label>
+          </div>
+          <div id="route-default"></div>
+          <p class="hint">With sorting on, each download goes to the subfolder its type names. Blank means
+            the download folder itself; an absolute path is used as it is.</p>
+          <div id="route-folders" class="routes"></div>
+        </section>
 
-    <!-- Where finished files go, by what they are. A manager feature, not an
-         aria2 option, so it sits in its own card rather than in the lists. -->
-    <div class="card">
-      <div class="card-head">
-        <h2>Sort into folders by type</h2>
-        <label class="setting"><span class="text"><span class="label">On</span></span>
-          <span class="switch"><input type="checkbox" id="route-enabled"><span class="track"><span class="knob"></span></span></span></label>
+        <!-- Advanced: the curated groups, then every option aria2 reports. -->
+        <div id="options-groups" class="stack" data-level="advanced"></div>
+        <details id="options-advanced-wrap" class="card fold" data-level="advanced" data-toc="Every aria2 option" open>
+          <summary>Every aria2 option<span id="advanced-count" class="count"></span></summary>
+          <div id="options-advanced" class="stack"></div>
+        </details>
+
+        <section id="set-proc" class="card setcard" data-level="advanced" data-toc="aria2c process">
+          <div class="card-head">
+            <h2>aria2c process</h2>
+            <button id="btn-restart-aria2" class="btn btn-sm btn-danger">Restart aria2c</button>
+          </div>
+          <div id="proc-info" class="kv"></div>
+        </section>
+
+        <!-- The log is diagnostic material, not a view to watch, so it lives here
+             rather than holding a tab of its own. -->
+        <section id="set-log" class="card setcard" data-level="advanced" data-toc="Event log">
+          <div class="card-head">
+            <h2>Event log</h2>
+            <div class="row">
+              <div class="chiprow" id="log-filter" role="group" aria-label="Show">
+                <button type="button" class="chip active" data-show="all">All<span class="n"></span></button>
+                <button type="button" class="chip error" data-show="error">Errors<span class="n"></span></button>
+                <button type="button" class="chip" data-show="rule">Actions<span class="n"></span></button>
+              </div>
+              <button id="btn-log-copy" class="btn btn-icon btn-sm" title="Copy the log" aria-label="Copy the log"><svg class="ico" viewBox="0 0 24 24"><path d="M16 1H4a2 2 0 0 0-2 2v14h2V3h12V1zm3 4H8a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2zm0 16H8V7h11v14z"/></svg></button>
+              <button id="btn-log-clear" class="btn btn-sm btn-text">Clear view</button>
+            </div>
+          </div>
+          <div id="loglist" class="loglist"></div>
+        </section>
       </div>
-      <p class="hint">Everything starts in the download folder. With sorting on, each download
-        goes to the subfolder its file type names below. Blank means the download folder itself,
-        and an absolute path is used as it is.</p>
-      <div id="route-default" class="stack"></div>
-      <div id="route-folders" class="stack"></div>
-      <details id="route-ext-wrap" class="fold" data-level="advanced">
-        <summary>Which extensions count as what</summary>
-        <div id="route-extensions" class="stack"></div>
-      </details>
     </div>
 
-    <!-- Advanced: the curated groups, then every option aria2 reports. -->
-    <div id="options-groups" class="stack" data-level="advanced"></div>
-    <details id="options-advanced-wrap" class="card fold" data-level="advanced" open>
-      <summary>Every aria2 option<span id="advanced-count" class="count"></span></summary>
-      <div id="options-advanced" class="stack"></div>
-    </details>
-
-    <div class="card" data-level="advanced">
-      <div class="card-head">
-        <h2>aria2c process</h2>
-        <button id="btn-restart-aria2" class="btn btn-sm btn-danger">Restart aria2c</button>
-      </div>
-      <div id="proc-info" class="kv"></div>
-    </div>
-
-    <!-- The log is diagnostic material, not a view to watch, so it lives here
-         rather than holding a tab of its own. -->
-    <div class="card" data-level="advanced">
-      <div class="card-head">
-        <h2>Event log</h2>
-        <button id="btn-log-clear" class="btn btn-sm btn-text">Clear view</button>
-      </div>
-      <div id="loglist" class="loglist"></div>
+    <div id="settings-savebar" class="savebar" hidden>
+      <span id="settings-dirty"></span>
+      <button id="btn-opt-discard" class="btn btn-text">Discard</button>
+      <button id="btn-opt-save" class="btn btn-primary">Save</button>
     </div>
   </section>
 </main>
