@@ -87,7 +87,6 @@ Column {
     property string filter: ""
     property string sortKey: "name"
     property bool sortDesc: false
-    readonly property var levelLabels: ["Normal", "High", "Max"]
 
     readonly property var tree: FileTree.treeBuild(structureFiles, statusInfo.dir || "")
     readonly property var rows: multiFile ? FileTree.treeRows(tree, levels, collapsed, filter, sortKey, sortDesc) : []
@@ -247,21 +246,6 @@ Column {
             return
         savedText = "Saving…"
         levelTimer.restart()
-    }
-
-    //: One click steps a file through the levels people actually use:
-    //: Normal → High → Skip → Normal. A file at Max (set elsewhere) goes to
-    //: Skip next, like High.
-    function stepLevel(r) {
-        if (r.state === 0) {
-            changeLevels(FileTree.treeSetChosen(levels, r.indices, true))
-            return
-        }
-        const chosen = r.indices.filter(i => FileTree.treeLevelOf(levels, i) > 0)
-        if (r.level === 1 || r.level === -1)
-            changeLevels(FileTree.treeSetLevel(levels, chosen, 2))
-        else
-            changeLevels(FileTree.treeSetChosen(levels, r.indices, false))
     }
 
     //: Options save shortly after the last change, so typing a limit is one
@@ -843,33 +827,71 @@ Column {
     //: Shown on the Files tab, while reviewing in the Add panel, and as the
     //: whole panel of a held torrent.
     readonly property bool filesShown: multiFile && (reviewing || held || current === "files")
-    //: The columns at the end of a file row. The bar and the priority chip
-    //: step aside for a held torrent, which only needs its choice.
-    readonly property int fileSizeWidth: 64
-    readonly property int fileBarWidth: reviewing || held ? 0 : 70
-    readonly property int fileChipWidth: held ? 0 : 60
+    //: The columns at the end of a row (Revision 2, board 3): size, progress
+    //: and priority. The bar and the chip step aside for a held torrent,
+    //: which only needs its choice, and the bar while reviewing.
+    //: Narrower than the popout (the window's pane), progress moves under
+    //: the name as a thin line and the other columns slim down, so the name
+    //: keeps room.
+    readonly property bool narrowFiles: width < 520
+    readonly property int fileSizeWidth: narrowFiles ? 64 : 76
+    readonly property int fileBarWidth: reviewing || held || narrowFiles ? 0 : 132
+    readonly property int fileChipWidth: held ? 0 : (narrowFiles ? 72 : 84)
+    readonly property int fileIndent: narrowFiles ? 14 : 22
+    readonly property var levelWords: ["Skip", "Normal", "High", "Max"]
+    //: Every folder key, for "Collapse all".
+    readonly property var folderKeys: {
+        const out = []
+        const walk = node => {
+            for (const name in node.dirs) {
+                out.push(node.dirs[name].key)
+                walk(node.dirs[name])
+            }
+        }
+        walk(tree)
+        return out
+    }
+    readonly property bool anyCollapsed: Object.keys(collapsed).some(k => collapsed[k])
 
     Item {
         width: parent.width
-        height: 22
+        height: 30
         visible: detail.filesShown
 
         StyledText {
             anchors.left: parent.left
+            anchors.right: foldAll.left
+            anchors.rightMargin: 8
             anchors.verticalCenter: parent.verticalCenter
-            text: detail.reviewing ? detail.summary.chosen + " of " + detail.summary.count + " files · " + Fmt.bytes(detail.summary.selected) + " of " + Fmt.bytes(detail.summary.total)
-                                   : detail.summary.chosen + " of " + detail.summary.count + " selected · " + Fmt.bytes(detail.summary.selected)
+            text: detail.summary.chosen + " of " + detail.summary.count + " files wanted · " + Fmt.bytes(detail.summary.selected) + " of "
+                  + Fmt.bytes(detail.summary.total) + (detail.tree.name ? " · inside " + detail.tree.name + "/" : "")
+                  + (detail.savedText === "Saving…" ? " · saving…" : "")
             font.pixelSize: Theme.fontSizeSmall
             color: Theme.surfaceVariantText
+            wrapMode: Text.NoWrap
+            elide: Text.ElideRight
         }
 
-        StyledText {
+        PillButton {
+            id: foldAll
+
             anchors.right: parent.right
             anchors.verticalCenter: parent.verticalCenter
-            visible: !detail.reviewing && !detail.held
-            text: detail.savedText === "Saving…" ? "Saving…" : "Changes apply live"
-            font.pixelSize: Theme.fontSizeSmall
-            color: Theme.surfaceVariantText
+            visible: detail.folderKeys.length > 0
+            size: 30
+            kind: "surface"
+            icon: detail.anyCollapsed ? "unfold_more" : "unfold_less"
+            text: detail.anyCollapsed ? "Expand all" : "Collapse all"
+            onClicked: {
+                if (detail.anyCollapsed) {
+                    detail.collapsed = ({})
+                } else {
+                    const all = ({})
+                    for (const key of detail.folderKeys)
+                        all[key] = true
+                    detail.collapsed = all
+                }
+            }
         }
     }
 
@@ -882,6 +904,79 @@ Column {
         onTextChanged: detail.filter = text
     }
 
+    //: Name | Size | Progress | Priority; a heading sorts by it.
+    Item {
+        width: parent.width
+        height: 20
+        visible: detail.filesShown
+
+        //: Inline, so it cannot see `detail`: the sort comes in as properties.
+        component Heading: StyledText {
+            id: heading
+
+            property string label: ""
+            property bool on: false
+            property bool desc: false
+            signal clicked
+
+            text: (label + (on ? (desc ? " ↓" : " ↑") : "")).toUpperCase()
+            font.pixelSize: Theme.fontSizeSmall - 1
+            font.weight: Font.Bold
+            font.letterSpacing: 0.6
+            color: on ? Theme.primary : Theme.outline
+
+            MouseArea {
+                anchors.fill: parent
+                cursorShape: Qt.PointingHandCursor
+                onClicked: heading.clicked()
+            }
+        }
+
+        Heading {
+            anchors.left: parent.left
+            anchors.leftMargin: 12
+            anchors.verticalCenter: parent.verticalCenter
+            label: "Name"
+            on: detail.sortKey === "name"
+            desc: detail.sortDesc
+            onClicked: detail.sortBy("name")
+        }
+
+        Row {
+            anchors.right: parent.right
+            anchors.rightMargin: 10
+            anchors.verticalCenter: parent.verticalCenter
+            spacing: 8
+
+            Heading {
+                width: detail.fileSizeWidth
+                horizontalAlignment: Text.AlignRight
+                label: "Size"
+                on: detail.sortKey === "size"
+                desc: detail.sortDesc
+                onClicked: detail.sortBy("size")
+            }
+
+            Heading {
+                width: detail.fileBarWidth
+                visible: width > 0
+                label: "Progress"
+                on: detail.sortKey === "progress"
+                desc: detail.sortDesc
+                onClicked: detail.sortBy("progress")
+            }
+
+            Heading {
+                width: detail.fileChipWidth
+                visible: width > 0
+                label: "Priority"
+                on: detail.sortKey === "priority"
+                desc: detail.sortDesc
+                onClicked: detail.sortBy("priority")
+            }
+        }
+    }
+
     Repeater {
         model: detail.filesShown ? detail.rows : []
 
@@ -890,17 +985,21 @@ Column {
 
             required property var modelData
             readonly property var r: modelData
-            readonly property real done: detail.doneOf(r.indices)
-            readonly property real pct: r.size ? Math.min(100, done / r.size * 100) : 0
+            //: Progress over the wanted files only, so skipped ones do not
+            //: hold a folder back; read from the live per-file figures.
+            readonly property var wantedIndices: r.indices.filter(i => FileTree.treeLevelOf(detail.levels, i) > 0)
+            readonly property real wantedDone: detail.doneOf(wantedIndices)
+            readonly property real pct: r.wanted ? Math.min(100, wantedDone / r.wanted * 100) : 0
             readonly property bool skipped: r.state === 0
 
             width: detail.width
-            height: 36
+            height: r.isDir ? 38 : 34
 
             Rectangle {
                 anchors.fill: parent
-                radius: 8
-                color: rowHover.hovered ? Theme.withAlpha(Theme.surfaceText, 0.05) : "transparent"
+                radius: 10
+                color: rowHover.hovered ? Theme.withAlpha(Theme.surfaceText, 0.06)
+                                        : (fileRow.r.isDir ? Theme.withAlpha(Theme.surfaceText, 0.03) : "transparent")
             }
 
             HoverHandler {
@@ -911,23 +1010,56 @@ Column {
                 id: indent
 
                 anchors.left: parent.left
-                width: fileRow.r.depth * 18
+                anchors.leftMargin: 8
+                width: fileRow.r.depth * detail.fileIndent + (fileRow.r.isDir || !detail.folderKeys.length ? 0 : detail.fileIndent)
                 height: parent.height
             }
 
-            //: The fold arrow sits before the checkbox, as in qBittorrent.
+            //: Ticked, a dash or empty: all, some or none of it wanted.
+            Item {
+                id: check
+
+                anchors.left: indent.right
+                width: 26
+                height: parent.height
+
+                Rectangle {
+                    anchors.centerIn: parent
+                    width: 20
+                    height: 20
+                    radius: 5
+                    color: fileRow.r.state > 0 ? Theme.primary : "transparent"
+                    border.width: fileRow.r.state > 0 ? 0 : 2
+                    border.color: Theme.outline
+
+                    DankIcon {
+                        anchors.centerIn: parent
+                        visible: fileRow.r.state > 0
+                        name: fileRow.r.state === 2 ? "check" : "remove"
+                        size: 16
+                        color: Theme.onPrimary
+                    }
+                }
+
+                MouseArea {
+                    anchors.fill: parent
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: detail.changeLevels(FileTree.treeSetChosen(detail.levels, fileRow.r.indices, fileRow.r.state !== 2))
+                }
+            }
+
             Item {
                 id: fold
 
-                anchors.left: indent.right
-                width: fileRow.r.isDir || detail.rows.some(x => x.isDir) ? 20 : 0
+                anchors.left: check.right
+                width: fileRow.r.isDir ? 22 : 0
                 height: parent.height
 
                 DankIcon {
                     anchors.centerIn: parent
                     visible: fileRow.r.isDir
                     name: fileRow.r.open ? "expand_more" : "chevron_right"
-                    size: 18
+                    size: 20
                     color: Theme.surfaceVariantText
                 }
 
@@ -939,57 +1071,75 @@ Column {
                 }
             }
 
-            Item {
-                id: check
-
-                anchors.left: fold.right
-                width: 28
-                height: parent.height
-
-                DankIcon {
-                    anchors.centerIn: parent
-                    name: fileRow.r.state === 2 ? "check_box" : (fileRow.r.state === 1 ? "indeterminate_check_box" : "check_box_outline_blank")
-                    size: 18
-                    color: fileRow.r.state > 0 ? Theme.primary : Theme.outline
-                }
-
-                MouseArea {
-                    anchors.fill: parent
-                    cursorShape: Qt.PointingHandCursor
-                    onClicked: detail.changeLevels(FileTree.treeSetChosen(detail.levels, fileRow.r.indices, fileRow.r.state !== 2))
-                }
-            }
-
             DankIcon {
                 id: kindGlyph
 
-                anchors.left: check.right
+                anchors.left: fold.right
                 anchors.leftMargin: 4
                 anchors.verticalCenter: parent.verticalCenter
                 visible: !detail.held
-                name: fileRow.r.isDir ? "folder" : Fmt.kindIcon(fileRow.r.name, false, false)
-                size: 16
-                color: fileRow.skipped ? Theme.outline : Theme.surfaceVariantText
+                name: fileRow.r.isDir ? (fileRow.r.open ? "folder_open" : "folder") : Fmt.kindIcon(fileRow.r.name, false, false)
+                size: fileRow.r.isDir ? 20 : 18
+                color: fileRow.r.isDir ? Theme.primary : (fileRow.skipped ? Theme.outline : Theme.surfaceVariantText)
             }
 
-            StyledText {
-                anchors.left: kindGlyph.visible ? kindGlyph.right : check.right
-                anchors.leftMargin: 8
+            Row {
+                anchors.left: kindGlyph.visible ? kindGlyph.right : fold.right
+                anchors.leftMargin: 6
                 anchors.right: tail.left
-                anchors.rightMargin: 10
+                anchors.rightMargin: 8
                 anchors.verticalCenter: parent.verticalCenter
-                text: fileRow.r.name
-                wrapMode: Text.NoWrap
-                elide: Text.ElideMiddle
-                font.pixelSize: Theme.fontSizeSmall + 1
-                font.weight: fileRow.r.isDir ? Font.DemiBold : Font.Normal
-                color: fileRow.skipped ? Theme.outline : Theme.surfaceText
+                spacing: 6
 
-                MouseArea {
-                    anchors.fill: parent
-                    enabled: fileRow.r.isDir
-                    cursorShape: fileRow.r.isDir ? Qt.PointingHandCursor : Qt.ArrowCursor
-                    onClicked: detail.toggleFold(fileRow.r.key, fileRow.r.open)
+                StyledText {
+                    id: rowName
+
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: Math.max(0, Math.min(implicitWidth, parent.width - (dirCount.visible ? dirCount.implicitWidth + 6 : 0)))
+                    text: fileRow.r.name
+                    wrapMode: Text.NoWrap
+                    elide: Text.ElideMiddle
+                    font.pixelSize: Theme.fontSizeSmall + 1
+                    font.weight: fileRow.r.isDir ? Font.DemiBold : Font.Normal
+                    color: fileRow.skipped ? Theme.outline : Theme.surfaceText
+
+                    MouseArea {
+                        anchors.fill: parent
+                        enabled: fileRow.r.isDir
+                        cursorShape: fileRow.r.isDir ? Qt.PointingHandCursor : Qt.ArrowCursor
+                        onClicked: detail.toggleFold(fileRow.r.key, fileRow.r.open)
+                    }
+                }
+
+                StyledText {
+                    id: dirCount
+
+                    anchors.verticalCenter: parent.verticalCenter
+                    visible: fileRow.r.isDir && !detail.narrowFiles
+                    text: fileRow.r.count === 1 ? "1 file" : fileRow.r.count + " files"
+                    font.pixelSize: Theme.fontSizeSmall - 1
+                    color: Theme.outline
+                }
+            }
+
+            //: Narrow: the progress as a line under the name.
+            Rectangle {
+                anchors.left: kindGlyph.visible ? kindGlyph.right : fold.right
+                anchors.leftMargin: 6
+                anchors.right: tail.left
+                anchors.rightMargin: 8
+                anchors.bottom: parent.bottom
+                anchors.bottomMargin: 4
+                visible: detail.narrowFiles && !detail.reviewing && !detail.held && !fileRow.skipped
+                height: 3
+                radius: 1.5
+                color: Theme.surfaceContainerHighest
+
+                Rectangle {
+                    width: parent.width * fileRow.pct / 100
+                    height: parent.height
+                    radius: 1.5
+                    color: fileRow.pct >= 100 ? Theme.success : Theme.primary
                 }
             }
 
@@ -997,92 +1147,115 @@ Column {
                 id: tail
 
                 anchors.right: parent.right
+                anchors.rightMargin: 10
                 anchors.verticalCenter: parent.verticalCenter
-                spacing: 10
+                spacing: 8
 
-                //: Per-file progress; a finished file turns green. A folder
-                //: says how far it is in words.
+                //: The wanted bytes; "1.5 GiB of 3.8 GiB" when some are skipped.
+                StyledText {
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: detail.fileSizeWidth
+                    horizontalAlignment: Text.AlignRight
+                    text: fileRow.r.isDir && fileRow.r.wanted > 0 && fileRow.r.wanted < fileRow.r.size
+                          ? Fmt.bytes(fileRow.r.wanted) + " of " + Fmt.bytes(fileRow.r.size) : Fmt.bytes(fileRow.r.size)
+                    font.pixelSize: Theme.fontSizeSmall
+                    color: fileRow.skipped ? Theme.outline : Theme.surfaceVariantText
+                    wrapMode: Text.WordWrap
+                    maximumLineCount: 2
+                    lineHeight: 0.9
+                }
+
+                //: Bytes done over bytes wanted; green at 100%.
                 Item {
                     anchors.verticalCenter: parent.verticalCenter
                     width: detail.fileBarWidth
-                    height: 8
+                    height: 16
                     visible: width > 0
 
                     Rectangle {
+                        anchors.left: parent.left
+                        anchors.right: pctText.left
+                        anchors.rightMargin: 8
                         anchors.verticalCenter: parent.verticalCenter
-                        width: parent.width
-                        height: 4
-                        radius: 2
-                        visible: !fileRow.r.isDir
+                        height: 6
+                        radius: 3
                         color: Theme.surfaceContainerHighest
 
                         Rectangle {
                             width: parent.width * fileRow.pct / 100
                             height: parent.height
-                            radius: 2
+                            radius: 3
                             visible: !fileRow.skipped
                             color: fileRow.pct >= 100 ? Theme.success : Theme.primary
                         }
                     }
+
+                    StyledText {
+                        id: pctText
+
+                        anchors.right: parent.right
+                        anchors.verticalCenter: parent.verticalCenter
+                        width: 34
+                        horizontalAlignment: Text.AlignRight
+                        text: fileRow.skipped ? (fileRow.r.isDir ? "—" : "skip") : Math.floor(fileRow.pct) + "%"
+                        font.pixelSize: Theme.fontSizeSmall - 1
+                        color: Theme.surfaceVariantText
+                    }
                 }
 
-                StyledText {
-                    anchors.verticalCenter: parent.verticalCenter
-                    width: detail.fileSizeWidth
-                    horizontalAlignment: Text.AlignRight
-                    text: Fmt.bytes(fileRow.r.size)
-                    font.pixelSize: Theme.fontSizeSmall
-                    color: fileRow.skipped ? Theme.outline : Theme.surfaceVariantText
-                }
-
-                //: Priority as a small chip that steps on click; a folder
-                //: shows its progress there instead.
+                //: Skip, Normal, High, Max, or Mixed when a folder's files
+                //: differ. Setting a folder's sets every file inside.
                 Item {
                     anchors.verticalCenter: parent.verticalCenter
                     width: detail.fileChipWidth
-                    height: 22
+                    height: 26
                     visible: width > 0
-
-                    StyledText {
-                        anchors.right: parent.right
-                        anchors.verticalCenter: parent.verticalCenter
-                        visible: fileRow.r.isDir && !detail.reviewing
-                        text: Math.round(fileRow.pct) + "%"
-                        font.pixelSize: Theme.fontSizeSmall
-                        color: Theme.surfaceVariantText
-                    }
 
                     Rectangle {
                         id: levelChip
 
-                        readonly property string word: fileRow.skipped ? "Skip"
-                                                                        : (fileRow.r.level === -1 ? "Mixed" : (detail.levelLabels[fileRow.r.level - 1] || "Normal"))
-                        readonly property bool raised: !fileRow.skipped && fileRow.r.level >= 2
+                        readonly property string word: fileRow.r.level === -1 ? "Mixed" : (detail.levelWords[fileRow.r.level] || "Normal")
+                        readonly property bool raised: fileRow.r.level >= 2
 
-                        anchors.right: parent.right
-                        anchors.verticalCenter: parent.verticalCenter
-                        visible: !fileRow.r.isDir || detail.reviewing
-                        width: levelText.implicitWidth + 16
-                        height: 20
-                        radius: 8
-                        color: raised ? Theme.primaryContainer : (fileRow.skipped ? "transparent" : Theme.surfaceContainerHighest)
-                        border.width: fileRow.skipped ? 1 : 0
-                        border.color: Theme.outlineVariant
+                        anchors.fill: parent
+                        radius: 13
+                        color: raised ? Theme.secondaryContainer : Theme.surfaceContainerHigh
 
                         StyledText {
-                            id: levelText
-
-                            anchors.centerIn: parent
+                            anchors.left: parent.left
+                            anchors.leftMargin: 10
+                            anchors.verticalCenter: parent.verticalCenter
                             text: levelChip.word
-                            font.pixelSize: Theme.fontSizeSmall - 1
-                            font.weight: Font.DemiBold
-                            color: levelChip.raised ? Theme.onPrimaryContainer : (fileRow.skipped ? Theme.outline : Theme.surfaceVariantText)
+                            font.pixelSize: Theme.fontSizeSmall
+                            font.weight: levelChip.raised ? Font.DemiBold : Font.Medium
+                            color: fileRow.r.level === 0 ? Theme.outline : Theme.surfaceText
+                        }
+
+                        DankIcon {
+                            anchors.right: parent.right
+                            anchors.rightMargin: 4
+                            anchors.verticalCenter: parent.verticalCenter
+                            name: "unfold_more"
+                            size: 14
+                            color: Theme.surfaceVariantText
                         }
 
                         MouseArea {
                             anchors.fill: parent
                             cursorShape: Qt.PointingHandCursor
-                            onClicked: detail.stepLevel(fileRow.r)
+                            onClicked: levelMenu.toggle()
+                        }
+
+                        MenuPopup {
+                            id: levelMenu
+
+                            alignEnd: true
+                            menuWidth: 150
+                            entries: detail.levelWords.map((w, i) => ({
+                                                                         "text": w,
+                                                                         "checked": i === fileRow.r.level
+                                                                     }))
+                            onTriggered: index => detail.changeLevels(FileTree.treeSetLevel(detail.levels, fileRow.r.indices, index))
                         }
                     }
                 }

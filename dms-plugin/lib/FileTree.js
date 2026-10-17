@@ -76,16 +76,19 @@ function treeAllFiles(node) {
    name | size | progress | priority, `desc` reverses it. Folders always come
    before files, and sort among themselves by the same measure.
 
-   A row: {key, depth, isDir, name, size, done, indices, level, state, open}.
-   For a folder, `level` is the shared priority of its chosen files (-1 when
-   they differ) and `state` is 2 all chosen, 1 some, 0 none; for a file,
-   `level` is its own and `state` 2 or 0. */
+   A row: {key, depth, isDir, name, size, done, wanted, wantedDone, indices,
+   level, state, open}. `size` is every file's bytes, `wanted` the chosen
+   ones' and `wantedDone` what of those is on disk, so a folder's progress is
+   not held back by files it skips. For a folder, `level` is the priority its
+   files share, skipped ones included (-1, "Mixed", when they differ), and
+   `state` is 2 all chosen, 1 some, 0 none; for a file, `level` is its own and
+   `state` 2 or 0. */
 function treeRows(root, levels, collapsed, filter, sort, desc) {
   const needle = String(filter || '').trim().toLowerCase();
   const rows = [];
   const measure = (item) => {
     if (sort === 'size') return item.size;
-    if (sort === 'progress') return item.size ? item.done / item.size : 0;
+    if (sort === 'progress') return item.wanted ? item.wantedDone / item.wanted : 0;
     if (sort === 'priority') return item.level;
     return 0;
   };
@@ -96,22 +99,24 @@ function treeRows(root, levels, collapsed, filter, sort, desc) {
   };
   const summarize = (node) => {
     const all = treeAllFiles(node).filter((f) => !needle || f.key.toLowerCase().indexOf(needle) >= 0);
-    let size = 0, done = 0, chosen = 0;
-    const chosenLevels = {};
+    let size = 0, done = 0, chosen = 0, wanted = 0, wantedDone = 0;
+    const seen = {};
     for (const f of all) {
       size += f.length;
       done += f.done;
       const level = treeLevelOf(levels, f.index);
+      seen[level] = true;
       if (level > 0) {
         chosen++;
-        chosenLevels[level] = true;
+        wanted += f.length;
+        wantedDone += f.done;
       }
     }
-    const distinct = Object.keys(chosenLevels);
+    const distinct = Object.keys(seen);
     return {
-      size, done, indices: all.map((f) => f.index), count: all.length,
+      size, done, wanted, wantedDone, indices: all.map((f) => f.index), count: all.length,
       state: chosen === 0 ? 0 : chosen === all.length ? 2 : 1,
-      level: distinct.length === 1 ? Number(distinct[0]) : (chosen ? -1 : 0),
+      level: distinct.length === 1 ? Number(distinct[0]) : (distinct.length ? -1 : 0),
     };
   };
   const walk = (node, depth) => {
@@ -120,25 +125,29 @@ function treeRows(root, levels, collapsed, filter, sort, desc) {
       const dir = node.dirs[name];
       const s = summarize(dir);
       if (needle && !s.count) continue;
-      dirs.push({ node: dir, name: dir.name, size: s.size, done: s.done, level: s.level, s });
+      dirs.push({ node: dir, name: dir.name, size: s.size, done: s.done, wanted: s.wanted, wantedDone: s.wantedDone, level: s.level, s });
     }
     const files = node.files
       .filter((f) => !needle || f.key.toLowerCase().indexOf(needle) >= 0)
-      .map((f) => ({ f, name: f.name, size: f.length, done: f.done, level: treeLevelOf(levels, f.index) }));
+      .map((f) => {
+        const level = treeLevelOf(levels, f.index);
+        return { f, name: f.name, size: f.length, done: f.done, level,
+          wanted: level > 0 ? f.length : 0, wantedDone: level > 0 ? f.done : 0 };
+      });
     dirs.sort(order);
     files.sort(order);
     for (const d of dirs) {
       const open = needle ? true : !(collapsed && collapsed[d.node.key]);
       rows.push({
         key: d.node.key, depth, isDir: true, name: d.name, size: d.size, done: d.done,
-        indices: d.s.indices, count: d.s.count, level: d.s.level, state: d.s.state, open,
+        wanted: d.wanted, wantedDone: d.wantedDone, indices: d.s.indices, count: d.s.count, level: d.s.level, state: d.s.state, open,
       });
       if (open) walk(d.node, depth + 1);
     }
     for (const x of files) {
       rows.push({
         key: x.f.key, depth, isDir: false, name: x.name, size: x.size, done: x.done,
-        indices: [x.f.index], index: x.f.index, level: x.level, state: x.level > 0 ? 2 : 0,
+        wanted: x.wanted, wantedDone: x.wantedDone, indices: [x.f.index], index: x.f.index, level: x.level, state: x.level > 0 ? 2 : 0,
         waiting: x.f.waiting,
       });
     }

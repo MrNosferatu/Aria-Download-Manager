@@ -1,10 +1,11 @@
 /* The file tree (lib/filetree-view.js), shared by the download dialog and the
    manager page. One grid for every row and the header, so columns line up. */
 .ftree {
-  --ft-cols: minmax(0, 1fr) 76px 120px 112px;
+  --ft-cols: minmax(0, 1fr) 84px 132px 92px;
   display: flex; flex-direction: column; gap: 8px; min-width: 0;
+  container-type: inline-size;
 }
-.ftree.ft-noprogress { --ft-cols: minmax(0, 1fr) 76px 112px; }
+.ftree.ft-noprogress { --ft-cols: minmax(0, 1fr) 84px 92px; }
 .ftree.ft-noprogress .ft-done, .ftree.ft-noprogress .ft-col-progress { display: none; }
 
 .ft-bar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
@@ -31,14 +32,18 @@
   max-height: 340px; overflow: auto;
 }
 .ft-row {
-  min-height: 36px; font-size: var(--fs-md);
-  & + .ft-row { border-top: 1px solid var(--outline-var); }
+  min-height: 34px; font-size: var(--fs-md); border-radius: 10px;
+  &.is-dir { min-height: 38px; background: color-mix(in oklch, var(--on-surface) 4%, transparent); }
   &:hover { background: var(--surface-mid); }
 }
+.ft-list { display: flex; flex-direction: column; gap: 2px; padding: 4px; }
+/* A file sits one step in from its folder's checkbox. */
 .ft-name {
   display: flex; align-items: center; gap: 6px; min-width: 0;
-  padding-left: calc(var(--depth, 0) * 18px);
+  padding-left: calc(var(--depth, 0) * 22px);
 }
+.ft-row:not(.is-dir) .ft-name { padding-left: calc(var(--depth, 0) * 22px + 26px); }
+.ft-count { flex: none; font-size: var(--fs-xs); color: var(--outline); }
 .ft-twisty {
   all: unset; width: 20px; height: 20px; flex: none; display: grid; place-items: center;
   color: var(--on-surface-var); cursor: pointer; border-radius: 4px;
@@ -50,12 +55,28 @@
 .ft-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .is-dir .ft-label { font-weight: 600; cursor: pointer; }
 .is-off .ft-label { color: var(--on-surface-var); }
-.ft-size { text-align: right; color: var(--on-surface-var); font-size: var(--fs-sm); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.ft-size { text-align: right; color: var(--on-surface-var); font-size: var(--fs-sm); font-variant-numeric: tabular-nums; line-height: 1.2; }
 .ft-done { display: flex; align-items: center; gap: 6px; }
 .ft-bar-track { flex: 1; height: 6px; border-radius: 3px; background: var(--surface-highest); overflow: hidden; }
 .ft-bar-fill { display: block; height: 100%; background: var(--primary); border-radius: 3px; }
-.is-off .ft-bar-fill { background: var(--outline); }
+.ft-done.is-full .ft-bar-fill { background: var(--success); }
 .ft-pct { width: 38px; text-align: right; color: var(--on-surface-var); font-size: var(--fs-xs); font-variant-numeric: tabular-nums; }
-.ft-level { height: 28px; font-size: var(--fs-sm); padding: 0 8px; }
-.ft-level:disabled { opacity: .45; }
+.ft-level { height: 26px; font-size: var(--fs-sm); padding: 0 24px 0 10px; border-radius: 13px; background-position: right 4px center; }
+.ft-level.is-raised { background-color: var(--secondary-container); color: var(--on-secondary-container); font-weight: 600; }
+.is-off .ft-level { color: var(--on-surface-var); }
+.ft-foldall[hidden] { display: none; }
+
+/* A narrow pane (the manager page's side pane): the progress becomes a line
+   under the name and the counts step aside, so the name keeps its room. */
+@container (max-width: 520px) {
+  .ft-head, .ft-row { --ft-cols: minmax(0, 1fr) 62px 76px; gap: 6px; padding: 0 6px; }
+  .ft-col-progress, .ft-count, .ft-folder { display: none; }
+  .ft-level { padding-left: 8px; }
+  .ft-row { position: relative; }
+  .ft-done { position: absolute; left: 36px; right: 154px; bottom: 3px; }
+  .ft-done .ft-bar-track { height: 3px; }
+  .ft-pct { display: none; }
+  .ft-row:not(.is-dir) .ft-name { padding-left: calc(var(--depth, 0) * 14px + 26px); }
+  .ft-name { padding-left: calc(var(--depth, 0) * 14px); }
+}
 .ft-empty { padding: 14px; color: var(--on-surface-var); font-size: var(--fs-md); margin: 0; }

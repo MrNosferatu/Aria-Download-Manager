@@ -31,6 +31,10 @@ const out = {
   top: root.name,
   order: rows.map((r) => r.name),
   folder: [rows[0].state, rows[0].level],
+  folderTotals: [rows[0].size, rows[0].wanted, rows[0].wantedDone],
+  allSkipped: treeRows(root, {'6': 0, '7': 0}, {}, '', 'name', false)[0].level,
+  sameLevel: treeRows(root, {'6': 2, '7': 2}, {}, '', 'name', false)[0].level,
+  skipAndNormal: treeRows(root, {'6': 0}, {}, '', 'name', false)[0].level,
   folded: treeRows(root, levels, {'/extra': true}, '', 'name', false).map((r) => r.name),
   bySize: treeRows(root, levels, {}, '', 'size', true).filter((r) => !r.isDir && r.depth === 0).map((r) => r.name)[0],
   filtered: treeRows(root, levels, {}, 'a.t', 'name', false).map((r) => r.name),
@@ -57,6 +61,12 @@ def main() -> int:
           out["order"] == ["extra", "a.txt", "b.txt", "Shot (1).jpg", "Shot (2).jpg",
                            "Shot (10).jpg", "Shot (11).jpg", "Shot (19).jpg"], str(out["order"]))
     check("a folder with differing priorities reads as mixed", out["folder"] == [2, -1], str(out["folder"]))
+    check("a folder counts all its bytes, the wanted ones, and what of those is done",
+          out["folderTotals"] == [12, 12, 5], str(out["folderTotals"]))
+    check("a folder whose files are all skipped reads as Skip", out["allSkipped"] == 0, str(out["allSkipped"]))
+    check("files that agree give the folder their priority", out["sameLevel"] == 2, str(out["sameLevel"]))
+    check("a skipped file beside a wanted one makes the folder Mixed", out["skipAndNormal"] == -1,
+          str(out["skipAndNormal"]))
     check("a folded folder hides its files", out["folded"][:2] == ["extra", "Shot (1).jpg"], str(out["folded"]))
     check("sorting by size, biggest first", out["bySize"] == "Shot (19).jpg", out["bySize"])
     check("a filter keeps matching files and their folder", out["filtered"] == ["extra", "a.txt"], str(out["filtered"]))

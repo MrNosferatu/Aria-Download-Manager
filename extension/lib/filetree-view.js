@@ -1,15 +1,18 @@
 /* Draws a torrent's files as a tree (lib/filetree-core.js) for the extension's
    pages: the download dialog and the manager page's details.
 
-   Like qBittorrent: folders that fold, a checkbox on every row (a folder's
-   covers everything in it, and shows "some" when only part is chosen), size
-   and a progress bar per row, a priority for what is chosen, sortable
-   columns, and a filter for big torrents. Changes go to `onChange(levels)` as
+   Like qBittorrent (Revision 2, board 3): folders that fold and carry their
+   files' totals — a checkbox that is ticked, a dash or empty as all, some or
+   none inside are wanted; the wanted size ("1.5 GiB of 3.8 GiB"); progress
+   over the wanted bytes, green at 100%; and a priority, "Mixed" when the
+   files inside differ, that sets every file in it. Sortable columns, Expand
+   all, and a filter for big torrents. Changes go to `onChange(levels)` as
    they happen; the page decides when to save. */
 'use strict';
 
-const FT_LEVELS = [[1, 'Normal'], [2, 'High'], [3, 'Maximum']];
-const FT_SORTS = [['name', 'Name'], ['size', 'Size'], ['progress', 'Done'], ['priority', 'Priority']];
+const FT_LEVELS = [[1, 'Normal'], [2, 'High'], [3, 'Max']];
+const FT_ROW_LEVELS = [[0, 'Skip'], ...FT_LEVELS];
+const FT_SORTS = [['name', 'Name'], ['size', 'Size'], ['progress', 'Progress'], ['priority', 'Priority']];
 const FT_CHEVRON = '<svg class="ico" viewBox="0 0 24 24"><path d="M10 6 8.59 7.41 13.17 12l-4.58 4.59L10 18l6-6z"/></svg>';
 const FT_FOLDER = '<svg class="ico" viewBox="0 0 24 24"><path d="M10 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z"/></svg>';
 
@@ -19,6 +22,13 @@ function ftBytes(n) {
   if (typeof humanBytes === 'function') return humanBytes(n);
   if (typeof fmtBytes === 'function') return fmtBytes(n);
   return `${n} B`;
+}
+
+// Every folder's key, for Expand all / Collapse all.
+function ftFolderKeys(node) {
+  const out = [];
+  for (const name in node.dirs) out.push(node.dirs[name].key, ...ftFolderKeys(node.dirs[name]));
+  return out;
 }
 
 function mountFileTree(host, options) {
@@ -43,6 +53,7 @@ function mountFileTree(host, options) {
       <label class="ft-check"><input type="checkbox" data-role="all" aria-label="All files"><span data-role="count"></span></label>
       <input class="ft-filter" data-role="filter" placeholder="Filter files" spellcheck="false">
       <span class="ft-spacer"></span>
+      <button type="button" class="btn btn-sm ft-foldall" data-role="foldall"></button>
       <select class="ft-setall" data-role="setall" aria-label="Priority for every chosen file">
         <option value="">Priority for all…</option>
         ${FT_LEVELS.map(([v, l]) => `<option value="${v}">${l}</option>`).join('')}
@@ -77,7 +88,12 @@ function mountFileTree(host, options) {
     }
 
     const sum = treeSummary(S.files, S.levels);
-    $r('count').textContent = `${sum.chosen} of ${sum.count} files · ${ftBytes(sum.selected)} of ${ftBytes(sum.total)}`;
+    $r('count').textContent = `${sum.chosen} of ${sum.count} files wanted · ${ftBytes(sum.selected)} of ${ftBytes(sum.total)}${
+      S.root.name ? ` · inside ${S.root.name}/` : ''}`;
+    const folders = ftFolderKeys(S.root);
+    const anyFolded = folders.some((k) => S.collapsed[k]);
+    $r('foldall').hidden = !folders.length;
+    $r('foldall').textContent = anyFolded ? 'Expand all' : 'Collapse all';
     const all = $r('all');
     all.checked = sum.chosen === sum.count && sum.count > 0;
     all.indeterminate = sum.chosen > 0 && sum.chosen < sum.count;
@@ -99,33 +115,36 @@ function mountFileTree(host, options) {
     el.setAttribute('role', 'treeitem');
     if (row.isDir) el.setAttribute('aria-expanded', String(row.open));
     el.style.setProperty('--depth', row.depth);
-    const pct = row.size ? Math.min(100, Math.round(row.done / row.size * 1000) / 10) : 0;
-    const levelOptions = row.state === 0
-      ? '<option value="0" selected>—</option>'
-      : (row.level === -1 ? '<option value="-1" selected>Mixed</option>' : '')
-        + FT_LEVELS.map(([v, l]) => `<option value="${v}"${v === row.level ? ' selected' : ''}>${l}</option>`).join('');
+    // Bytes done over bytes wanted, so skipped files do not hold a folder back.
+    const pct = row.wanted ? Math.min(100, Math.floor(row.wantedDone / row.wanted * 100)) : 0;
+    const size = row.isDir && row.wanted > 0 && row.wanted < row.size
+      ? `${ftBytes(row.wanted)} of ${ftBytes(row.size)}` : ftBytes(row.size);
+    const levelOptions = (row.level === -1 ? '<option value="-1" selected>Mixed</option>' : '')
+      + FT_ROW_LEVELS.map(([v, l]) => `<option value="${v}"${v === row.level ? ' selected' : ''}>${l}</option>`).join('');
     el.innerHTML = `
       <span class="ft-name">
-        ${row.isDir ? `<button type="button" class="ft-twisty${row.open ? ' is-open' : ''}" data-role="twisty" aria-label="${row.open ? 'Fold' : 'Unfold'}">${FT_CHEVRON}</button>` : '<span class="ft-twisty"></span>'}
         <input type="checkbox" data-role="check" aria-label="Download"${row.state === 2 ? ' checked' : ''}>
+        ${row.isDir ? `<button type="button" class="ft-twisty${row.open ? ' is-open' : ''}" data-role="twisty" aria-label="${row.open ? 'Fold' : 'Unfold'}">${FT_CHEVRON}</button>` : ''}
         ${row.isDir ? `<span class="ft-folder">${FT_FOLDER}</span>` : ''}
         <span class="ft-label"></span>
+        ${row.isDir ? `<span class="ft-count">${row.count === 1 ? '1 file' : `${row.count} files`}</span>` : ''}
       </span>
-      <span class="ft-size">${ftBytes(row.size)}</span>
-      <span class="ft-done" title="${ftBytes(row.done)} of ${ftBytes(row.size)}">
-        <span class="ft-bar-track"><span class="ft-bar-fill" style="width:${pct}%"></span></span>
-        <span class="ft-pct">${pct >= 100 ? '100%' : `${pct}%`}</span>
+      <span class="ft-size">${size}</span>
+      <span class="ft-done${pct >= 100 ? ' is-full' : ''}" title="${ftBytes(row.wantedDone)} of ${ftBytes(row.wanted)}">
+        <span class="ft-bar-track"><span class="ft-bar-fill" style="width:${row.state === 0 ? 0 : pct}%"></span></span>
+        <span class="ft-pct">${row.state === 0 ? (row.isDir ? '—' : 'skip') : `${pct}%`}</span>
       </span>
-      <select class="ft-level" data-role="level" aria-label="Priority"${row.state === 0 ? ' disabled' : ''}>${levelOptions}</select>`;
+      <select class="ft-level${row.level >= 2 ? ' is-raised' : ''}" data-role="level" aria-label="Priority">${levelOptions}</select>`;
     const label = el.querySelector('.ft-label');
     label.textContent = row.name;
     label.title = row.waiting ? `${row.name} · starts after the higher priorities` : row.name;
     const check = el.querySelector('[data-role="check"]');
     check.indeterminate = row.state === 1;
     check.addEventListener('change', () => changed(treeSetChosen(S.levels, row.indices, check.checked)));
+    // A folder's priority sets every file inside it; Skip clears them.
     el.querySelector('[data-role="level"]').addEventListener('change', (e) => {
       const value = Number(e.target.value);
-      if (value > 0) changed(treeSetLevel(S.levels, row.indices.filter((i) => treeLevelOf(S.levels, i) > 0), value));
+      if (value >= 0) changed(treeSetLevel(S.levels, row.indices, value));
     });
     if (row.isDir) {
       const fold = () => {
@@ -138,6 +157,13 @@ function mountFileTree(host, options) {
     return el;
   }
 
+  $r('foldall').addEventListener('click', () => {
+    const folders = ftFolderKeys(S.root);
+    const anyFolded = folders.some((k) => S.collapsed[k]);
+    S.collapsed = {};
+    if (!anyFolded) for (const k of folders) S.collapsed[k] = true;
+    draw();
+  });
   $r('all').addEventListener('change', (e) => {
     const every = S.files.map((f) => String(f.index));
     changed(treeSetChosen(S.levels, every, e.target.checked));
