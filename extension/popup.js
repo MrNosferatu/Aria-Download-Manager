@@ -387,6 +387,9 @@ async function init() {
   $('open-ui').addEventListener('click', () => openManager());
   $('options').addEventListener('click', () => api.runtime.openOptionsPage());
 
+  // Opening the popup is looking: the finished-download dot on the icon goes.
+  api.runtime.sendMessage({ type: 'seen' }).catch(() => {});
+
   // Ctrl+V straight into the box: the popup opens with it focused.
   $('url').focus();
   refresh();

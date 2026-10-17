@@ -10,31 +10,94 @@
   });
 
   /* ------------------------------------------------------------- toasts */
-  let host = null;
+  /* The DankBar feedback pill, on the page: an icon, one line, at most one
+     button. Drawn in a closed shadow root so the page's CSS cannot reach it,
+     and the inverse of the page's colour scheme so it reads on any site.
+     Hovering holds it; an error stays until it is dismissed. */
+  let toastRoot = null;
 
-  function toast(message, kind) {
-    if (!settings || !settings.pageToasts) return;
-    if (!host) {
-      host = document.createElement('div');
-      Object.assign(host.style, {
-        position: 'fixed', right: '16px', bottom: '16px', zIndex: 2147483647,
-        display: 'flex', flexDirection: 'column', gap: '8px', pointerEvents: 'none',
-      });
-      (document.body || document.documentElement).append(host);
+  const TOAST_CSS = `
+    :host { all: initial; }
+    .stack { position: fixed; right: 16px; bottom: 16px; z-index: 2147483647;
+      display: flex; flex-direction: column; align-items: flex-end; gap: 8px; pointer-events: none;
+      font: 500 13px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; }
+    .t { pointer-events: auto; display: flex; align-items: center; gap: 10px; max-width: 420px;
+      padding: 8px 8px 8px 14px; border-radius: 999px;
+      box-shadow: 0 2px 6px rgba(0,0,0,.18), 0 8px 24px rgba(0,0,0,.22);
+      background: oklch(24% 0.012 260); color: oklch(93% 0.008 260);
+      animation: rise .22s cubic-bezier(.2,0,0,1); }
+    .t.err { background: oklch(31% 0.10 20); color: oklch(92% 0.04 20); }
+    .t svg { width: 18px; height: 18px; flex: none; fill: oklch(78% 0.14 155); }
+    .t.err svg { fill: oklch(76% 0.14 20); }
+    .t .m { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .t button { all: unset; cursor: pointer; flex: none; height: 30px; padding: 0 12px; border-radius: 15px;
+      font-weight: 600; font-size: 12px; background: oklch(80% 0.12 255); color: oklch(24% 0.09 255); }
+    .t.err button { background: oklch(92% 0.04 20); color: oklch(31% 0.10 20); }
+    .t button.x { padding: 0; width: 30px; text-align: center; background: transparent; color: inherit; font-size: 16px; }
+    .t button:focus-visible { outline: 2px solid currentColor; outline-offset: 2px; }
+    @media (prefers-color-scheme: dark) {
+      .t { background: oklch(93% 0.008 260); color: oklch(22% 0.015 260); }
+      .t svg { fill: oklch(52% 0.15 155); }
+      .t button { background: oklch(50% 0.17 255); color: oklch(99% 0 0); }
     }
-    // Same tonal palette as the popup and the manager page, hard-coded because
-    // a page's own stylesheet cannot be trusted to leave custom properties alone.
+    @keyframes rise { from { transform: translateY(12px); opacity: 0; } }
+    @media (prefers-reduced-motion: reduce) { .t { animation: none; } }
+  `;
+  const OK_ICON = '<svg viewBox="0 0 24 24"><path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zm-2 15-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg>';
+  const ERR_ICON = '<svg viewBox="0 0 24 24"><path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z"/></svg>';
+
+  function toastStack() {
+    if (toastRoot) return toastRoot;
+    const host = document.createElement('div');
+    const root = host.attachShadow({ mode: 'closed' });
+    const style = document.createElement('style');
+    style.textContent = TOAST_CSS;
+    const stack = document.createElement('div');
+    stack.className = 'stack';
+    root.append(style, stack);
+    (document.body || document.documentElement).append(host);
+    toastRoot = stack;
+    return stack;
+  }
+
+  function toast(message, kind, action) {
+    if (!settings || !settings.pageToasts) return;
+    const isError = kind === 'error';
     const el = document.createElement('div');
-    el.textContent = message;
-    Object.assign(el.style, {
-      background: kind === 'error' ? 'oklch(31% 0.10 20)' : 'oklch(27.5% 0.012 260)',
-      color: kind === 'error' ? 'oklch(90% 0.06 20)' : 'oklch(93% 0.008 260)',
-      borderLeft: `3px solid ${kind === 'error' ? 'oklch(76% 0.14 20)' : 'oklch(80% 0.12 255)'}`,
-      borderRadius: '12px', padding: '10px 16px', font: '500 13px/1.4 system-ui, sans-serif',
-      maxWidth: '380px', boxShadow: '0 2px 6px rgba(0,0,0,.18), 0 8px 24px rgba(0,0,0,.22)',
-    });
-    host.append(el);
-    setTimeout(() => el.remove(), kind === 'error' ? 6000 : 2800);
+    el.className = `t${isError ? ' err' : ''}`;
+    el.setAttribute('role', isError ? 'alert' : 'status');
+    el.innerHTML = isError ? ERR_ICON : OK_ICON;
+    const text = document.createElement('span');
+    text.className = 'm';
+    // A download name is remote text: set as text, never as HTML.
+    text.textContent = message;
+    text.title = message;
+    el.append(text);
+
+    let timer = null;
+    const close = () => { clearTimeout(timer); el.remove(); };
+    const arm = () => { if (!isError) timer = setTimeout(close, 5000); };
+    if (action && action.label) {
+      const button = document.createElement('button');
+      button.textContent = action.label;
+      button.addEventListener('click', () => {
+        close();
+        api.runtime.sendMessage({ type: 'toastAction', kind: action.kind, url: action.url || '' }).catch(() => {});
+      });
+      el.append(button);
+    }
+    if (isError) {
+      const x = document.createElement('button');
+      x.className = 'x';
+      x.textContent = '×';
+      x.setAttribute('aria-label', 'Dismiss');
+      x.addEventListener('click', close);
+      el.append(x);
+    }
+    el.addEventListener('mouseenter', () => clearTimeout(timer));
+    el.addEventListener('mouseleave', arm);
+    toastStack().append(el);
+    arm();
   }
 
   /* ------------------------------------------------------------ capture */
@@ -107,7 +170,7 @@
         background: oklch(24% 0.012 260 / .88); color: oklch(93% 0.008 260);
         border: 0; border-radius: 999px;
         padding: 7px 12px 7px 10px; cursor: pointer; backdrop-filter: blur(8px);
-        box-shadow: 0 2px 6px rgba(0,0,0,.25), 0 6px 18px rgba(0,0,0,.3); opacity: .6;
+        box-shadow: 0 2px 6px rgba(0,0,0,.25), 0 6px 18px rgba(0,0,0,.3); opacity: .85;
         transition: opacity .12s ease, background .12s ease;
       }
       .btn:hover, .wrap:hover .btn { opacity: 1; background: oklch(36% 0.11 255 / .96); }
@@ -121,10 +184,12 @@
       .menu.open { display: block; }
       .menu.up { top: auto; bottom: calc(100% + 6px); }
       .row {
+        all: unset; box-sizing: border-box; width: 100%;
         display: flex; align-items: center; justify-content: space-between; gap: 12px;
         padding: 8px 10px; border-radius: 8px; cursor: pointer; white-space: nowrap;
       }
-      .row:hover { background: oklch(80% 0.12 255 / .16); }
+      .row:hover, .row:focus-visible { background: oklch(80% 0.12 255 / .16); }
+      .btn:focus-visible { outline: 2px solid oklch(80% 0.12 255); outline-offset: 2px; opacity: 1; }
       .row .q { font-weight: 600; }
       .row .meta { color: oklch(72% 0.014 260); font-size: 11px; }
       .note { padding: 8px 10px; color: oklch(72% 0.014 260); font-size: 11px; white-space: normal; max-width: 240px; }
@@ -201,9 +266,13 @@
       return;
     }
 
+    // Say how many before the next click, not after it.
+    const label = overlay && overlay.button.querySelector('span');
+    if (label) label.textContent = `Video · ${variants.length} ${variants.length === 1 ? 'quality' : 'qualities'}`;
     menu.replaceChildren();
     for (const variant of variants) {
-      const row = document.createElement('div');
+      // Buttons, so Tab and Enter reach them as well as the pointer.
+      const row = document.createElement('button');
       row.className = 'row';
       const quality = document.createElement('span');
       quality.className = 'q';
@@ -343,7 +412,7 @@
       return false;
     }
     if (message.type === 'toast') {
-      toast(message.message, message.kind);
+      toast(message.message, message.kind, message.action);
       sendResponse({ ok: true });
       return false;
     }

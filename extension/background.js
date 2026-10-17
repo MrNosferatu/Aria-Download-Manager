@@ -49,13 +49,16 @@ function notify(message, isError) {
   });
 }
 
-async function report(settings, message, isError, tabId) {
+//: `action`, when given, puts one button on the page toast:
+//: {label, kind: 'manager'} opens the manager, {label, kind: 'browser', url}
+//: hands the link back to the browser.
+async function report(settings, message, isError, tabId, action) {
   if (!settings.notify) return;
   // Prefer an in-page toast when the action came from a tab: it is quieter and
   // lands where the user is looking.
   if (settings.pageToasts && tabId !== undefined && tabId !== null) {
     try {
-      await api.tabs.sendMessage(tabId, { type: 'toast', message, kind: isError ? 'error' : 'ok' });
+      await api.tabs.sendMessage(tabId, { type: 'toast', message, kind: isError ? 'error' : 'ok', action: action || null });
       return;
     } catch { /* no content script in that tab — fall through */ }
   }
@@ -328,11 +331,12 @@ async function sendOne(item, tabId) {
   }
   try {
     const name = await sendToManager(settings, item, tabId);
-    await report(settings, `Added ${name}`, false, tabId);
+    await report(settings, `Sent to Aria · ${name}`, false, tabId, { label: 'Open', kind: 'manager' });
     refreshBadge();
     return { ok: true };
   } catch (err) {
-    await report(settings, err.message, true, tabId);
+    await report(settings, `Not added — ${err.message}`, true, tabId,
+      /^https?:/i.test(item.url || '') ? { label: 'Let the browser', kind: 'browser', url: item.url } : null);
     return { ok: false, error: err.message };
   }
 }
@@ -364,7 +368,8 @@ async function sendMany(urls, context, tabId) {
       });
     }
     await remember(`${urls.length} links`);
-    await report(settings, `Added ${urls.length} link${urls.length === 1 ? '' : 's'}`, false, tabId);
+    await report(settings, `Sent to Aria · ${urls.length} link${urls.length === 1 ? '' : 's'}`, false, tabId,
+      { label: 'Open', kind: 'manager' });
     refreshBadge();
     return { ok: true, count: urls.length };
   } catch (err) {
@@ -502,12 +507,16 @@ async function managerGetsPage(item, name) {
 }
 
 /* ------------------------------------------------------------ context menus */
+//: The browser files these under a submenu named after the extension, so the
+//: titles do not repeat "with Aria". Only entries that fit the click show.
 const MENUS = [
-  { id: 'link', title: 'Download link with Aria', contexts: ['link'] },
-  { id: 'page', title: 'Download this page with Aria', contexts: ['page'] },
-  { id: 'selection', title: 'Download selected links with Aria', contexts: ['selection'] },
-  { id: 'all', title: 'Download every file link on this page with Aria', contexts: ['page'] },
-  { id: 'media', title: 'Download media with Aria', contexts: ['image', 'video', 'audio'] },
+  { id: 'link', title: 'Download link', contexts: ['link'] },
+  { id: 'selection', title: 'Download selected links', contexts: ['selection'] },
+  { id: 'media', title: 'Download this file', contexts: ['image', 'video', 'audio'] },
+  { id: 'all', title: 'Download all file links on this page', contexts: ['page'] },
+  { id: 'page', title: 'Download this page', contexts: ['page'] },
+  { id: 'sep', type: 'separator', contexts: ['all'] },
+  { id: 'manager', title: 'Open the manager', contexts: ['all'] },
 ];
 
 /* The exclusion list governs *automatic* behaviour — interception, click
@@ -543,6 +552,9 @@ api.contextMenus.onClicked.addListener(async (info, tab) => {
   const settings = await loadSettings();
   if (!settings.enabled) return;
   switch (info.menuItemId) {
+    case 'manager':
+      openManager();
+      break;
     case 'link':
       sendOne({ url: info.linkUrl, referer: info.pageUrl }, tabId);
       break;
@@ -571,35 +583,162 @@ api.contextMenus.onClicked.addListener(async (info, tab) => {
   }
 });
 
+//: The manager page, brought forward if a copy is already open.
+async function openManager() {
+  const base = api.runtime.getURL('manager/index.html');
+  const open = (await api.tabs.query({})).find((t) => (t.url || '').startsWith(base));
+  if (open) {
+    await api.tabs.update(open.id, { active: true });
+    await api.windows.update(open.windowId, { focused: true });
+  } else {
+    await api.tabs.create({ url: base });
+  }
+}
+
 /* ----------------------------------------------------------------- badge */
+/* The toolbar icon is the DankBar pill: the same states, drawn. A ring around
+   the arrow is the overall progress while anything runs; a held download greys
+   the arrow and counts; aria2c down or the manager gone turns it red with "!";
+   a download that finished since the popup was last opened leaves a dot. The
+   badge is only for words. Drawn on an OffscreenCanvas; where that is missing
+   the static icon stays and only the badge changes. */
+
+const ICON_SIZES = [16, 32];
+const ICON_COLORS = { busy: '#5b8def', held: '#8a8f98', error: '#e5534b', off: '#8a8f98' };
+const GLYPH = 'M5 20h14v-2H5v2zM19 9h-4V3H9v6H5l7 7 7-7z';
+let iconDrawn = false;
+let lastIconKey = '';
+
+function drawIcon(size, { color, progress, dim }) {
+  const canvas = new OffscreenCanvas(size, size);
+  const g = canvas.getContext('2d');
+  const ring = progress >= 0;
+  if (ring) {
+    const width = Math.max(1.5, size / 10);
+    const radius = (size - width) / 2;
+    g.lineWidth = width;
+    g.lineCap = 'round';
+    g.strokeStyle = 'rgba(138, 143, 152, 0.45)';
+    g.beginPath();
+    g.arc(size / 2, size / 2, radius, 0, Math.PI * 2);
+    g.stroke();
+    if (progress > 0) {
+      g.strokeStyle = color;
+      g.beginPath();
+      g.arc(size / 2, size / 2, radius, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * Math.min(1, progress));
+      g.stroke();
+    }
+  }
+  const box = ring ? size * 0.6 : size * 0.92;
+  g.save();
+  g.translate((size - box) / 2, (size - box) / 2);
+  g.scale(box / 24, box / 24);
+  g.globalAlpha = dim ? 0.6 : 1;
+  g.fillStyle = color;
+  g.fill(new Path2D(GLYPH));
+  g.restore();
+  return g.getImageData(0, 0, size, size);
+}
+
+//: look = null puts the extension's own icon back.
+async function setLook(look, badge, badgeColor) {
+  const key = JSON.stringify([look, badge, badgeColor]);
+  if (key === lastIconKey) return;
+  lastIconKey = key;
+  try {
+    if (look && typeof OffscreenCanvas === 'function') {
+      const imageData = {};
+      for (const size of ICON_SIZES) imageData[size] = drawIcon(size, look);
+      await api.action.setIcon({ imageData });
+      iconDrawn = true;
+    } else if (iconDrawn) {
+      await api.action.setIcon({ path: api.runtime.getManifest().action.default_icon });
+      iconDrawn = false;
+    }
+    await api.action.setBadgeText({ text: badge });
+    if (badgeColor) await api.action.setBadgeBackgroundColor({ color: badgeColor });
+  } catch { /* action API missing (very old builds) */ }
+}
+
+//: Finished downloads not yet seen in the popup or the manager page. Kept in
+//: session storage so a service worker restart does not forget it.
+const seenStore = api.storage.session || api.storage.local;
+
+async function noteFinished(complete) {
+  const { seenComplete = -1, unseen = 0 } = await seenStore.get(['seenComplete', 'unseen']);
+  let next = unseen;
+  if (seenComplete >= 0 && complete > seenComplete) next += complete - seenComplete;
+  if (complete !== seenComplete || next !== unseen) await seenStore.set({ seenComplete: complete, unseen: next });
+  return next;
+}
+
+async function markSeen() {
+  await seenStore.set({ unseen: 0 });
+  lastIconKey = '';
+  refreshBadge();
+}
+
+async function paintFromState(state) {
+  const counts = state.counts || {};
+  const aria2 = state.aria2 || {};
+  const active = counts.active || 0;
+  const held = (counts.waiting || 0) + (counts.paused || 0);
+  const unseen = await noteFinished(counts.complete || 0);
+  if (!aria2.running) {
+    await setLook({ color: ICON_COLORS.error, progress: -1 }, '!', ICON_COLORS.error);
+  } else if (active) {
+    const totals = activeTotals(state);
+    // A ring needs every size; a magnet still fetching its list has none.
+    await setLook({ color: ICON_COLORS.busy, progress: totals.progress >= 0 ? totals.progress : 0 }, '', null);
+  } else if (held) {
+    await setLook({ color: ICON_COLORS.held, progress: -1, dim: true }, String(held), ICON_COLORS.held);
+  } else if (unseen) {
+    await setLook(null, '•', '#3fb37f');
+  } else {
+    await setLook(null, '', null);
+  }
+  followStream(active > 0);
+}
+
+/* While something runs the ring should move with it, so the background follows
+   the manager's live stream then — and lets go the moment nothing does, so an
+   idle browser keeps no helper process or service worker awake for it. Frames
+   are drawn at most every two seconds. */
+let streamStop = null;
+let lastPaint = 0;
+
+function followStream(on) {
+  if (on && !streamStop) {
+    streamStop = ManagerLink.subscribe({
+      onFrame(kind, data) {
+        if (kind !== 'state' || Date.now() - lastPaint < 2000) return;
+        lastPaint = Date.now();
+        paintFromState(data);
+      },
+      onError() {},
+    });
+  } else if (!on && streamStop) {
+    streamStop();
+    streamStop = null;
+  }
+}
+
 async function refreshBadge() {
   const settings = await loadSettings();
-  let text = '';
-  let colour = '#4c8dff';
   if (!settings.enabled) {
-    try {
-      await api.action.setBadgeText({ text: 'off' });
-      await api.action.setBadgeBackgroundColor({ color: '#6b7280' });
-    } catch { /* action API missing */ }
+    followStream(false);
+    await setLook({ color: ICON_COLORS.off, progress: -1, dim: true }, 'off', '#6b7280');
     return;
   }
   try {
     const state = await request('/api/state');
     noteHealth(true);
-    const counts = state.counts || {};
-    const active = counts.active || 0;
-    const waiting = (counts.waiting || 0) + (counts.paused || 0);
-    text = active ? String(active) : (waiting ? `${waiting}` : '');
-    if (!active && waiting) colour = '#8a8f98';
+    await paintFromState(state);
   } catch {
     noteHealth(false);
-    text = '!';
-    colour = '#ff5f6d';
+    followStream(false);
+    await setLook({ color: ICON_COLORS.off, progress: -1, dim: true }, '!', ICON_COLORS.error);
   }
-  try {
-    await api.action.setBadgeText({ text });
-    await api.action.setBadgeBackgroundColor({ color: colour });
-  } catch { /* action API missing (very old builds) */ }
 }
 
 api.alarms.create('badge', { periodInMinutes: 0.5 });
@@ -642,6 +781,18 @@ api.runtime.onMessage.addListener((message, sender, sendResponse) => {
       }
       case 'refreshBadge':
         await refreshBadge();
+        sendResponse({ ok: true });
+        break;
+      case 'seen':
+        // The popup or the manager page is open: finished downloads are seen.
+        await markSeen();
+        sendResponse({ ok: true });
+        break;
+      case 'toastAction':
+        if (message.kind === 'manager') await openManager();
+        else if (message.kind === 'browser' && /^https?:/i.test(message.url || '')) {
+          await resumeInBrowser(null, message.url);
+        }
         sendResponse({ ok: true });
         break;
       case 'dialogAdded':
