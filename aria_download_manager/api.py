@@ -1386,6 +1386,15 @@ def create_app(cfg: Config) -> FastAPI:
         size = (max(0, min(req.width, 4000)), max(0, min(req.height, 4000)))
         return {"ok": True, "floated": await compositor.float_window(req.title, *size, exact=req.exact)}
 
+    @app.post("/api/window/maximize")
+    async def maximize_window(req: FloatRequest):
+        """Fill the screen with the window titled so, or put it back (niri, Hyprland).
+
+        niri ignores a floating window's own maximize request, so the DankBar
+        window's maximize button asks the manager.
+        """
+        return {"ok": True, **await compositor.toggle_maximize(req.title, exact=req.exact)}
+
     @app.post("/api/intake/add")
     async def intake_add(req: IntakeRequest):
         uris = split_uris(req.urls, req.url)

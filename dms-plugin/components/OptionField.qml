@@ -1,9 +1,13 @@
 import QtQuick
 import qs.Common
 import qs.Widgets
+import "../lib/Fmt.js" as Fmt
 import "../lib/Units.js" as Units
 
-// One aria2 global option. `kind` is "text", "number", "bool" or
+// One aria2 global option as a row of the boards' settings cards (8 and 19):
+// what it is on the left — a label, and under it the aria2 key or one grey
+// line saying what it does — and the control on the right, with a dot and a
+// reset once it is edited. `kind` is "text", "number", "stepper", "bool" or
 // "select:a,b,c", matching the manager page's option table.
 Item {
     id: field
@@ -15,6 +19,43 @@ Item {
     property string description: ""
     property string original: ""
     property string value: ""
+    //: Bounds for a stepper; 0 as the maximum means none.
+    property int minimum: 0
+    property int maximum: 0
+    //: Show the aria2 option name under a friendly label.
+    property bool showKey: false
+    //: The search words, marked in the label and the key.
+    property string highlight: ""
+    //: Changing this puts the field back to `original` — the tab's Discard.
+    property int resetToken: 0
+    //: A hairline above the row, between it and the one before.
+    property bool divider: false
+    //: The key is the label (every-option rows): set in monospace.
+    property bool monoLabel: false
+
+    //: Back to the saved value. The editors keep their own text once typed
+    //: into, so they are rebuilt rather than told.
+    function reset() {
+        field.value = field.original
+        editor.active = false
+        editor.active = true
+    }
+
+    onResetTokenChanged: reset()
+
+    //: The match gets a soft mark behind it, as board 19 draws it.
+    function marked(text) {
+        const plain = String(text).replace(/&/g, "&amp;").replace(/</g, "&lt;")
+        if (!field.highlight)
+            return plain
+        for (const needle of Fmt.searchForms(field.highlight)) {
+            const at = plain.toLowerCase().indexOf(needle)
+            if (at >= 0)
+                return plain.slice(0, at) + "<span style=\"background-color:" + Theme.outlineVariant + "\">" + plain.slice(at, at + needle.length)
+                        + "</span>" + plain.slice(at + needle.length)
+        }
+        return plain
+    }
 
     //: By value: "32M" and "33554432" are the same setting.
     readonly property bool dirty: !Units.same(value, original)
@@ -36,58 +77,88 @@ Item {
 
     signal edited(string key, string newValue)
 
-    //: Driven by the content, not guessed at. The Column used to be anchored to
-    //: fill this Item while the Item's height was a hand-written formula, so any
-    //: row whose description wrapped overflowed into the row below it.
-    implicitHeight: layout.implicitHeight
+    implicitHeight: Math.max(52, textColumn.implicitHeight + 20)
     height: implicitHeight
 
     onValueChanged: field.edited(field.optionKey, field.value)
     // A reload re-seeds the field; typing breaks the binding on purpose.
     onOriginalChanged: field.value = field.original
 
-    Column {
-        id: layout
+    Rectangle {
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.top: parent.top
+        height: 1
+        visible: field.divider
+        color: Theme.outlineVariant
+        opacity: 0.6
+    }
 
-        width: parent.width
+    Column {
+        id: textColumn
+
+        anchors.left: parent.left
+        anchors.right: controls.left
+        anchors.rightMargin: 12
+        anchors.verticalCenter: parent.verticalCenter
         spacing: 2
 
-        Row {
+        StyledText {
             width: parent.width
-            spacing: Theme.spacingXS
-
-            StyledText {
-                text: field.label
-                font.pixelSize: Theme.fontSizeSmall
-                color: field.dirty ? Theme.primary : Theme.surfaceVariantText
-                elide: Text.ElideRight
-                width: Math.max(0, Math.min(implicitWidth, parent.width - 8))
-            }
-
-            Rectangle {
-                anchors.verticalCenter: parent.verticalCenter
-                width: 6
-                height: 6
-                radius: 3
-                color: Theme.primary
-                visible: field.dirty
-            }
+            text: field.marked(field.label)
+            textFormat: field.highlight ? Text.RichText : Text.PlainText
+            font.pixelSize: field.monoLabel ? Theme.fontSizeSmall + 1 : Theme.fontSizeMedium
+            font.weight: field.monoLabel ? Font.Bold : Font.DemiBold
+            font.family: field.monoLabel ? "monospace" : Theme.fontFamily
+            color: Theme.surfaceText
+            wrapMode: Text.NoWrap
+            elide: Text.ElideRight
         }
 
         StyledText {
-            id: descriptionText
+            width: parent.width
+            visible: field.showKey && field.label !== field.optionKey
+            text: field.marked(field.optionKey)
+            textFormat: field.highlight ? Text.RichText : Text.PlainText
+            font.pixelSize: Theme.fontSizeSmall - 1
+            font.family: "monospace"
+            color: Theme.surfaceVariantText
+            wrapMode: Text.NoWrap
+            elide: Text.ElideRight
+        }
 
+        StyledText {
             width: parent.width
             visible: field.description !== ""
             text: field.description
             font.pixelSize: Theme.fontSizeSmall - 1
             color: Theme.surfaceVariantText
             wrapMode: Text.WordWrap
+            maximumLineCount: 3
+            elide: Text.ElideRight
+        }
+    }
+
+    Row {
+        id: controls
+
+        anchors.right: parent.right
+        anchors.verticalCenter: parent.verticalCenter
+        spacing: 8
+
+        Rectangle {
+            anchors.verticalCenter: parent.verticalCenter
+            width: 6
+            height: 6
+            radius: 3
+            color: Theme.primary
+            visible: field.dirty
         }
 
         Loader {
-            width: parent.width
-            height: 40
+            id: editor
+
+            anchors.verticalCenter: parent.verticalCenter
             sourceComponent: {
                 if (field.isDirectory)
                     return directoryComponent
@@ -95,20 +166,59 @@ Item {
                     return unitComponent
                 if (field.isBool)
                     return boolComponent
-                return field.isChoice ? choiceComponent : textComponent
+                if (field.kind === "stepper")
+                    return stepperComponent
+                if (field.isChoice)
+                    return choiceComponent
+                return field.kind === "number" ? numberComponent : textComponent
             }
+        }
+
+        //: Back to what is saved, for this one option.
+        DankActionButton {
+            anchors.verticalCenter: parent.verticalCenter
+            visible: field.dirty
+            buttonSize: 30
+            iconSize: 16
+            iconName: "undo"
+            iconColor: Theme.surfaceVariantText
+            tooltipText: "Back to " + (field.original === "" ? "not set" : field.original)
+            onClicked: field.reset()
         }
     }
 
     Component {
         id: textComponent
 
-        DankTextField {
-            height: 40
+        FillField {
+            width: Math.min(240, Math.max(140, field.width * 0.42))
             text: field.value
-            placeholderText: field.optionKey
-            font.pixelSize: Theme.fontSizeSmall
+            placeholderText: "not set"
             onTextChanged: field.value = text
+        }
+    }
+
+    Component {
+        id: numberComponent
+
+        FillField {
+            width: 64
+            alignment: TextInput.AlignRight
+            text: field.value
+            placeholderText: "0"
+            onTextChanged: field.value = text.trim()
+        }
+    }
+
+    //: − count +, for the small integers: downloads at once, connections, parts.
+    Component {
+        id: stepperComponent
+
+        Stepper {
+            value: field.value
+            minimum: field.minimum
+            maximum: field.maximum
+            onEdited: newValue => field.value = newValue
         }
     }
 
@@ -118,6 +228,8 @@ Item {
         UnitField {
             kind: field.unitKind
             raw: field.original
+            split: true
+            placeholderText: field.unitKind === "speed" ? "none" : "0"
             onEdited: newValue => field.value = newValue
         }
     }
@@ -127,7 +239,7 @@ Item {
 
         DirectoryField {
             objectName: field.optionKey
-            implicitHeight: 32
+            width: Math.max(200, field.width * 0.6)
             placeholderText: field.optionKey
             text: field.value
             onTextChanged: field.value = text
@@ -137,28 +249,24 @@ Item {
     Component {
         id: boolComponent
 
-        Item {
-            //: aria2 does not report every option, and an unset one must not be
-            //: written out as an explicit false just because it rendered. It
-            //: stays marked "not set" until the switch is actually touched.
-            Row {
-                anchors.left: parent.left
+        //: aria2 does not report every option, and an unset one must not be
+        //: written out as an explicit false just because it rendered. It
+        //: stays marked "not set" until the switch is actually touched.
+        Row {
+            spacing: 8
+
+            StyledText {
                 anchors.verticalCenter: parent.verticalCenter
-                spacing: Theme.spacingS
+                visible: field.value === ""
+                text: "Not set"
+                font.pixelSize: Theme.fontSizeSmall - 1
+                color: Theme.surfaceVariantText
+            }
 
-                BoolSwitch {
-                    anchors.verticalCenter: parent.verticalCenter
-                    checked: field.value === "true"
-                    onToggled: value => field.value = value ? "true" : "false"
-                }
-
-                StyledText {
-                    anchors.verticalCenter: parent.verticalCenter
-                    visible: field.value === ""
-                    text: "Not set"
-                    font.pixelSize: Theme.fontSizeSmall - 1
-                    color: Theme.surfaceVariantText
-                }
+            BoolSwitch {
+                anchors.verticalCenter: parent.verticalCenter
+                checked: field.value === "true"
+                onToggled: value => field.value = value ? "true" : "false"
             }
         }
     }
@@ -166,12 +274,55 @@ Item {
     Component {
         id: choiceComponent
 
-        DankDropdown {
-            height: 40
-            currentValue: field.value === "" ? "Not set" : field.value
-            options: ["Not set"].concat(field.choices)
-            compactMode: true
-            onValueChanged: newValue => field.value = (newValue === "Not set" ? "" : newValue)
+        Rectangle {
+            id: choice
+
+            width: choiceRow.implicitWidth + 20
+            height: 36
+            radius: 10
+            color: choiceArea.containsMouse ? Theme.surfaceContainerHighest : Theme.surfaceContainerHigh
+
+            Row {
+                id: choiceRow
+
+                anchors.centerIn: parent
+                spacing: 2
+
+                StyledText {
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: field.value === "" ? "Not set" : field.value
+                    font.pixelSize: Theme.fontSizeSmall
+                    color: field.value === "" ? Theme.surfaceVariantText : Theme.surfaceText
+                }
+
+                DankIcon {
+                    anchors.verticalCenter: parent.verticalCenter
+                    name: "arrow_drop_down"
+                    size: 18
+                    color: Theme.surfaceVariantText
+                }
+            }
+
+            MouseArea {
+                id: choiceArea
+
+                anchors.fill: parent
+                hoverEnabled: true
+                cursorShape: Qt.PointingHandCursor
+                onClicked: choiceMenu.toggle()
+            }
+
+            MenuPopup {
+                id: choiceMenu
+
+                alignEnd: true
+                menuWidth: 160
+                entries: ["Not set"].concat(field.choices).map(c => ({
+                                                                         "text": c,
+                                                                         "checked": (c === "Not set" ? "" : c) === field.value
+                                                                     }))
+                onTriggered: index => field.value = index === 0 ? "" : field.choices[index - 1]
+            }
         }
     }
 }

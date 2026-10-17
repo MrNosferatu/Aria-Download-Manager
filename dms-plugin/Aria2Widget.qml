@@ -6,6 +6,7 @@ import qs.Widgets
 import qs.Modules.Plugins
 import "./components"
 import "./lib/Fmt.js" as Fmt
+import "./lib/Actions.js" as Actions
 
 PluginComponent {
     id: root
@@ -104,6 +105,92 @@ PluginComponent {
 
     popoutWidth: parseInt(pluginData.popoutWidth || "640") || 640
 
+    // ---- hide when idle --------------------------------------------------
+    //: Off by default. Never hides while offline or with aria2c down: those
+    //: are exactly the moments the pill has something to say.
+    readonly property bool hideWhenIdle: pluginData.hideWhenIdle === true
+    readonly property bool idleHidden: hideWhenIdle && online && !busy && !held && !attention
+                                       && svc.unseenFinished === 0
+
+    onIdleHiddenChanged: applyIdleVisibility()
+    Component.onCompleted: applyIdleVisibility()
+
+    //: setVisibilityOverride arrived with a later DMS than requires_dms names,
+    //: so it is looked up rather than assumed.
+    function applyIdleVisibility() {
+        if (typeof root.setVisibilityOverride !== "function")
+            return
+        if (root.idleHidden)
+            root.setVisibilityOverride(false)
+        else
+            root.clearVisibilityOverride()
+    }
+
+    // ---- middle click ----------------------------------------------------
+    //: The header's flip button, from the bar: pause everything while
+    //: anything runs, otherwise resume what is waiting.
+    function flipAll() {
+        if (!online || attention)
+            return
+        if (busy) {
+            const pause = Actions.GLOBAL.find(a => a.id === "pauseAll")
+            svc.pauseAllWithUndo(pause.ok)
+        } else if (svc.waitingCount > 0) {
+            const resume = Actions.GLOBAL.find(a => a.id === "resumeAll")
+            svc.post(resume.path, null, resume.ok)
+        }
+    }
+
+    // ---- hover card ------------------------------------------------------
+    //: Set by the pill content, which can see the pill it sits in.
+    property bool pillHovered: false
+    //: A click hides the card until the pointer has left and come back, so it
+    //: never sits over the popout or the menu the click just opened.
+    property bool hoverSuppressed: false
+
+    onPillHoveredChanged: {
+        if (pillHovered) {
+            if (!hoverSuppressed)
+                hoverDelay.restart()
+        } else {
+            hoverDelay.stop()
+            hoverSuppressed = false
+            hoverCardLoader.item?.hide()
+        }
+    }
+
+    function dismissHover() {
+        hoverSuppressed = true
+        hoverDelay.stop()
+        hoverCardLoader.item?.hide()
+    }
+
+    Timer {
+        id: hoverDelay
+
+        interval: 400
+        repeat: false
+        onTriggered: {
+            if (!root.pillHovered || root.hoverSuppressed || !root.axis || quickMenu.shouldBeVisible)
+                return
+            const edge = root.axis.edge === "left" ? 2 : (root.axis.edge === "right" ? 3 : (root.axis.edge === "bottom" ? 1 : 0))
+            hoverCardLoader.active = true
+            hoverCardLoader.item.showAt(root.pillAnchor(), edge)
+        }
+    }
+
+    //: Built the first time someone hovers.
+    LazyLoader {
+        id: hoverCardLoader
+
+        active: false
+
+        HoverCard {
+            service: root.svc
+            middleClickWorks: true
+        }
+    }
+
     //: Claiming from Component.onCompleted would risk shadowing the base
     //: PluginComponent's own handler, so the claim runs a tick later — and
     //: again if this instance is handed an axis after the fact.
@@ -183,6 +270,7 @@ PluginComponent {
     }
 
     pillRightClickAction: (x, y, width, section, screen) => {
+        root.dismissHover()
         const barPosition = root.axis?.edge === "left" ? 2 : (root.axis?.edge === "right" ? 3 : (root.axis?.edge === "top" ? 0 : 1))
         quickMenu.setTriggerPosition(x, y, width, section, screen, barPosition, root.barThickness, root.barSpacing, root.barConfig)
         quickMenu.toggle()
@@ -194,6 +282,7 @@ PluginComponent {
 
     //: The bar popout, whatever the pill is currently wired to do.
     function openPopout() {
+        root.dismissHover()
         root._forcePopout = true
         root.triggerPopout()
         root._forcePopout = false
@@ -213,15 +302,83 @@ PluginComponent {
                     + (progress >= 0 ? " · " + Math.floor(progress * 100) + "%" : "")
         }
         if (held)
-            return heldText
-        if (svc.unseenFinished > 0)
-            return svc.unseenFinished + " finished"
+            return heldText + " · tap to resume"
+        if (svc.finishedToday.count > 0)
+            return "Idle · " + svc.finishedToday.count + " finished today"
         return "Idle"
     }
     ccWidgetIsActive: busy
     ccWidgetIsToggle: false
 
-    onCcWidgetToggled: root.triggerPopout()
+    //: Paused work is one tap from moving again; anything else opens the
+    //: manager. The tile's own instance has no bar, so it asks one that does.
+    onCcWidgetToggled: {
+        if (held) {
+            const resume = Actions.GLOBAL.find(a => a.id === "resumeAll")
+            svc.post(resume.path, null, resume.ok)
+        } else if (root.axis) {
+            root.triggerPopout()
+        } else {
+            svc.popoutToggleRequested()
+        }
+    }
+
+    //: Only drawn when the tile is made big enough in the control center: the
+    //: overall bar and the two downloads furthest along.
+    ccExpandedMinimumHeight: 56
+    ccExpandedContent: Component {
+        Column {
+            spacing: Theme.spacingS
+
+            Rectangle {
+                width: parent.width
+                height: 4
+                radius: 2
+                visible: root.busy && root.svc.activeTotals.progress >= 0
+                color: Theme.withAlpha(Theme.outline, 0.25)
+
+                Rectangle {
+                    width: parent.width * Math.max(0, Math.min(1, root.svc.activeTotals.progress))
+                    height: parent.height
+                    radius: parent.radius
+                    color: Theme.primary
+                }
+            }
+
+            Repeater {
+                model: root.busy ? root.svc.topDownloads.filter(d => d.status === "active").slice(0, 2) : []
+
+                Item {
+                    required property var modelData
+
+                    width: parent.width
+                    height: ccName.implicitHeight
+
+                    StyledText {
+                        id: ccName
+
+                        anchors.left: parent.left
+                        anchors.right: ccPct.left
+                        anchors.rightMargin: Theme.spacingS
+                        text: parent.modelData.name || parent.modelData.gid
+                        font.pixelSize: Theme.fontSizeSmall
+                        color: Theme.surfaceText
+                        elide: Text.ElideMiddle
+                        wrapMode: Text.NoWrap
+                    }
+
+                    StyledText {
+                        id: ccPct
+
+                        anchors.right: parent.right
+                        text: Math.floor(parent.modelData.progress || 0) + "%"
+                        font.pixelSize: Theme.fontSizeSmall
+                        color: Theme.surfaceVariantText
+                    }
+                }
+            }
+        }
+    }
 
     // ---- bar pills -------------------------------------------------------
     horizontalBarPill: Component {
@@ -229,6 +386,11 @@ PluginComponent {
             id: pillRow
 
             spacing: Theme.spacingXS
+
+            PillInput {
+                content: pillRow
+                widget: root
+            }
 
             BarGlyph {
                 anchors.verticalCenter: parent.verticalCenter
@@ -273,7 +435,14 @@ PluginComponent {
 
     verticalBarPill: Component {
         Column {
+            id: pillColumn
+
             spacing: 2
+
+            PillInput {
+                content: pillColumn
+                widget: root
+            }
 
             //: The vertical bar has room for a short figure only: the speed
             //: split onto two lines, or a count. Idle and offline show nothing.

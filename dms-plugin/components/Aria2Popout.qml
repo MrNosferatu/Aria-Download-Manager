@@ -9,6 +9,10 @@ import "../lib/Fmt.js" as Fmt
 PopoutComponent {
     id: popout
 
+    //: The edge menus have to stay inside: the bar popout clips anything
+    //: drawn past its body (see MenuPopup).
+    objectName: "aria2MenuBounds"
+
     property var service: null
     property int contentHeight: 540
     readonly property int inset: Theme.spacingS
@@ -29,10 +33,10 @@ PopoutComponent {
     //: window) can work out how much is left for the tabs. Spelled out term by
     //: term rather than derived from implicitHeight, which would bind back
     //: through contentHeight.
-    readonly property int chromeHeight: headerHeight + detailsHeight + statStrip.height
-                                        + Theme.spacingS + tabBar.height
-                                        + (aria2Banner.shown ? aria2Banner.height + Theme.spacingS : 0)
-                                        + Theme.spacingL + Theme.spacingXS
+    readonly property int chromeHeight: header.height + (inWindow ? 0 : 12) + statStrip.height + (statStrip.visible ? 12 : 0)
+                                        + tabBar.height
+                                        + (aria2Banner.shown ? aria2Banner.height + 12 : 0)
+                                        + (tabBar.visible ? 12 : 0)
 
     Connections {
         target: popout.service
@@ -42,6 +46,34 @@ PopoutComponent {
     }
 
     readonly property bool online: service && service.connected
+
+    //: The first moments of a session: nothing has answered yet, and nothing
+    //: has failed either. The list area shows skeleton rows rather than the
+    //: offline screen, but only after 300 ms, so a fast connect never
+    //: flashes them.
+    //: No manager and not still trying for the first time: the offline
+    //: panel stands alone, without a speed strip or tabs that would all be
+    //: empty (board 10).
+    readonly property bool bare: !online && !connecting
+    readonly property bool connecting: !!service && !service.connected && service.snapshot === null && service.lastError === ""
+    property bool skeletonDue: false
+
+    onConnectingChanged: {
+        if (connecting) {
+            skeletonDelay.restart()
+        } else {
+            skeletonDelay.stop()
+            skeletonDue = false
+        }
+    }
+
+    Timer {
+        id: skeletonDelay
+
+        interval: 300
+        running: popout.connecting
+        onTriggered: popout.skeletonDue = true
+    }
 
     // While this popout is on screen it pings the service, which streams for as
     // long as the pings keep coming. Closing simply stops the pings.
@@ -68,34 +100,103 @@ PopoutComponent {
         }
     }
 
-    headerText: inWindow ? "" : "Aria Download Manager"
-    detailsText: {
+    //: DMS's own header is a 20 px title over a 14 px line; the board's is a
+    //: compact 16 px title with the state under it and round 36 px actions,
+    //: so the popout draws its own and leaves those empty.
+    readonly property string statusLine: {
         if (!service)
             return ""
+        if (connecting)
+            return "Connecting…"
+        if (service.restarting === "manager")
+            return "Restarting the manager…"
         if (!service.connected)
-            return "Manager offline · " + service.socketPath
+            return "Offline"
         const aria2 = service.aria2
         if (!aria2.running)
-            return "aria2c is not running · " + (aria2.last_error || "see the event log under Settings")
+            return "aria2c stopped"
         return (service.activeCount > 0 ? "Downloading · " : "Ready · ") + "aria2c " + (aria2.version || "")
     }
-    showCloseButton: !inWindow
 
-    headerActions: Component {
-        ManagerActions {
-            service: popout.service
-            onDetachRequested: popout.detachRequested()
-            onDismissRequested: {
-                if (popout.closePopout)
-                    popout.closePopout()
+    headerText: ""
+    detailsText: ""
+
+    Item {
+        id: header
+
+        x: popout.inset
+        width: parent.width - popout.inset * 2
+        height: inWindow ? 0 : 44
+        visible: !popout.inWindow
+
+        Column {
+            anchors.left: parent.left
+            anchors.leftMargin: 6
+            anchors.right: headerButtons.left
+            anchors.rightMargin: Theme.spacingS
+            anchors.verticalCenter: parent.verticalCenter
+            spacing: 0
+
+            StyledText {
+                width: parent.width
+                text: "Aria Download Manager"
+                font.pixelSize: Theme.fontSizeLarge
+                font.weight: Font.Bold
+                color: Theme.surfaceText
+                wrapMode: Text.NoWrap
+                elide: Text.ElideRight
+            }
+
+            StyledText {
+                width: parent.width
+                text: popout.statusLine
+                font.pixelSize: Theme.fontSizeSmall
+                color: Theme.surfaceVariantText
+                wrapMode: Text.NoWrap
+                elide: Text.ElideRight
+            }
+        }
+
+        Row {
+            id: headerButtons
+
+            anchors.right: parent.right
+            anchors.verticalCenter: parent.verticalCenter
+            spacing: 2
+
+            ManagerActions {
+                anchors.verticalCenter: parent.verticalCenter
+                service: popout.service
+                onDetachRequested: popout.detachRequested()
+                onDismissRequested: {
+                    if (popout.closePopout)
+                        popout.closePopout()
+                }
+            }
+
+            DankActionButton {
+                anchors.verticalCenter: parent.verticalCenter
+                buttonSize: 36
+                iconSize: 20
+                iconName: "close"
+                iconColor: Theme.surfaceText
+                tooltipText: "Close"
+                onClicked: {
+                    if (popout.closePopout)
+                        popout.closePopout()
+                }
             }
         }
     }
 
+    Item {
+        width: parent.width
+        height: popout.inWindow ? 0 : 12
+    }
+
     // ---- live stat strip -------------------------------------------------
-    //: Speed is the headline, with the last minute behind it as a sparkline.
-    //: The per-state counts live on the Downloads filter chips; the Actions
-    //: switch lives on the Actions tab.
+    //: Speed is the headline, with the last minute behind it as a sparkline
+    //: of a fixed size; upload beside it and what is left at the far end.
     Rectangle {
         id: statStrip
 
@@ -103,96 +204,93 @@ PopoutComponent {
 
         x: popout.inset
         width: parent.width - popout.inset * 2
-        height: 56
-        radius: Theme.cornerRadius
+        //: With aria2c down there is nothing moving to measure (board 10).
+        height: aria2Banner.shown || popout.bare ? 0 : 72
+        visible: height > 0
+        radius: 16
         color: Theme.surfaceContainerHigh
 
-        Column {
-            id: downCell
-
-            anchors.left: parent.left
-            anchors.leftMargin: Theme.spacingM
-            anchors.verticalCenter: parent.verticalCenter
-            spacing: 0
-
-            StyledText {
-                text: "Download"
-                font.pixelSize: Theme.fontSizeSmall
-                color: Theme.surfaceVariantText
-            }
-
-            StyledText {
-                text: popout.service ? Fmt.speed(popout.service.downloadSpeed) : "–"
-                font.pixelSize: Theme.fontSizeLarge
-                font.weight: Font.Bold
-                color: Theme.primary
-            }
-        }
-
-        Canvas {
-            id: sparkline
-
-            readonly property var samples: popout.service ? popout.service.speedHistory : []
-            property color tint: Theme.primary
-
-            anchors.left: downCell.right
-            anchors.leftMargin: Theme.spacingL
-            anchors.right: rightCells.left
-            anchors.rightMargin: Theme.spacingL
-            anchors.top: parent.top
-            anchors.bottom: parent.bottom
-            anchors.topMargin: Theme.spacingS
-            anchors.bottomMargin: Theme.spacingS
-            visible: width > 40
-
-            onSamplesChanged: requestPaint()
-            onTintChanged: requestPaint()
-            onWidthChanged: requestPaint()
-
-            onPaint: {
-                const ctx = getContext("2d")
-                ctx.reset()
-                const values = samples
-                if (values.length < 2)
-                    return
-                let peak = 1
-                for (const v of values)
-                    peak = Math.max(peak, v)
-                const step = width / 59
-                const x0 = width - (values.length - 1) * step
-                const yOf = v => height - 2 - (height - 4) * (v / peak)
-                ctx.beginPath()
-                ctx.moveTo(x0, height)
-                for (let i = 0; i < values.length; i++)
-                    ctx.lineTo(x0 + i * step, yOf(values[i]))
-                ctx.lineTo(width, height)
-                ctx.closePath()
-                ctx.fillStyle = Theme.withAlpha(tint, 0.16)
-                ctx.fill()
-                ctx.beginPath()
-                for (let i = 0; i < values.length; i++) {
-                    if (i === 0)
-                        ctx.moveTo(x0, yOf(values[i]))
-                    else
-                        ctx.lineTo(x0 + i * step, yOf(values[i]))
-                }
-                ctx.lineWidth = 2
-                ctx.lineJoin = "round"
-                ctx.strokeStyle = tint
-                ctx.stroke()
-            }
-        }
-
         Row {
-            id: rightCells
-
-            anchors.right: parent.right
-            anchors.rightMargin: Theme.spacingM
+            anchors.left: parent.left
+            anchors.leftMargin: 16
             anchors.verticalCenter: parent.verticalCenter
-            spacing: Theme.spacingL
+            spacing: 20
 
             Column {
-                spacing: 0
+                width: Math.max(150, downValue.implicitWidth)
+                anchors.verticalCenter: parent.verticalCenter
+                spacing: 2
+
+                StyledText {
+                    text: "Download"
+                    font.pixelSize: Theme.fontSizeSmall
+                    color: Theme.surfaceVariantText
+                }
+
+                StyledText {
+                    id: downValue
+
+                    text: popout.service ? Fmt.speed(popout.service.downloadSpeed) : "–"
+                    font.pixelSize: Theme.fontSizeLarge + 8
+                    font.weight: Font.Bold
+                    color: Theme.primary
+                }
+            }
+
+            Canvas {
+                id: sparkline
+
+                readonly property var samples: popout.service ? popout.service.speedHistory : []
+                property color tint: Theme.primary
+
+                anchors.verticalCenter: parent.verticalCenter
+                width: statStrip.width >= 560 ? 170 : 0
+                height: 40
+                visible: width > 0
+
+                onSamplesChanged: requestPaint()
+                onTintChanged: requestPaint()
+                onWidthChanged: requestPaint()
+
+                onPaint: {
+                    const ctx = getContext("2d")
+                    ctx.reset()
+                    if (samples.length < 1)
+                        return
+                    // Until a minute has been seen, the line starts flat at
+                    // the first value rather than as a sliver at the end.
+                    const values = samples.length < 60 ? Array(60 - samples.length).fill(samples[0]).concat(samples) : samples
+                    let peak = 1
+                    for (const v of values)
+                        peak = Math.max(peak, v)
+                    const step = width / 59
+                    const x0 = width - (values.length - 1) * step
+                    const yOf = v => height - 2 - (height - 6) * (v / peak)
+                    ctx.beginPath()
+                    ctx.moveTo(x0, height)
+                    for (let i = 0; i < values.length; i++)
+                        ctx.lineTo(x0 + i * step, yOf(values[i]))
+                    ctx.lineTo(width, height)
+                    ctx.closePath()
+                    ctx.fillStyle = Theme.withAlpha(tint, 0.16)
+                    ctx.fill()
+                    ctx.beginPath()
+                    for (let i = 0; i < values.length; i++) {
+                        if (i === 0)
+                            ctx.moveTo(x0, yOf(values[i]))
+                        else
+                            ctx.lineTo(x0 + i * step, yOf(values[i]))
+                    }
+                    ctx.lineWidth = 2
+                    ctx.lineJoin = "round"
+                    ctx.strokeStyle = tint
+                    ctx.stroke()
+                }
+            }
+
+            Column {
+                anchors.verticalCenter: parent.verticalCenter
+                spacing: 2
 
                 StyledText {
                     text: "Upload"
@@ -202,36 +300,41 @@ PopoutComponent {
 
                 StyledText {
                     text: popout.service ? Fmt.speed(popout.service.uploadSpeed) : "–"
-                    font.pixelSize: Theme.fontSizeMedium
-                    font.weight: Font.Medium
+                    font.pixelSize: Theme.fontSizeSmall + 3
+                    font.weight: Font.DemiBold
                     color: Theme.surfaceText
                 }
             }
+        }
 
-            Column {
-                spacing: 0
-                visible: (statStrip.totals.left || 0) > 0
+        Column {
+            anchors.right: parent.right
+            anchors.rightMargin: 16
+            anchors.verticalCenter: parent.verticalCenter
+            visible: (statStrip.totals.left || 0) > 0
+            spacing: 2
 
-                StyledText {
-                    text: "Left"
-                    font.pixelSize: Theme.fontSizeSmall
-                    color: Theme.surfaceVariantText
-                }
+            StyledText {
+                anchors.right: parent.right
+                text: "Left"
+                font.pixelSize: Theme.fontSizeSmall
+                color: Theme.surfaceVariantText
+            }
 
-                StyledText {
-                    text: Fmt.bytes(statStrip.totals.left || 0)
-                          + (statStrip.totals.eta >= 0 ? " · " + Fmt.eta(statStrip.totals.eta) : "")
-                    font.pixelSize: Theme.fontSizeMedium
-                    font.weight: Font.Medium
-                    color: Theme.surfaceText
-                }
+            StyledText {
+                anchors.right: parent.right
+                text: Fmt.bytes(statStrip.totals.left || 0)
+                      + (statStrip.totals.eta >= 0 ? " · " + Fmt.eta(statStrip.totals.eta) : "")
+                font.pixelSize: Theme.fontSizeSmall + 3
+                font.weight: Font.DemiBold
+                color: Theme.surfaceText
             }
         }
     }
 
     Item {
         width: parent.width
-        height: Theme.spacingS
+        height: statStrip.visible ? 12 : 0
     }
 
     // ---- aria2c is down ----------------------------------------------------
@@ -244,115 +347,209 @@ PopoutComponent {
 
         x: popout.inset
         width: parent.width - popout.inset * 2
-        height: shown ? 64 : 0
+        height: shown ? bannerColumn.implicitHeight + 28 : 0
         visible: shown
-        radius: Theme.cornerRadius
-        color: Theme.withAlpha(Theme.error, 0.10)
+        radius: 16
+        color: Theme.withAlpha(Theme.error, 0.06)
         border.width: 1
-        border.color: Theme.withAlpha(Theme.error, 0.35)
-
-        DankIcon {
-            id: bannerIcon
-
-            anchors.left: parent.left
-            anchors.leftMargin: Theme.spacingM
-            anchors.verticalCenter: parent.verticalCenter
-            name: "error"
-            size: 22
-            color: Theme.error
-        }
+        border.color: Theme.withAlpha(Theme.error, 0.45)
 
         Column {
-            anchors.left: bannerIcon.right
-            anchors.leftMargin: Theme.spacingS
-            anchors.right: bannerButtons.left
-            anchors.rightMargin: Theme.spacingS
-            anchors.verticalCenter: parent.verticalCenter
-            spacing: 2
+            id: bannerColumn
 
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.top: parent.top
+            anchors.margins: 14
+            spacing: 8
+
+            Row {
+                spacing: 8
+
+                DankIcon {
+                    anchors.verticalCenter: parent.verticalCenter
+                    name: "error"
+                    size: 18
+                    color: Theme.error
+                }
+
+                StyledText {
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: "aria2c exited"
+                    font.pixelSize: Theme.fontSizeMedium
+                    font.weight: Font.Bold
+                    color: Theme.surfaceText
+                }
+            }
+
+            //: aria2's own words, as it wrote them.
             StyledText {
-                text: "aria2c stopped"
-                font.pixelSize: Theme.fontSizeMedium
-                font.weight: Font.Bold
+                width: parent.width
+                text: popout.service ? String(popout.service.aria2.last_error || "").replace(/\u001b\[[0-9;]*m/g, "").trim() : ""
+                visible: text !== ""
+                font.pixelSize: Theme.fontSizeSmall
+                font.family: "monospace"
                 color: Theme.surfaceText
+                maximumLineCount: 3
+                elide: Text.ElideRight
             }
 
             StyledText {
                 width: parent.width
-                text: popout.service ? (popout.service.aria2.last_error || "Downloads resume where they were once it is back.") : ""
+                visible: !popout.service || !popout.service.aria2.last_error
+                text: "Downloads resume where they were once it is back."
                 font.pixelSize: Theme.fontSizeSmall
                 color: Theme.surfaceVariantText
-                elide: Text.ElideRight
             }
-        }
 
-        Row {
-            id: bannerButtons
+            Row {
+                topPadding: 2
+                spacing: 4
 
-            anchors.right: parent.right
-            anchors.rightMargin: Theme.spacingS
-            anchors.verticalCenter: parent.verticalCenter
-            spacing: Theme.spacingXS
-
-            DankButton {
-                text: "Open log"
-                buttonHeight: 34
-                backgroundColor: "transparent"
-                textColor: Theme.surfaceText
-                onClicked: {
-                    popout.service.requestedLog = true
-                    popout.service.requestedTab = popout.service.settingsTabIndex
-                    popout.tabIndex = popout.service.settingsTabIndex
+                PillButton {
+                    size: 34
+                    kind: "filled"
+                    text: popout.service && popout.service.restarting === "aria2c" ? "Restarting…" : "Restart aria2c"
+                    busy: !!popout.service && popout.service.restarting === "aria2c"
+                    enabled: !!popout.service && popout.service.restarting === ""
+                    onClicked: popout.service.restartAria2()
                 }
-            }
 
-            DankButton {
-                text: "Restart aria2c"
-                iconName: "restart_alt"
-                buttonHeight: 34
-                backgroundColor: Theme.primary
-                textColor: Theme.onPrimary
-                onClicked: popout.service.post("/api/aria2/restart", null, "aria2c restarted")
+                PillButton {
+                    size: 34
+                    kind: "text"
+                    text: "Open log"
+                    onClicked: {
+                        popout.service.requestedLog = true
+                        popout.service.requestedTab = popout.service.settingsTabIndex
+                        popout.tabIndex = popout.service.settingsTabIndex
+                    }
+                }
             }
         }
     }
 
     Item {
         width: parent.width
-        height: aria2Banner.shown ? Theme.spacingS : 0
+        height: aria2Banner.shown ? 12 : 0
     }
 
-    DankTabBar {
+    //: The three tabs as one compact segmented strip: what DankTabBar drew in
+    //: 52 px plus an underline that spilled below it now fits in 44.
+    Rectangle {
         id: tabBar
 
-        width: parent.width
-        tabHeight: 52
-        equalWidthTabs: true
-        currentIndex: popout.tabIndex
-        model: [
+        //: "3 on" or "off" beside Actions: the master switch and how much it
+        //: governs, readable from any tab.
+        readonly property string actionsBadge: {
+            if (!popout.service || !popout.online)
+                return ""
+            if (!popout.service.rulesEnabled)
+                return "off"
+            const on = popout.service.rules.filter(r => r.enabled !== false).length
+            return on > 0 ? on + " on" : ""
+        }
+        readonly property var tabs: [
             {
                 "text": "Downloads",
-                "icon": "download"
+                "icon": "download",
+                "badge": ""
             },
             {
-                "text": popout.service && popout.online && !popout.service.rulesEnabled ? "Actions · off" : "Actions",
-                "icon": "auto_fix_high"
+                "text": "Actions",
+                "icon": "auto_fix_high",
+                "badge": actionsBadge
             },
             {
                 "text": "Settings",
-                "icon": "tune"
+                "icon": "tune",
+                "badge": ""
             }
         ]
 
-        onTabClicked: index => popout.tabIndex = index
+        x: popout.inset
+        width: parent.width - popout.inset * 2
+        height: popout.bare ? 0 : 44
+        visible: height > 0
+        radius: 14
+        color: Theme.surfaceContainerHigh
+
+        Row {
+            anchors.fill: parent
+            anchors.margins: 4
+            spacing: 4
+
+            Repeater {
+                model: tabBar.tabs
+
+                Rectangle {
+                    id: tab
+
+                    required property var modelData
+                    required property int index
+
+                    readonly property bool selected: popout.tabIndex === index
+
+                    width: (parent.width - 8) / 3
+                    height: parent.height
+                    radius: 10
+                    color: selected ? Theme.primaryContainer
+                                    : (tabArea.containsMouse ? Theme.withAlpha(Theme.surfaceText, 0.06) : "transparent")
+
+                    Row {
+                        anchors.centerIn: parent
+                        spacing: 6
+
+                        DankIcon {
+                            anchors.verticalCenter: parent.verticalCenter
+                            name: tab.modelData.icon
+                            size: 18
+                            color: tab.selected ? Theme.onPrimaryContainer : Theme.surfaceVariantText
+                        }
+
+                        StyledText {
+                            anchors.verticalCenter: parent.verticalCenter
+                            text: tab.modelData.text
+                            font.pixelSize: Theme.fontSizeSmall + 1
+                            font.weight: tab.selected ? Font.DemiBold : Font.Medium
+                            color: tab.selected ? Theme.onPrimaryContainer : Theme.surfaceVariantText
+                        }
+
+                        Rectangle {
+                            anchors.verticalCenter: parent.verticalCenter
+                            visible: tab.modelData.badge !== ""
+                            width: badgeText.implicitWidth + 12
+                            height: 18
+                            radius: 9
+                            color: tab.selected ? Theme.withAlpha(Theme.onPrimaryContainer, 0.14) : Theme.surfaceContainerHighest
+
+                            StyledText {
+                                id: badgeText
+
+                                anchors.centerIn: parent
+                                text: tab.modelData.badge
+                                font.pixelSize: Theme.fontSizeSmall - 1
+                                color: tab.selected ? Theme.onPrimaryContainer : Theme.surfaceVariantText
+                            }
+                        }
+                    }
+
+                    MouseArea {
+                        id: tabArea
+
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: popout.tabIndex = tab.index
+                    }
+                }
+            }
+        }
     }
 
     Item {
-        // DankTabBar paints its active indicator and divider below its own
-        // height (y = height + 7 and + 10), so the content has to start clear
-        // of them or the first row sits on top of the underline.
         width: parent.width
-        height: Theme.spacingL + Theme.spacingXS
+        height: tabBar.visible ? 12 : 0
     }
 
     Item {
@@ -373,10 +570,129 @@ PopoutComponent {
         // ---- the manager is not there -----------------------------------
         //: Every tab would be empty, so none is shown: what was tried, the
         //: path to check, and a way to try again.
+        // ---- still connecting ---------------------------------------------
+        //: Rows shaped like the real ones, so nothing jumps when data lands.
+        Column {
+            anchors.fill: parent
+            anchors.leftMargin: popout.inset
+            anchors.rightMargin: popout.inset
+            visible: popout.connecting && popout.skeletonDue
+            spacing: Theme.spacingS
+
+            Repeater {
+                model: 3
+
+                Rectangle {
+                    width: parent.width
+                    height: 64
+                    radius: Theme.cornerRadius
+                    color: Theme.surfaceContainer
+
+                    SequentialAnimation on opacity {
+                        running: popout.connecting && popout.skeletonDue
+                        loops: Animation.Infinite
+                        NumberAnimation {
+                            from: 1
+                            to: 0.55
+                            duration: 700
+                        }
+                        NumberAnimation {
+                            from: 0.55
+                            to: 1
+                            duration: 700
+                        }
+                    }
+
+                    Rectangle {
+                        id: skTile
+
+                        x: Theme.spacingM
+                        anchors.verticalCenter: parent.verticalCenter
+                        width: 36
+                        height: 36
+                        radius: Theme.cornerRadius
+                        color: Theme.surfaceContainerHighest
+                    }
+
+                    Column {
+                        anchors.left: skTile.right
+                        anchors.leftMargin: Theme.spacingM
+                        anchors.right: parent.right
+                        anchors.rightMargin: Theme.spacingXL * 3
+                        anchors.verticalCenter: parent.verticalCenter
+                        spacing: 7
+
+                        Rectangle {
+                            width: parent.width * 0.6
+                            height: 10
+                            radius: 5
+                            color: Theme.surfaceContainerHighest
+                        }
+
+                        Rectangle {
+                            width: parent.width
+                            height: 4
+                            radius: 2
+                            color: Theme.surfaceContainerHighest
+                        }
+
+                        Rectangle {
+                            width: parent.width * 0.35
+                            height: 8
+                            radius: 4
+                            color: Theme.surfaceContainerHighest
+                        }
+                    }
+                }
+            }
+        }
+
+        // ---- the manager is restarting ------------------------------------
+        //: Not the offline screen: this was asked for, and it comes back.
         Column {
             anchors.centerIn: parent
             width: Math.min(parent.width - Theme.spacingXL * 2, 420)
-            visible: !popout.online
+            visible: !popout.online && !!popout.service && popout.service.restarting === "manager"
+            spacing: Theme.spacingS
+
+            DankIcon {
+                anchors.horizontalCenter: parent.horizontalCenter
+                name: "progress_activity"
+                size: 32
+                color: Theme.primary
+
+                RotationAnimation on rotation {
+                    running: parent.visible
+                    loops: Animation.Infinite
+                    from: 0
+                    to: 360
+                    duration: 1000
+                }
+            }
+
+            StyledText {
+                width: parent.width
+                horizontalAlignment: Text.AlignHCenter
+                text: "Restarting the manager…"
+                font.pixelSize: Theme.fontSizeLarge
+                font.weight: Font.Bold
+                color: Theme.surfaceText
+            }
+
+            StyledText {
+                width: parent.width
+                horizontalAlignment: Text.AlignHCenter
+                wrapMode: Text.WordWrap
+                text: "The panel reconnects by itself. Downloads in aria2c keep going."
+                font.pixelSize: Theme.fontSizeSmall
+                color: Theme.surfaceVariantText
+            }
+        }
+
+        Column {
+            anchors.centerIn: parent
+            width: Math.min(parent.width - Theme.spacingXL * 2, 420)
+            visible: !popout.online && !popout.connecting && !(popout.service && popout.service.restarting === "manager")
             spacing: Theme.spacingS
 
             Rectangle {
@@ -406,27 +722,28 @@ PopoutComponent {
             StyledText {
                 width: parent.width
                 horizontalAlignment: Text.AlignHCenter
-                text: "Nothing answered on the socket below. Start it with ./run.sh or its systemd user unit, then try again."
-                wrapMode: Text.WordWrap
+                text: "Nothing answered on"
                 font.pixelSize: Theme.fontSizeSmall
                 color: Theme.surfaceVariantText
             }
 
             Rectangle {
                 width: parent.width
-                height: 36
-                radius: Theme.cornerRadius
+                height: 40
+                radius: 12
                 color: Theme.surfaceContainerHigh
 
                 StyledText {
                     anchors.left: parent.left
-                    anchors.leftMargin: Theme.spacingM
+                    anchors.leftMargin: 12
                     anchors.right: copySocket.left
-                    anchors.rightMargin: Theme.spacingS
+                    anchors.rightMargin: 8
                     anchors.verticalCenter: parent.verticalCenter
                     text: popout.service ? popout.service.socketPath : ""
                     font.pixelSize: Theme.fontSizeSmall
+                    font.family: "monospace"
                     color: Theme.surfaceText
+                    wrapMode: Text.NoWrap
                     elide: Text.ElideMiddle
                 }
 
@@ -434,11 +751,12 @@ PopoutComponent {
                     id: copySocket
 
                     anchors.right: parent.right
-                    anchors.rightMargin: Theme.spacingXS
+                    anchors.rightMargin: 6
                     anchors.verticalCenter: parent.verticalCenter
-                    buttonSize: 28
-                    iconSize: Theme.iconSizeSmall
+                    buttonSize: 30
+                    iconSize: 16
                     iconName: "content_copy"
+                    iconColor: Theme.surfaceVariantText
                     tooltipText: "Copy the socket path"
                     onClicked: {
                         Quickshell.execDetached(["dms", "cl", "copy", popout.service.socketPath])
@@ -447,20 +765,40 @@ PopoutComponent {
                 }
             }
 
+            //: The exact commands, in monospace.
+            StyledText {
+                width: parent.width
+                horizontalAlignment: Text.AlignHCenter
+                wrapMode: Text.WordWrap
+                textFormat: Text.RichText
+                text: "Start it with <span style=\"font-family:monospace\">./run.sh</span> or <span style=\"font-family:monospace\">systemctl --user start aria-download-manager</span>."
+                font.pixelSize: Theme.fontSizeSmall
+                color: Theme.surfaceText
+            }
+
             Row {
                 anchors.horizontalCenter: parent.horizontalCenter
-                spacing: Theme.spacingS
-                topPadding: Theme.spacingS
+                spacing: 8
+                topPadding: 4
 
-                DankButton {
+                PillButton {
+                    kind: "filled"
                     text: "Retry now"
-                    iconName: "refresh"
-                    buttonHeight: 36
-                    backgroundColor: Theme.primary
-                    textColor: Theme.onPrimary
                     onClicked: {
                         popout.service.restart()
                         popout.service.refreshSnapshot()
+                    }
+                }
+
+                //: A wrong socket path is the other common cause, and it is
+                //: set there.
+                PillButton {
+                    kind: "outlined"
+                    text: "Plugin settings"
+                    onClicked: {
+                        Quickshell.execDetached(["dms", "ipc", "call", "settings", "openWith", "plugin:ariaDownloadManager"])
+                        if (popout.closePopout)
+                            popout.closePopout()
                     }
                 }
             }
@@ -479,6 +817,8 @@ PopoutComponent {
             anchors.leftMargin: popout.inset
             anchors.rightMargin: popout.inset
             visible: popout.online
+            //: The list stays while aria2c is down, but reads as on hold.
+            opacity: aria2Banner.shown && popout.tabIndex === 0 ? 0.55 : 1
             sourceComponent: {
                 switch (popout.tabIndex) {
                 case 0:

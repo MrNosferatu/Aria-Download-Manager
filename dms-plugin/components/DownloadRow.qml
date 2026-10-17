@@ -36,11 +36,54 @@ Rectangle {
     //: download that has already stopped, and the icons say so.
     readonly property bool live: status === "active" || status === "waiting" || status === "paused"
 
-    //: Selection is driven by the tab; the row just renders it.
+    // ---- states that need their own words --------------------------------
+    //: A magnet still asking peers what it holds: a wait, not a download.
+    readonly property bool fetchingDetails: !!dl.isMetadata
+    //: Finished, but still uploading to the swarm.
+    readonly property bool seeding: !!dl.seeder && status === "active"
+    //: aria2 checking the file against its checksum (or a torrent's pieces).
+    readonly property bool verifying: !!dl.verifyPending || (dl.verifiedLength > 0 && dl.verifiedLength < (dl.total || 0))
+    //: A torrent added held from the Add panel, waiting for its file choice.
+    readonly property bool heldForChoice: !!service && service.isHeldForChoice(dl)
+    //: Running but nothing arrived yet: "0 B/s, no ETA" would read as a stall.
+    readonly property bool connecting: status === "active" && !fetchingDetails && !seeding
+                                       && !(dl.completed > 0) && !(dl.downloadSpeed > 0)
+
+    //: The rule closest to firing on this download: {name, left, below} while
+    //: its timer runs, or null.
+    readonly property var ruleCountdown: {
+        let best = null
+        for (const name in ruleInfo) {
+            const info = ruleInfo[name]
+            if (info.acting || !(info.elapsed > 0) || !info.threshold)
+                continue
+            const left = Math.max(0, info.threshold - info.elapsed)
+            if (!best || left < best.left) {
+                const rule = service ? service.rules.find(r => r.name === name) : null
+                best = {
+                    "name": name,
+                    "left": left,
+                    "elapsed": info.elapsed,
+                    "threshold": info.threshold,
+                    "below": rule && rule.when ? rule.when.speed_below : null
+                }
+            }
+        }
+        return best
+    }
+
+    //: Selection is driven by the tab; the row just renders it. While
+    //: selecting, rows shrink to a line each: the checkbox, the tile, the
+    //: name and where it stands.
     property bool selectable: false
     property bool selected: false
+    //: The wide window's list (board 9): one line each — the tile, the name,
+    //: where it stands, a thin bar — since the detail opens beside it.
+    property bool listMode: false
+    readonly property bool compact: selectable || listMode
 
-    signal toggleSelected
+    //: `range` asks the tab to select everything from the last row clicked.
+    signal toggleSelected(bool range)
 
     function askRemove() {
         if (!finished) {
@@ -51,6 +94,10 @@ Rectangle {
     }
 
     readonly property color statusColor: {
+        if (heldForChoice)
+            return Theme.primary
+        if (seeding)
+            return Theme.success
         switch (status) {
         case "active":
             return Theme.primary
@@ -66,33 +113,39 @@ Rectangle {
     }
 
     readonly property var badges: {
-        const out = [
-            {
-                "text": Fmt.statusLabel(status),
-                "color": statusColor
-            }
-        ]
+        const out = []
+        if (heldForChoice)
+            out.push({
+                         "text": "Pick files",
+                         "color": Theme.primary
+                     })
+        else if (seeding)
+            out.push({
+                         "text": "Seeding",
+                         "color": Theme.success
+                     })
+        else if (fetchingDetails)
+            out.push({
+                         "text": "Fetching details",
+                         "color": Theme.surfaceVariantText
+                     })
+        // The tile is the status; badges are for extras only.
         if (fileMissing)
             out.push({
                          "text": "File missing",
                          "color": Theme.warning
                      })
-        //: The metadata fetch goes away by itself once the torrent it
-        //: describes starts, so it reads as the wait, not as a download.
-        if (dl.isMetadata)
-            out.push({
-                         "text": "Fetching details",
-                         "color": Theme.surfaceVariantText
-                     })
-        else if (dl.isTorrent)
+        if (dl.isTorrent && !fetchingDetails && !heldForChoice && !seeding)
             out.push({
                          "text": "Torrent",
                          "color": Theme.surfaceVariantText
                      })
-        if (dl.seeder)
+        //: A rule about to fire counts down, so a pause that is coming is
+        //: never a surprise; one already acting says so.
+        if (ruleCountdown)
             out.push({
-                         "text": "Seeding",
-                         "color": Theme.success
+                         "text": ruleCountdown.name + " in " + ruleCountdown.left.toFixed(1) + " s",
+                         "color": Theme.warning
                      })
         for (const name in ruleInfo) {
             const info = ruleInfo[name]
@@ -101,7 +154,7 @@ Rectangle {
                              "text": name + " acting",
                              "color": Theme.warning
                          })
-            else if (info.triggers)
+            else if (info.triggers && !(ruleCountdown && ruleCountdown.name === name))
                 out.push({
                              "text": name + " ×" + info.triggers,
                              "color": Theme.surfaceVariantText
@@ -110,81 +163,173 @@ Rectangle {
         return out
     }
 
-    //: Running but nothing arrived yet: "0 B/s, no ETA" would read as a stall.
-    readonly property bool connecting: status === "active" && !dl.isMetadata
-                                       && !(dl.completed > 0) && !(dl.downloadSpeed > 0)
+    //: One badge on the line, the rest counted: "+2".
+    readonly property var shownBadges: badges.length > 1 ? [badges[0], {
+                                                                "text": "+" + (badges.length - 1),
+                                                                "color": Theme.surfaceVariantText
+                                                            }] : badges
+
+    //: The tile: the kind of file, in the state's colour. Queued and missing
+    //: files sit on the plain surface.
+    readonly property bool plainTile: status === "waiting" || status === "removed" || fileMissing
+    readonly property color tileInk: {
+        if (fileMissing)
+            return Theme.outline
+        return plainTile ? Theme.surfaceVariantText : statusColor
+    }
+    readonly property color tileFill: plainTile ? Theme.surfaceContainerHigh : Theme.withAlpha(statusColor, 0.15)
+    readonly property color barColor: {
+        if (fileMissing)
+            return Theme.outlineVariant
+        return status === "waiting" ? Theme.outline : statusColor
+    }
+
+    //: At the end of the name line: how far, or where it stands.
+    readonly property string pctText: {
+        if (fetchingDetails || heldForChoice)
+            return ""
+        if (status === "waiting")
+            return dl.queuePosition !== undefined && dl.queuePosition !== null ? "#" + (dl.queuePosition + 1) + " in queue" : "Queued"
+        if (status === "complete")
+            return "Done"
+        if (verifying)
+            return Math.floor(barFraction * 100) + "%"
+        return Math.floor(dl.progress || 0) + "%"
+    }
+
+    //: Where it stands in the wide window's one-line rows (board 9).
+    readonly property string listText: {
+        if (fileMissing)
+            return "File missing"
+        if (heldForChoice)
+            return "Pick files"
+        if (fetchingDetails)
+            return "Fetching details"
+        if (seeding)
+            return "Seeding"
+        switch (status) {
+        case "active":
+            return Math.floor(dl.progress || 0) + "%" + (shownSpeed > 0 ? " · " + Fmt.speed(shownSpeed) : "")
+        case "waiting":
+            return pctText
+        case "paused":
+            return "Paused · " + Math.floor(dl.progress || 0) + "%"
+        case "error": {
+            const code = String(dl.errorMessage || "").match(/\b([45]\d\d)\b/)
+            return "Failed" + (code ? " · " + code[1] : "")
+        }
+        case "complete":
+            return "Done" + (dl.total > 0 ? " · " + Fmt.bytes(dl.total) : "")
+        default:
+            return pctText
+        }
+    }
+
+    //: The host a download is coming from, for "Connecting to …".
+    readonly property string host: {
+        const m = String(dl.firstUri || "").match(/^[a-z]+:\/\/([^/?#:]+)/i)
+        return m ? m[1] : ""
+    }
+
+    //: aria2's own figure is a long average that lags a stall; the measured
+    //: one is what actually arrived. One number, the truer one.
+    readonly property real shownSpeed: {
+        const measured = dl.engine === "qbittorrent" ? null : dl.measuredSpeed
+        const disagrees = measured !== null && measured !== undefined
+                        && Math.abs(measured - dl.downloadSpeed) > Math.max(65536, dl.downloadSpeed * 0.35)
+        return disagrees ? measured : (dl.downloadSpeed || 0)
+    }
 
     //: Three facts at most — size, speed, time left. Connections and seeders
-    //: are in the detail view. A failure replaces the line with its reason.
+    //: are in the detail view. A failure replaces the line with its reason,
+    //: and the odd states say what is going on in words.
     readonly property string metaText: {
-        if (status === "error" && dl.errorMessage)
-            return dl.errorMessage
+        if (status === "error" && dl.errorMessage) {
+            const known = service ? service.explainError(dl.errorMessage) : null
+            return known ? Fmt.label(known.why) + ". " + known.todo : dl.errorMessage
+        }
+        if (heldForChoice)
+            return "Waiting for you — pick files, then start" + (dl.total ? " · " + Fmt.bytes(dl.total) : "")
+        if (fetchingDetails)
+            return "Asking peers for the file list · " + (dl.connections || 0) + " connected"
+        if (seeding) {
+            const ratio = dl.total ? (dl.uploaded || 0) / dl.total : 0
+            return "↑ " + Fmt.speed(dl.uploadSpeed) + " · ratio " + ratio.toFixed(2) + " · " + (dl.connections || 0) + " peers"
+        }
+        if (verifying)
+            return "Verifying checksum" + (dl.verifyPending ? " · waiting its turn"
+                                                            : " · " + Math.floor((dl.verifiedLength || 0) / (dl.total || 1) * 100) + "%")
         if (connecting)
-            return "Connecting…"
-        const bits = [(dl.total ? Fmt.bytes(dl.completed) + " of " + Fmt.bytes(dl.total) : Fmt.bytes(dl.completed))
-                      + " · " + Math.floor(dl.progress || 0) + "%"]
-        if (status === "active") {
-            // aria2's own figure is a long average that lags a stall; the
-            // measured one is what actually arrived. One number, the truer one.
-            const measured = dl.engine === "qbittorrent" ? null : dl.measuredSpeed
-            const disagrees = measured !== null && measured !== undefined
-                            && Math.abs(measured - dl.downloadSpeed) > Math.max(65536, dl.downloadSpeed * 0.35)
-            bits.push(Fmt.speed(disagrees ? measured : dl.downloadSpeed))
+            return host ? "Connecting to " + host + "…" : "Connecting…"
+        if (ruleCountdown && ruleCountdown.below)
+            return Fmt.speed(shownSpeed) + " — under " + Fmt.speed(ruleCountdown.below) + " for "
+                    + ruleCountdown.elapsed.toFixed(1) + " of " + ruleCountdown.threshold + " s"
+        const size = dl.total ? Fmt.bytes(dl.total) : ""
+        const sofar = dl.total ? Fmt.bytes(dl.completed) + " of " + size : Fmt.bytes(dl.completed)
+        const home = Quickshell.env("HOME") || ""
+        if (fileMissing)
+            return "No longer at " + Fmt.homePath(dl.dir || String(dl.path).replace(/\/[^/]*$/, ""), home)
+        switch (status) {
+        case "active": {
+            const bits = [sofar, Fmt.speed(shownSpeed)]
             if (dl.eta !== null && dl.eta !== undefined && dl.eta >= 0)
                 bits.push(Fmt.eta(dl.eta) + " left")
+            return bits.join(" · ")
         }
-        if (status === "waiting" && dl.queuePosition !== undefined && dl.queuePosition !== null)
-            bits.push("#" + (dl.queuePosition + 1) + " in queue")
-        if (fileMissing)
-            bits.push("No longer at " + dl.path)
-        if (status !== "error" && dl.errorMessage)
-            bits.push(dl.errorMessage)
-        for (const name in ruleInfo) {
-            const info = ruleInfo[name]
-            if (info.elapsed > 0 && info.threshold)
-                bits.push(name + " " + info.elapsed.toFixed(1) + "/" + info.threshold + "s")
+        case "paused":
+            return "Paused · " + sofar
+        case "waiting":
+            return "Waiting for a free slot" + (size ? " · " + size : "")
+        case "complete": {
+            const bits = [size || Fmt.bytes(dl.completed)]
+            if (dl.finishedAt)
+                bits.push("finished " + Fmt.ago(dl.finishedAt))
+            if (dl.dir)
+                bits.push(Fmt.homePath(dl.dir, home))
+            return bits.join(" · ")
         }
-        return bits.join("  ·  ")
+        default:
+            return sofar + (dl.errorMessage ? " · " + dl.errorMessage : "")
+        }
     }
 
-    //: The glyph in the status tile: what kind of file it is, so a list of
-    //: downloads can be scanned by shape as well as by name.
-    readonly property string kindIcon: {
-        if (dl.isMetadata || (dl.isTorrent && !dl.name))
-            return "hub"
-        const name = String(dl.name || "").toLowerCase()
-        const ext = (name.match(/\.([a-z0-9]+)$/) || [])[1] || ""
-        if (["mkv", "mp4", "webm", "avi", "mov", "m4v", "wmv", "flv", "ts"].indexOf(ext) >= 0)
-            return "movie"
-        if (["mp3", "flac", "ogg", "opus", "wav", "m4a", "aac"].indexOf(ext) >= 0)
-            return "music_note"
-        if (["iso", "img", "qcow2", "vdi", "vmdk"].indexOf(ext) >= 0)
-            return "album"
-        if (["zip", "7z", "rar", "gz", "xz", "zst", "bz2", "tar", "tgz"].indexOf(ext) >= 0)
-            return "folder_zip"
-        if (["png", "jpg", "jpeg", "gif", "webp", "svg", "avif"].indexOf(ext) >= 0)
-            return "image"
-        if (["pdf", "epub", "doc", "docx", "odt", "txt", "md"].indexOf(ext) >= 0)
-            return "description"
-        if (["deb", "rpm", "appimage", "exe", "msi", "pkg", "flatpak"].indexOf(ext) >= 0)
-            return "inventory_2"
-        return dl.isTorrent ? "hub" : "draft"
-    }
+    //: The bar's fill: verified bytes while checking, otherwise progress.
+    readonly property real barFraction: verifying ? Math.min(1, (dl.verifiedLength || 0) / (dl.total || 1))
+                                                  : Math.min(1, (dl.progress || 0) / 100)
 
     //: The one action that fits the state, shown as a button; the rest are
     //: behind the ⋮ toggle.
     readonly property var primaryAction: {
+        if (heldForChoice)
+            return {
+                "icon": "checklist",
+                "text": "Choose files",
+                "run": () => {
+                    if (!row.expanded)
+                        row.toggleExpand()
+                }
+            }
+        if (seeding)
+            return {
+                "icon": "stop_circle",
+                "text": "Stop sharing",
+                "run": () => service.post("/api/download/" + gid + "/options", {
+                                              "options": {
+                                                  "download-only": "true"
+                                              }
+                                          }, "Stopped sharing")
+            }
         if (status === "active")
             return {
                 "icon": "pause",
                 "text": "Pause",
-                "run": () => service.post("/api/download/" + gid + "/pause", null, "")
+                "run": () => service.setPaused(gid, true)
             }
         if (status === "paused")
             return {
                 "icon": "play_arrow",
                 "text": "Resume",
-                "run": () => service.post("/api/download/" + gid + "/resume", null, "")
+                "run": () => service.setPaused(gid, false)
             }
         if (status === "waiting")
             return {
@@ -199,7 +344,7 @@ Rectangle {
             return {
                 "icon": "open_in_new",
                 "text": "Open",
-                "run": () => Quickshell.execDetached(["xdg-open", dl.path])
+                "run": () => row.openFile()
             }
         if (status === "error")
             return {
@@ -216,7 +361,19 @@ Rectangle {
         return null
     }
 
-    property bool showMore: false
+
+    //: What a double click does: open what is on disk, once there is
+    //: something to open — a finished file, or a torrent being shared.
+    readonly property bool canOpen: !!dl.path && !fileMissing && (status === "complete" || seeding)
+
+    function openFile() {
+        Quickshell.execDetached(["xdg-open", dl.path])
+    }
+
+    //: DMS's own application picker, the shell's "Open with".
+    function openWith() {
+        Quickshell.execDetached(["dms", "open", "--type", "file", dl.path])
+    }
 
     //: Everything else this row can do, labelled. Entries that do not apply
     //: to the state are left out rather than greyed.
@@ -226,12 +383,22 @@ Rectangle {
         if (status === "waiting")
             out.push({
                          "icon": "pause",
+                         "group": "queue",
                          "text": "Pause",
-                         "run": () => service.post("/api/download/" + gid + "/pause", null, "")
+                         "run": () => service.setPaused(gid, true)
+                     })
+        if (heldForChoice)
+            out.push({
+                         "icon": "play_arrow",
+                         "group": "queue",
+                         "text": "Start with every file",
+                         "run": () => service.post("/api/download/" + gid + "/resume", null, "Started",
+                                                   () => service.releaseHold(gid))
                      })
         if (queued && status !== "waiting")
             out.push({
                          "icon": "vertical_align_top",
+                         "group": "queue",
                          "text": "Move to front",
                          "run": () => service.post("/api/download/" + gid + "/position", {
                                                        "pos": 0,
@@ -241,6 +408,7 @@ Rectangle {
         if (queued) {
             out.push({
                          "icon": "arrow_upward",
+                         "group": "queue",
                          "text": "Move up",
                          "run": () => service.post("/api/download/" + gid + "/position", {
                                                        "pos": -1,
@@ -249,6 +417,7 @@ Rectangle {
                      })
             out.push({
                          "icon": "arrow_downward",
+                         "group": "queue",
                          "text": "Move down",
                          "run": () => service.post("/api/download/" + gid + "/position", {
                                                        "pos": 1,
@@ -258,17 +427,33 @@ Rectangle {
         }
         // Only meaningful once bytes exist on disk; aria2 reports the final
         // path for finished items and the .part path while running.
-        if (dl.path && !fileMissing && (status === "active" || status === "paused"))
+        const partial = dl.path && !fileMissing && (status === "active" || status === "paused") && !fetchingDetails
+        if (canOpen || partial) {
             out.push({
                          "icon": "open_in_new",
-                         "text": "Open file",
-                         "run": () => Quickshell.execDetached(["xdg-open", dl.path])
+                         "text": canOpen ? "Open" : "Open file",
+                         "run": () => openFile()
                      })
+            out.push({
+                         "icon": "apps",
+                         "text": "Open with…",
+                         "run": () => openWith()
+                     })
+        }
         if (dl.dir || dl.path)
             out.push({
                          "icon": "folder_open",
                          "text": "Open folder",
                          "run": () => Quickshell.execDetached(["xdg-open", dl.dir || dl.path.replace(/\/[^/]*$/, "")])
+                     })
+        if (dl.firstUri)
+            out.push({
+                         "icon": "link",
+                         "text": "Copy link",
+                         "run": () => {
+                             Quickshell.execDetached(["dms", "cl", "copy", dl.firstUri])
+                             service.notice("Link copied")
+                         }
                      })
         if (status === "complete" && dl.path && !fileMissing)
             out.push({
@@ -292,14 +477,54 @@ Rectangle {
         return out
     }
 
-    height: body.implicitHeight + Theme.spacingS * 2
-            + (showMore ? moreStrip.height + Theme.spacingS : 0)
-            + (confirmingRemove ? confirmStrip.height + Theme.spacingS : 0)
-            + (expanded ? detailLoader.height + Theme.spacingS : 0)
-    radius: Theme.cornerRadius
-    color: expanded ? Theme.surfaceContainerHigh : Theme.surfaceContainer
-    border.width: 1
-    border.color: status === "error" ? Theme.withAlpha(Theme.error, 0.4) : Theme.withAlpha(Theme.outline, 0.12)
+    height: body.implicitHeight + (listMode ? 22 : (compact ? 18 : 20))
+            + (confirmStrip.visible ? confirmStrip.height + 10 : 0)
+            + (expanded ? detailLoader.height + 14 + 4 : 0)
+    radius: expanded ? 18 : 14
+    color: {
+        if (selected && !listMode)
+            return Theme.withAlpha(Theme.primary, 0.10)
+        if (listMode && rowArea.containsMouse && !selected)
+            return Theme.surfaceContainerHigh
+        return expanded ? Theme.surfaceContainerHigh : Theme.surfaceContainer
+    }
+    border.width: heldForChoice ? 2 : 1
+    border.color: {
+        if (heldForChoice)
+            return Theme.withAlpha(Theme.primary, 0.7)
+        if (confirmingRemove && fileMissing)
+            return Theme.withAlpha(Theme.warning, 0.5)
+        if (selected)
+            return Theme.withAlpha(Theme.primary, 0.7)
+        if (status === "error")
+            return Theme.withAlpha(Theme.error, 0.4)
+        if (selected)
+            return Theme.withAlpha(Theme.primary, 0.4)
+        return "transparent"
+    }
+
+    //: In the wide list the whole row picks the download. Anywhere, a double
+    //: click opens it and a right click brings up its menu at the pointer.
+    MouseArea {
+        id: rowArea
+
+        anchors.fill: parent
+        acceptedButtons: Qt.LeftButton | Qt.RightButton
+        hoverEnabled: row.listMode
+        cursorShape: row.listMode ? Qt.PointingHandCursor : Qt.ArrowCursor
+        onClicked: mouse => {
+            if (mouse.button === Qt.RightButton) {
+                const at = rowArea.mapToItem(rowMenu.parent, mouse.x, mouse.y)
+                rowMenu.openAt(at.x, at.y)
+            } else if (row.listMode) {
+                row.toggleExpand()
+            }
+        }
+        onDoubleClicked: mouse => {
+            if (mouse.button === Qt.LeftButton && row.canOpen)
+                row.openFile()
+        }
+    }
 
     Item {
         id: body
@@ -307,42 +532,60 @@ Rectangle {
         anchors.left: parent.left
         anchors.right: parent.right
         anchors.top: parent.top
-        anchors.margins: Theme.spacingS
-        implicitHeight: Math.max(38, bodyColumn.implicitHeight)
+        anchors.leftMargin: 10
+        anchors.rightMargin: row.compact ? 10 : 8
+        anchors.topMargin: row.listMode ? 11 : (row.compact ? 9 : 10)
+        implicitHeight: Math.max(row.listMode ? 32 : (row.compact ? 34 : 40), bodyColumn.implicitHeight)
 
-        DankActionButton {
+        //: The checkbox reads the click's modifiers, so Shift can select a range.
+        Item {
             id: picker
 
             anchors.left: parent.left
-            anchors.top: parent.top
+            anchors.verticalCenter: tile.verticalCenter
             visible: row.selectable
-            width: visible ? 26 : 0
-            buttonSize: 26
-            iconSize: Theme.iconSizeSmall
-            iconName: row.selected ? "check_box" : "check_box_outline_blank"
-            iconColor: row.selected ? Theme.primary : Theme.surfaceVariantText
-            tooltipText: row.selected ? "Deselect" : "Select"
-            onClicked: row.toggleSelected()
+            width: visible ? 28 : 0
+            height: 28
+
+            DankIcon {
+                anchors.centerIn: parent
+                name: row.selected ? "check_box" : "check_box_outline_blank"
+                size: 20
+                color: row.selected ? Theme.primary : Theme.surfaceVariantText
+            }
+
+            MouseArea {
+                anchors.fill: parent
+                cursorShape: Qt.PointingHandCursor
+                onClicked: mouse => row.toggleSelected((mouse.modifiers & Qt.ShiftModifier) !== 0)
+            }
         }
 
         //: Status at a glance: the kind of file, tinted by state. Also the
         //: handle that opens the detail view.
         Rectangle {
-            id: chevron
+            id: tile
 
             anchors.left: picker.right
-            anchors.leftMargin: row.selectable ? Theme.spacingXS : 0
-            anchors.top: parent.top
-            width: 38
-            height: 38
-            radius: Theme.cornerRadius
-            color: tileArea.containsMouse ? Theme.withAlpha(row.statusColor, 0.26) : Theme.withAlpha(row.statusColor, 0.16)
+            anchors.leftMargin: row.selectable ? 8 : 0
+            anchors.verticalCenter: parent.verticalCenter
+            width: row.listMode ? 32 : (row.compact ? 34 : 40)
+            height: width
+            radius: row.compact ? 10 : 12
+            color: row.tileFill
+
+            Rectangle {
+                anchors.fill: parent
+                radius: parent.radius
+                color: row.tileInk
+                opacity: tileArea.containsMouse ? 0.10 : 0
+            }
 
             DankIcon {
                 anchors.centerIn: parent
-                name: row.expanded ? "expand_less" : row.kindIcon
+                name: Fmt.kindIcon(row.dl.name, row.dl.isTorrent, row.dl.isMetadata)
                 size: 20
-                color: row.fileMissing ? Theme.surfaceVariantText : row.statusColor
+                color: row.tileInk
             }
 
             MouseArea {
@@ -351,7 +594,39 @@ Rectangle {
                 anchors.fill: parent
                 hoverEnabled: true
                 cursorShape: Qt.PointingHandCursor
-                onClicked: row.toggleExpand()
+                onClicked: mouse => {
+                    if (row.selectable)
+                        row.toggleSelected((mouse.modifiers & Qt.ShiftModifier) !== 0)
+                    else
+                        row.toggleExpand()
+                }
+            }
+        }
+
+        //: A finished row whose file is gone needs one click to clear, so the
+        //: question shrinks to an inline "Remove entry".
+        Row {
+            anchors.right: parent.right
+            anchors.verticalCenter: parent.verticalCenter
+            visible: row.confirmingRemove && row.fileMissing
+            spacing: 2
+
+            StyledText {
+                anchors.verticalCenter: parent.verticalCenter
+                text: "File already gone ·"
+                font.pixelSize: Theme.fontSizeSmall
+                color: Theme.surfaceVariantText
+            }
+
+            PillButton {
+                anchors.verticalCenter: parent.verticalCenter
+                size: 30
+                kind: "text"
+                text: "Remove entry"
+                onClicked: {
+                    row.confirmingRemove = false
+                    row.service.removeDownload(row.gid, false, "Removed")
+                }
             }
         }
 
@@ -359,51 +634,60 @@ Rectangle {
             id: actions
 
             anchors.right: parent.right
-            anchors.verticalCenter: chevron.verticalCenter
-            spacing: Theme.spacingXS
+            anchors.verticalCenter: parent.verticalCenter
+            visible: !row.compact && !(row.confirmingRemove && row.fileMissing)
+            width: visible ? implicitWidth : 0
+            spacing: 4
 
-            DankButton {
+            //: Pausing and resuming are the everyday ones, so they are filled;
+            //: the rest are outlined.
+            PillButton {
                 anchors.verticalCenter: parent.verticalCenter
                 visible: row.primaryAction !== null
+                size: 32
+                kind: row.heldForChoice ? "filled" : (row.primaryAction && (row.primaryAction.icon === "pause" || row.primaryAction.icon === "play_arrow") ? "tonal" : "outlined")
+                icon: row.primaryAction ? row.primaryAction.icon : ""
                 text: row.primaryAction ? row.primaryAction.text : ""
-                iconName: row.primaryAction ? row.primaryAction.icon : ""
-                buttonHeight: 30
-                backgroundColor: Theme.surfaceContainerHigh
-                textColor: Theme.surfaceText
                 onClicked: row.primaryAction.run()
             }
 
+            //: Unfolded, the row's end button folds it again (board 6).
             DankActionButton {
+                id: menuButton
+
                 anchors.verticalCenter: parent.verticalCenter
-                buttonSize: 30
-                iconSize: Theme.iconSizeSmall
-                iconName: row.showMore ? "close" : "more_vert"
-                tooltipText: row.showMore ? "Fewer actions" : "More actions"
-                onClicked: row.showMore = !row.showMore
+                buttonSize: 32
+                iconSize: 20
+                iconName: row.expanded ? "expand_less" : "more_vert"
+                iconColor: Theme.surfaceVariantText
+                tooltipText: row.expanded ? "Fold" : "More actions"
+                onClicked: row.expanded ? row.toggleExpand() : rowMenu.toggle()
             }
         }
 
         Column {
             id: bodyColumn
 
-            anchors.left: chevron.right
-            anchors.leftMargin: Theme.spacingS
-            anchors.right: actions.left
-            anchors.rightMargin: Theme.spacingS
-            anchors.top: parent.top
-            spacing: 3
+            anchors.left: tile.right
+            anchors.leftMargin: row.compact ? 10 : 12
+            anchors.right: actions.visible ? actions.left : parent.right
+            anchors.rightMargin: actions.visible ? 12 : (row.confirmingRemove && row.fileMissing ? 190 : 0)
+            anchors.verticalCenter: parent.verticalCenter
+            spacing: row.listMode ? 7 : 6
 
-            Row {
+            Item {
                 width: parent.width
-                spacing: Theme.spacingXS
+                height: nameText.implicitHeight
 
                 StyledText {
                     id: nameText
 
-                    width: Math.max(0, Math.min(implicitWidth, parent.width - badgeRow.width - Theme.spacingXS))
+                    anchors.left: parent.left
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: Math.max(0, Math.min(implicitWidth, parent.width - badgeRow.width - pct.implicitWidth - 16))
                     text: row.dl.name || row.gid
-                    font.pixelSize: Theme.fontSizeMedium
-                    font.weight: Font.Medium
+                    font.pixelSize: row.compact ? Theme.fontSizeSmall + 1 : Theme.fontSizeMedium
+                    font.weight: Font.DemiBold
                     color: Theme.surfaceText
                     wrapMode: Text.NoWrap
                     elide: Text.ElideMiddle
@@ -411,54 +695,78 @@ Rectangle {
                     MouseArea {
                         anchors.fill: parent
                         cursorShape: Qt.PointingHandCursor
-                        onClicked: row.toggleExpand()
+                        onClicked: mouse => {
+                            if (row.selectable)
+                                row.toggleSelected((mouse.modifiers & Qt.ShiftModifier) !== 0)
+                            else
+                                row.toggleExpand()
+                        }
                     }
                 }
 
                 Row {
                     id: badgeRow
 
+                    visible: !row.compact
+                    anchors.left: nameText.right
+                    anchors.leftMargin: 8
                     anchors.verticalCenter: parent.verticalCenter
-                    spacing: 3
+                    spacing: 4
 
                     Repeater {
-                        model: row.badges
+                        model: row.shownBadges
 
                         Rectangle {
                             id: badge
 
                             required property var modelData
 
-                            width: badgeLabel.implicitWidth + Theme.spacingS
-                            height: 18
-                            radius: 5
-                            color: Theme.withAlpha(badge.modelData.color, 0.18)
+                            width: badgeLabel.implicitWidth + 14
+                            height: 19
+                            radius: 6
+                            color: badge.modelData.color === Theme.surfaceVariantText ? Theme.surfaceContainerHighest
+                                                                                        : Theme.withAlpha(badge.modelData.color, 0.14)
 
                             StyledText {
                                 id: badgeLabel
 
                                 anchors.centerIn: parent
                                 text: badge.modelData.text
-                                font.pixelSize: Theme.fontSizeSmall
-                                font.weight: Font.Medium
+                                font.pixelSize: Theme.fontSizeSmall - 1
+                                font.weight: Font.DemiBold
                                 color: badge.modelData.color
                             }
                         }
                     }
                 }
+
+                StyledText {
+                    id: pct
+
+                    anchors.right: parent.right
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: row.listMode ? row.listText : (row.compact && row.status === "paused" ? "Paused" : row.pctText)
+                    font.pixelSize: Theme.fontSizeSmall
+                    color: Theme.surfaceVariantText
+                }
             }
 
             Rectangle {
+                id: track
+
+                visible: !row.compact || row.listMode
                 width: parent.width
-                height: 4
+                height: row.listMode ? 3 : 4
                 radius: 2
-                color: Theme.withAlpha(Theme.outline, 0.2)
+                color: Theme.surfaceContainerHighest
+                clip: true
 
                 Rectangle {
-                    width: parent.width * Math.min(1, (row.dl.progress || 0) / 100)
+                    visible: !row.fetchingDetails
+                    width: parent.width * row.barFraction
                     height: parent.height
                     radius: parent.radius
-                    color: row.statusColor
+                    color: row.barColor
 
                     Behavior on width {
                         NumberAnimation {
@@ -467,13 +775,35 @@ Rectangle {
                         }
                     }
                 }
+
+                //: Fetching details has no fraction to show: a segment sweeps
+                //: across instead, which reads as waiting rather than stuck at 0.
+                Rectangle {
+                    id: sweep
+
+                    visible: row.fetchingDetails
+                    width: parent.width * 0.3
+                    height: parent.height
+                    radius: parent.radius
+                    color: Theme.primary
+
+                    NumberAnimation on x {
+                        running: row.fetchingDetails
+                        loops: Animation.Infinite
+                        from: -sweep.width
+                        to: track.width
+                        duration: 1400
+                        easing.type: Easing.InOutQuad
+                    }
+                }
             }
 
             StyledText {
+                visible: !row.compact
                 width: parent.width
                 text: row.metaText
                 font.pixelSize: Theme.fontSizeSmall
-                color: row.dl.errorMessage ? Theme.error : Theme.surfaceVariantText
+                color: row.status === "error" ? Theme.error : Theme.surfaceVariantText
                 wrapMode: Text.NoWrap
                 elide: Text.ElideRight
             }
@@ -481,103 +811,103 @@ Rectangle {
     }
 
     // ---- more actions -----------------------------------------------------
-    Flow {
-        id: moreStrip
+    //: Everything else, as a labelled menu off the ⋮ button; the remove
+    //: entry sits apart at the bottom.
+    MenuPopup {
+        id: rowMenu
 
-        anchors.left: parent.left
-        anchors.right: parent.right
-        anchors.top: body.bottom
-        anchors.margins: Theme.spacingS
-        visible: row.showMore
-        height: visible ? implicitHeight : 0
-        spacing: Theme.spacingXS
+        readonly property var actionsShown: row.moreActions
 
-        Repeater {
-            model: row.showMore ? row.moreActions : []
-
-            DankButton {
-                required property var modelData
-
-                text: modelData.text
-                iconName: modelData.icon
-                buttonHeight: 30
-                backgroundColor: modelData.danger ? Theme.withAlpha(Theme.error, 0.12) : Theme.surfaceContainerHigh
-                textColor: modelData.danger ? Theme.error : Theme.surfaceText
-                onClicked: {
-                    row.showMore = false
-                    modelData.run()
-                }
+        parent: menuButton
+        alignEnd: true
+        menuWidth: 240
+        entries: {
+            const out = []
+            let group = ""
+            for (const a of actionsShown) {
+                const g = a.danger ? "danger" : (a.group || "file")
+                if (group && g !== group)
+                    out.push({
+                                 "separator": true
+                             })
+                group = g
+                out.push({
+                             "icon": a.icon,
+                             "text": a.text,
+                             "danger": !!a.danger
+                         })
             }
+            return out
+        }
+        onTriggered: index => {
+            let n = -1
+            for (let i = 0; i <= index; i++) {
+                if (!entries[i].separator)
+                    n++
+            }
+            if (!entries[index].separator)
+                actionsShown[n].run()
         }
     }
 
     // ---- remove confirmation --------------------------------------------
-    // Only ever shown for a finished download — see askRemove().
-    Rectangle {
+    //: Only ever shown for a finished download — see askRemove(). The safe
+    //: choice is the primary button. With the file already gone there is
+    //: nothing to keep or delete, so the question shrinks to one button.
+    Column {
         id: confirmStrip
 
         anchors.left: parent.left
         anchors.right: parent.right
-        anchors.top: moreStrip.visible ? moreStrip.bottom : body.bottom
-        anchors.margins: Theme.spacingS
-        visible: row.confirmingRemove
-        height: visible ? 40 : 0
-        radius: Theme.cornerRadius
-        color: Theme.withAlpha(Theme.error, 0.10)
-        border.width: 1
-        border.color: Theme.withAlpha(Theme.error, 0.35)
+        anchors.top: body.bottom
+        anchors.leftMargin: 10
+        anchors.rightMargin: 10
+        anchors.topMargin: 10
+        visible: row.confirmingRemove && !row.fileMissing
+        height: visible ? implicitHeight : 0
+        spacing: 10
 
-        StyledText {
-            anchors.left: parent.left
-            anchors.leftMargin: Theme.spacingS
-            anchors.right: confirmButtons.left
-            anchors.rightMargin: Theme.spacingS
-            anchors.verticalCenter: parent.verticalCenter
-            text: row.fileMissing ? "The file is already gone. Remove this entry?"
-                                  : "Remove this download. Keep the file, or delete it too?"
-            font.pixelSize: Theme.fontSizeSmall
-            color: Theme.surfaceText
-            elide: Text.ElideRight
+        Rectangle {
+            width: parent.width
+            height: 1
+            color: Theme.outlineVariant
         }
 
+        StyledText {
+            text: "Remove from the list. Keep the file on disk?"
+            font.pixelSize: Theme.fontSizeSmall + 1
+            color: Theme.surfaceText
+        }
+
+        //: Keeping the file is the safe choice and the primary one.
         Row {
-            id: confirmButtons
+            spacing: 6
 
-            anchors.right: parent.right
-            anchors.rightMargin: Theme.spacingXS
-            anchors.verticalCenter: parent.verticalCenter
-            spacing: Theme.spacingXS
-
-            DankButton {
-                text: "Cancel"
-                buttonHeight: 28
-                backgroundColor: Theme.surfaceContainerHigh
-                textColor: Theme.surfaceText
-                onClicked: row.confirmingRemove = false
-            }
-
-            DankButton {
+            PillButton {
                 text: "Keep file"
-                buttonHeight: 28
-                backgroundColor: Theme.surfaceContainerHigh
-                textColor: Theme.surfaceText
+                size: 30
+                kind: "filled"
                 onClicked: {
                     row.confirmingRemove = false
                     row.service.removeDownload(row.gid, false, "Removed, file kept")
                 }
             }
 
-            DankButton {
+            PillButton {
                 text: "Delete file"
-                buttonHeight: 28
-                enabled: !row.fileMissing
-                opacity: enabled ? 1 : 0.4
-                backgroundColor: Theme.error
-                textColor: Theme.onPrimary
+                size: 30
+                kind: "dangerFilled"
                 onClicked: {
                     row.confirmingRemove = false
                     row.service.removeDownload(row.gid, true, "Removed with its file")
                 }
+            }
+
+            PillButton {
+                text: "Cancel"
+                size: 30
+                kind: "text"
+                onClicked: row.confirmingRemove = false
             }
         }
     }
@@ -587,10 +917,10 @@ Rectangle {
 
         anchors.left: parent.left
         anchors.right: parent.right
-        anchors.top: confirmStrip.visible ? confirmStrip.bottom : (moreStrip.visible ? moreStrip.bottom : body.bottom)
-        anchors.topMargin: Theme.spacingS
-        anchors.leftMargin: Theme.spacingS
-        anchors.rightMargin: Theme.spacingS
+        anchors.top: confirmStrip.visible ? confirmStrip.bottom : body.bottom
+        anchors.topMargin: 14
+        anchors.leftMargin: 14
+        anchors.rightMargin: 14
         active: row.expanded
         visible: row.expanded
         height: active && item ? item.implicitHeight : 0
@@ -600,6 +930,7 @@ Rectangle {
                 service: row.service
                 gid: row.gid
                 dl: row.dl
+                held: row.heldForChoice
             }
         }
     }

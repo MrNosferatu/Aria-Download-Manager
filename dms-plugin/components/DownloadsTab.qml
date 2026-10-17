@@ -1,4 +1,6 @@
 import QtQuick
+import Quickshell
+import Quickshell.Io
 import qs.Common
 import qs.Services
 import qs.Widgets
@@ -13,6 +15,13 @@ Item {
     property string search: ""
     property string expandedGid: ""
     property bool adding: false
+
+    //: Hosted by the wide window: the rail there holds the filters, so the
+    //: chips step aside, and a click picks a row for the detail pane beside
+    //: the list instead of unfolding it in place.
+    property bool showChips: true
+    property bool pickMode: false
+    property string selectedGid: ""
 
     readonly property int scrollbarGutter: Layout.SCROLLBAR_GUTTER
 
@@ -38,12 +47,24 @@ Item {
         return selection[gid] === true
     }
 
-    function toggleSelection(gid) {
+    //: The row last clicked, where a Shift-click range starts from.
+    property string lastClicked: ""
+
+    //: `range` (Shift held) selects every visible row between the last one
+    //: clicked and this one, inclusive.
+    function toggleSelection(gid, range) {
         const next = Object.assign({}, selection)
-        if (next[gid])
+        const from = gids.indexOf(lastClicked)
+        const to = gids.indexOf(gid)
+        if (range && from >= 0 && to >= 0) {
+            for (let i = Math.min(from, to); i <= Math.max(from, to); i++)
+                next[gids[i]] = true
+        } else if (next[gid]) {
             delete next[gid]
-        else
+        } else {
             next[gid] = true
+        }
+        lastClicked = gid
         selection = next
     }
 
@@ -67,8 +88,71 @@ Item {
         confirmingClearHistory = false
     }
     onSelectingChanged: {
-        if (!selecting)
+        if (!selecting) {
             clearSelection()
+            lastClicked = ""
+        } else {
+            // Esc leaves selection mode; the tab needs focus to hear it.
+            tab.forceActiveFocus()
+        }
+    }
+
+    //: A near miss in the search box: the word in a download's name that is
+    //: one or two edits away from what was typed.
+    readonly property string suggestion: {
+        const needle = search.toLowerCase()
+        if (needle.length < 4 || !service)
+            return ""
+        const distance = (a, b) => {
+            const row = Array.from({
+                                       "length": b.length + 1
+                                   }, (_, k) => k)
+            for (let x = 1; x <= a.length; x++) {
+                let prev = row[0]
+                row[0] = x
+                for (let y = 1; y <= b.length; y++) {
+                    const keep = row[y]
+                    row[y] = Math.min(row[y] + 1, row[y - 1] + 1, prev + (a[x - 1] === b[y - 1] ? 0 : 1))
+                    prev = keep
+                }
+            }
+            return row[b.length]
+        }
+        let best = ""
+        let bestScore = 3
+        for (const d of service.downloads) {
+            for (const word of String(d.name || "").toLowerCase().split(/[^a-z0-9]+/)) {
+                if (word.length < 3)
+                    continue
+                const score = distance(needle, word)
+                if (score > 0 && score < bestScore) {
+                    best = word
+                    bestScore = score
+                }
+            }
+        }
+        return best
+    }
+
+    //: Ctrl V anywhere in the tab pastes the clipboard's links into Add.
+    focus: true
+    Keys.onPressed: event => {
+        if (event.key === Qt.Key_V && (event.modifiers & Qt.ControlModifier)) {
+            tab.pasteFromClipboard()
+            event.accepted = true
+        }
+    }
+
+    Keys.onEscapePressed: event => {
+        if (tab.confirmingBulkRemove) {
+            tab.confirmingBulkRemove = false
+            event.accepted = true
+        } else if (tab.selecting) {
+            tab.selecting = false
+            event.accepted = true
+        } else {
+            event.accepted = false
+        }
     }
 
     function runBulk(action) {
@@ -137,6 +221,31 @@ Item {
         const dir = sortDesc ? -1 : 1
         const at = e => e[key] || e.first_seen || 0
         return entries.slice().sort((a, b) => dir * (at(a) - at(b)))
+    }
+
+    //: History as the list shows it: filtered by the search box, with a
+    //: header row (Today, Yesterday, This week, Earlier) wherever the day
+    //: group changes. {header} or {entry}.
+    readonly property var historyRows: {
+        const needle = search.toLowerCase()
+        const key = sortField === "added" ? "added_at" : "finished_at"
+        const out = []
+        let group = ""
+        for (const e of historyEntries) {
+            if (needle && String(e.name || e.key || "").toLowerCase().indexOf(needle) === -1)
+                continue
+            const g = Fmt.dayGroup(e[key] || e.first_seen)
+            if (g !== group) {
+                out.push({
+                             "header": g
+                         })
+                group = g
+            }
+            out.push({
+                         "entry": e
+                     })
+        }
+        return out
     }
 
     // gid -> row, so a delegate can bind to live values without the list model
@@ -212,6 +321,7 @@ Item {
 
     Component.onCompleted: recompute()
 
+
     Connections {
         target: tab.service
         function onSnapshotChanged() {
@@ -220,13 +330,13 @@ Item {
     }
 
     // ---- filters ---------------------------------------------------------
-    DankFilterChips {
+    FilterChips {
         id: chips
 
-        width: parent.width
-        chipHeight: 30
-        showCounts: true
-        currentIndex: 0
+        visible: tab.showChips
+        height: visible ? implicitHeight : 0
+        width: parent.width - tab.scrollbarGutter
+        current: tab.filter
         model: {
             const c = tab.service ? tab.service.counts : ({})
             return [
@@ -267,323 +377,434 @@ Item {
             ]
         }
 
-        onSelectionChanged: index => {
-            tab.setFilter(["all", "active", "waiting", "paused", "complete", "error", "history"][index])
-        }
+        onPicked: value => tab.setFilter(value)
     }
 
+    //: The board's toolbar: a search pill, the order as a pill that opens a
+    //: menu, select as a round icon, and Add as the one filled button.
     Item {
         id: searchRow
 
-        anchors.top: chips.bottom
-        anchors.topMargin: Theme.spacingS
-        width: parent.width
-        height: 44
+        anchors.top: tab.showChips ? chips.bottom : parent.top
+        anchors.topMargin: tab.showChips ? 12 : 0
+        width: parent.width - tab.scrollbarGutter
+        height: 40
 
-        DankTextField {
+        //: While selecting, the selection bar takes this row's place rather
+        //: than stacking under it.
+        readonly property bool tools: !tab.selecting || tab.historyMode
+
+        SearchPill {
             id: searchField
 
+            visible: searchRow.tools
             anchors.left: parent.left
+            anchors.right: sortPill.left
+            anchors.rightMargin: 8
             anchors.verticalCenter: parent.verticalCenter
-            width: Math.max(0, parent.width - addButton.width - Theme.spacingS
-                                - sortDropdown.width - sortDirButton.width - Theme.spacingS
-                                - (selectButton.visible ? selectButton.width + Theme.spacingS : 0)
-                                - (clearHistoryButton.visible ? clearHistoryButton.width + Theme.spacingS : 0))
-            height: 40
-            leftIconName: "search"
-            placeholderText: tab.historyMode ? "Search is not available in history" : "Search by name"
-            showClearButton: true
+            placeholderText: tab.historyMode ? "Search history" : "Search downloads"
             onTextChanged: tab.search = text
         }
 
-        //: Order sits with the view controls — after search, before the
-        //: buttons that act on rows.
-        DankDropdown {
-            id: sortDropdown
+        //: The order, said in one word; the menu holds the choices and the
+        //: direction.
+        PillButton {
+            id: sortPill
 
-            anchors.left: searchField.right
-            anchors.leftMargin: Theme.spacingS
+            readonly property var shortLabels: ({
+                    "queue": "Queue",
+                    "added": tab.sortDesc ? "Newest" : "Oldest",
+                    "finished": tab.sortDesc ? "Newest" : "Oldest"
+                })
+
+            visible: searchRow.tools
+            anchors.right: selectButton.visible ? selectButton.left : (clearHistoryButton.visible ? clearHistoryButton.left : addButton.left)
+            anchors.rightMargin: 8
             anchors.verticalCenter: parent.verticalCenter
-            width: 150
-            height: 40
-            compactMode: true
-            options: tab.historyMode ? tab.sortLabels.slice(1) : tab.sortLabels
-            currentValue: tab.sortLabels[tab.sortFields.indexOf(tab.sortField)]
-            onValueChanged: label => {
-                const field = tab.sortFields[tab.sortLabels.indexOf(label)]
-                if (field && field !== tab.sortField)
-                    tab.setSort(field, tab.sortDefaultDesc[field])
+            size: 40
+            kind: tab.historyMode ? "outlined" : "surface"
+            icon: "sort"
+            text: shortLabels[tab.sortField] || "Queue"
+            onClicked: sortMenu.toggle()
+
+            MenuPopup {
+                id: sortMenu
+
+                alignEnd: true
+                menuWidth: 220
+                entries: {
+                    const fields = tab.historyMode ? tab.sortFields.slice(1) : tab.sortFields
+                    const labels = tab.historyMode ? tab.sortLabels.slice(1) : tab.sortLabels
+                    const out = [{
+                                     "heading": "Order by"
+                                 }]
+                    for (let i = 0; i < fields.length; i++)
+                        out.push({
+                                     "text": labels[i],
+                                     "checked": tab.sortField === fields[i]
+                                 })
+                    out.push({
+                                 "separator": true
+                             })
+                    out.push({
+                                 "icon": tab.sortDesc ? "arrow_upward" : "arrow_downward",
+                                 "text": tab.sortField === "queue" ? (tab.sortDesc ? "Front of the queue first" : "Back of the queue first")
+                                                                   : (tab.sortDesc ? "Oldest first" : "Newest first")
+                             })
+                    return out
+                }
+                onTriggered: index => {
+                    const fields = tab.historyMode ? tab.sortFields.slice(1) : tab.sortFields
+                    if (index >= 1 && index <= fields.length) {
+                        const field = fields[index - 1]
+                        if (field !== tab.sortField)
+                            tab.setSort(field, tab.sortDefaultDesc[field])
+                    } else if (index === fields.length + 2) {
+                        tab.setSort(tab.sortField, !tab.sortDesc)
+                    }
+                }
             }
         }
 
         DankActionButton {
-            id: sortDirButton
-
-            anchors.left: sortDropdown.right
-            anchors.verticalCenter: parent.verticalCenter
-            buttonSize: 36
-            iconSize: Theme.iconSizeSmall
-            iconName: tab.sortDesc ? "arrow_downward" : "arrow_upward"
-            tooltipText: (tab.sortField === "queue" ? (tab.sortDesc ? "Back of the queue first" : "Front of the queue first")
-                                                    : (tab.sortDesc ? "Newest first" : "Oldest first")) + " — click to reverse"
-            onClicked: tab.setSort(tab.sortField, !tab.sortDesc)
-        }
-
-        DankButton {
-            id: clearHistoryButton
-
-            anchors.right: addButton.left
-            anchors.rightMargin: Theme.spacingS
-            anchors.verticalCenter: parent.verticalCenter
-            visible: tab.historyMode
-            text: "Clear history"
-            iconName: "delete_sweep"
-            buttonHeight: 40
-            backgroundColor: Theme.errorHover
-            textColor: Theme.error
-            onClicked: tab.confirmingClearHistory = true
-        }
-
-        DankButton {
             id: selectButton
 
             anchors.right: addButton.left
-            anchors.rightMargin: Theme.spacingS
+            anchors.rightMargin: addButton.visible ? 8 : 0
             anchors.verticalCenter: parent.verticalCenter
-            visible: !tab.historyMode
-            text: tab.selecting ? "Done" : "Select"
-            iconName: tab.selecting ? "check" : "checklist"
-            buttonHeight: 40
-            backgroundColor: tab.selecting ? Theme.primary : Theme.surfaceContainerHigh
-            textColor: tab.selecting ? Theme.onPrimary : Theme.surfaceText
-            onClicked: tab.selecting = !tab.selecting
+            visible: searchRow.tools && !tab.historyMode
+            buttonSize: 40
+            iconSize: 18
+            iconName: "checklist"
+            iconColor: Theme.surfaceText
+            backgroundColor: Theme.surfaceContainerHigh
+            tooltipText: "Select downloads"
+            onClicked: tab.selecting = true
         }
 
-        DankButton {
+        PillButton {
+            id: clearHistoryButton
+
+            anchors.right: addButton.left
+            anchors.rightMargin: addButton.visible ? 8 : 0
+            anchors.verticalCenter: parent.verticalCenter
+            visible: tab.historyMode
+            size: 40
+            kind: "dangerText"
+            icon: "delete_sweep"
+            text: "Clear"
+            onClicked: tab.confirmingClearHistory = true
+        }
+
+        //: The wide window's rail has its own Add download; there this one
+        //: only appears as Close while the panel is open.
+        PillButton {
             id: addButton
 
+            visible: searchRow.tools && (!tab.pickMode || tab.adding)
+            width: visible ? implicitWidth : 0
             anchors.right: parent.right
             anchors.verticalCenter: parent.verticalCenter
+            size: 40
+            kind: tab.adding ? "tonal" : "filled"
+            icon: tab.adding ? "close" : "add"
             text: tab.adding ? "Close" : "Add"
-            iconName: tab.adding ? "close" : "add"
-            buttonHeight: 40
-            backgroundColor: tab.adding ? Theme.surfaceContainerHigh : Theme.primary
-            textColor: tab.adding ? Theme.surfaceText : Theme.onPrimary
             onClicked: tab.adding = !tab.adding
         }
     }
 
     // ---- add form --------------------------------------------------------
-    AddPanel {
-        id: addPanel
+    //: The empty list's "Paste from clipboard": opens the Add panel with
+    //: whatever links the clipboard holds.
+    function pasteFromClipboard() {
+        clipPeek.running = true
+    }
+
+    Process {
+        id: clipPeek
+
+        command: ["sh", "-c", "{ command -v wl-paste >/dev/null && wl-paste -n -t text 2>/dev/null || dms cl paste 2>/dev/null; } | head -c 65536"]
+        running: false
+
+        stdout: StdioCollector {
+            onStreamFinished: {
+                const links = text.split(/\s+/).filter(t => /^(https?|ftp|sftp|magnet):\S+$/i.test(t))
+                if (!links.length) {
+                    ToastService.showError("Nothing to paste", "The clipboard holds no http, ftp, sftp or magnet link.")
+                    return
+                }
+                tab.adding = true
+                addPanel.prefill(links.join("\n"))
+            }
+        }
+    }
+
+    //: The panel scrolls inside the room the tab has: an Advanced form with
+    //: its groups open is taller than the popout, and its buttons must stay
+    //: reachable.
+    DankFlickable {
+        id: addScroll
 
         anchors.top: searchRow.bottom
         anchors.topMargin: tab.adding ? Theme.spacingS : 0
         width: parent.width
         visible: tab.adding
-        height: visible ? implicitHeight : 0
-        service: tab.service
-        onSubmitted: tab.adding = false
+        height: visible ? Math.min(addPanel.implicitHeight + 32, tab.height - searchRow.y - searchRow.height - 12) : 0
+        clip: true
+        contentHeight: addPanel.implicitHeight + 32
+        contentWidth: width
+
+        //: The panel is a card of its own over the list (boards 5, 16).
+        Rectangle {
+            width: addScroll.width - tab.scrollbarGutter
+            height: addPanel.implicitHeight + 32
+            radius: 18
+            color: Theme.surfaceContainer
+
+            AddPanel {
+                id: addPanel
+
+                x: 16
+                y: 16
+                width: parent.width - 32
+                service: tab.service
+                onSubmitted: tab.adding = false
+                onCancelled: tab.adding = false
+            }
+        }
     }
 
-    // ---- bulk action bar -------------------------------------------------
+    // ---- selection bar ---------------------------------------------------
+    //: A contextual bar in the toolbar's place: leave, count, act, select all.
+    Rectangle {
+        id: selectionBar
+
+        anchors.fill: searchRow
+        visible: tab.selecting && !tab.historyMode
+        radius: Theme.cornerRadius
+        color: Theme.primaryContainer
+
+        Row {
+            anchors.left: parent.left
+            anchors.leftMargin: Theme.spacingXS
+            anchors.verticalCenter: parent.verticalCenter
+            spacing: Theme.spacingXS
+
+            DankActionButton {
+                anchors.verticalCenter: parent.verticalCenter
+                buttonSize: 32
+                iconSize: Theme.iconSizeSmall
+                iconName: "close"
+                iconColor: Theme.onPrimaryContainer
+                tooltipText: "Leave selection (Esc)"
+                onClicked: tab.selecting = false
+            }
+
+            StyledText {
+                anchors.verticalCenter: parent.verticalCenter
+                text: tab.selectedCount > 0 ? tab.selectedCount + " selected" : "Pick downloads · Shift-click for a range"
+                font.pixelSize: Theme.fontSizeSmall + 1
+                font.weight: Font.Bold
+                color: Theme.onPrimaryContainer
+            }
+        }
+
+        Row {
+            anchors.right: parent.right
+            anchors.rightMargin: Theme.spacingXS
+            anchors.verticalCenter: parent.verticalCenter
+            spacing: Theme.spacingXS
+
+            Repeater {
+                model: [["pause", "Pause the selected downloads", "pause"], ["play_arrow", "Resume the selected downloads", "resume"]]
+
+                DankActionButton {
+                    required property var modelData
+
+                    anchors.verticalCenter: parent.verticalCenter
+                    buttonSize: 32
+                    iconSize: Theme.iconSizeSmall
+                    iconName: modelData[0]
+                    iconColor: Theme.onPrimaryContainer
+                    tooltipText: modelData[1]
+                    enabled: tab.selectedCount > 0
+                    opacity: enabled ? 1 : 0.4
+                    onClicked: tab.runBulk(modelData[2])
+                }
+            }
+
+            DankActionButton {
+                anchors.verticalCenter: parent.verticalCenter
+                buttonSize: 32
+                iconSize: Theme.iconSizeSmall
+                iconName: "delete"
+                iconColor: Theme.error
+                tooltipText: "Remove the selected downloads"
+                enabled: tab.selectedCount > 0
+                opacity: enabled ? 1 : 0.4
+                onClicked: tab.askBulkRemove()
+            }
+
+            DankButton {
+                readonly property bool all: tab.selectedCount === tab.gids.length && tab.gids.length > 0
+
+                anchors.verticalCenter: parent.verticalCenter
+                text: all ? "Select none" : "Select all " + tab.gids.length
+                buttonHeight: 32
+                backgroundColor: "transparent"
+                textColor: Theme.onPrimaryContainer
+                onClicked: all ? tab.clearSelection() : tab.selectAllVisible()
+            }
+        }
+    }
+
+    //: The same question the single row asks, asked once for the batch, in
+    //: one sentence that names what is finished and how big it is. Keeping
+    //: the files is the safe choice, so it is the primary button.
     Rectangle {
         id: bulkBar
 
-        anchors.top: addPanel.bottom
+        readonly property var finishedRows: tab.selectedFinished.map(g => tab.byGid[g]).filter(d => !!d)
+        readonly property real finishedBytes: finishedRows.reduce((sum, d) => sum + (d.total || 0), 0)
+        readonly property string finishedNames: {
+            const names = finishedRows.slice(0, 2).map(d => d.name || d.gid)
+            const rest = finishedRows.length - names.length
+            return names.join(", ") + (rest > 0 ? " and " + rest + " more" : "")
+        }
+
+        anchors.top: addScroll.bottom
         anchors.topMargin: visible ? Theme.spacingS : 0
         width: parent.width - tab.scrollbarGutter
-        visible: tab.selecting && !tab.historyMode
-        height: visible ? (tab.confirmingBulkRemove ? 76 : 40) : 0
-        radius: Theme.cornerRadius
-        color: tab.confirmingBulkRemove ? Theme.withAlpha(Theme.error, 0.10) : Theme.surfaceContainerHigh
+        visible: tab.selecting && tab.confirmingBulkRemove
+        height: visible ? bulkColumn.implicitHeight + Theme.spacingM * 2 : 0
+        radius: 14
+        color: Theme.withAlpha(Theme.error, 0.10)
         border.width: 1
-        border.color: tab.confirmingBulkRemove ? Theme.withAlpha(Theme.error, 0.35)
-                                               : Theme.withAlpha(Theme.outline, 0.12)
+        border.color: Theme.withAlpha(Theme.error, 0.35)
 
-        Item {
-            id: bulkRow
+        Column {
+            id: bulkColumn
 
             anchors.left: parent.left
             anchors.right: parent.right
             anchors.top: parent.top
-            height: 40
+            anchors.margins: Theme.spacingM
+            spacing: Theme.spacingS
 
             StyledText {
-                anchors.left: parent.left
-                anchors.leftMargin: Theme.spacingS
-                anchors.verticalCenter: parent.verticalCenter
-                text: tab.selectedCount > 0 ? tab.selectedCount + " selected" : "Pick downloads"
-                font.pixelSize: Theme.fontSizeSmall
-                font.weight: Font.Medium
+                text: "Remove " + tab.selectedCount + (tab.selectedCount === 1 ? " download?" : " downloads?")
+                font.pixelSize: Theme.fontSizeMedium + 1
+                font.weight: Font.Bold
                 color: Theme.surfaceText
             }
 
-            Row {
-                anchors.right: parent.right
-                anchors.rightMargin: Theme.spacingXS
-                anchors.verticalCenter: parent.verticalCenter
-                spacing: Theme.spacingXS
-
-                DankButton {
-                    text: tab.selectedCount === tab.gids.length && tab.gids.length > 0 ? "None" : "All"
-                    buttonHeight: 28
-                    backgroundColor: Theme.surfaceContainer
-                    textColor: Theme.surfaceText
-                    onClicked: {
-                        if (tab.selectedCount === tab.gids.length && tab.gids.length > 0)
-                            tab.clearSelection()
-                        else
-                            tab.selectAllVisible()
-                    }
-                }
-
-                DankActionButton {
-                    buttonSize: 28
-                    iconSize: Theme.iconSizeSmall
-                    iconName: "pause"
-                    tooltipText: "Pause the selected downloads"
-                    enabled: tab.selectedCount > 0
-                    opacity: enabled ? 1 : 0.4
-                    onClicked: tab.runBulk("pause")
-                }
-
-                DankActionButton {
-                    buttonSize: 28
-                    iconSize: Theme.iconSizeSmall
-                    iconName: "play_arrow"
-                    tooltipText: "Resume the selected downloads"
-                    enabled: tab.selectedCount > 0
-                    opacity: enabled ? 1 : 0.4
-                    onClicked: tab.runBulk("resume")
-                }
-
-                DankActionButton {
-                    buttonSize: 28
-                    iconSize: Theme.iconSizeSmall
-                    iconName: "delete"
-                    iconColor: Theme.error
-                    tooltipText: "Remove the selected downloads"
-                    enabled: tab.selectedCount > 0
-                    opacity: enabled ? 1 : 0.4
-                    onClicked: tab.askBulkRemove()
-                }
-            }
-        }
-
-        // The same question the single row asks, asked once for the batch —
-        // and only about the finished downloads in it.
-        Item {
-            anchors.left: parent.left
-            anchors.right: parent.right
-            anchors.top: bulkRow.bottom
-            height: 36
-            visible: tab.confirmingBulkRemove
-
             StyledText {
-                anchors.left: parent.left
-                anchors.leftMargin: Theme.spacingS
-                anchors.right: bulkConfirmButtons.left
-                anchors.rightMargin: Theme.spacingS
-                anchors.verticalCenter: parent.verticalCenter
+                width: parent.width
+                wrapMode: Text.WordWrap
+                textFormat: Text.StyledText
                 text: {
-                    const done = tab.selectedFinished.length
                     const rest = tab.selectedUnfinished.length
-                    let line = done + " finished. Keep the files?"
+                    const done = bulkBar.finishedRows.length
+                    const parts = []
                     if (rest > 0)
-                        line += "  (" + rest + " unfinished will be cleaned up.)"
-                    return line
+                        parts.push(rest + " unfinished will be cancelled and " + (rest === 1 ? "its part file" : "their part files") + " deleted.")
+                    if (done > 0)
+                        parts.push("<b><font color=\"" + Theme.surfaceText + "\">" + (done === 1 ? "1 is finished" : done + " are finished") + "</font></b> — "
+                                   + bulkBar.finishedNames.replace(/&/g, "&amp;").replace(/</g, "&lt;") + " (" + Fmt.bytes(bulkBar.finishedBytes) + ").")
+                    return parts.join(" ")
                 }
                 font.pixelSize: Theme.fontSizeSmall
-                color: Theme.surfaceText
-                elide: Text.ElideRight
+                color: Theme.surfaceVariantText
             }
 
             Row {
-                id: bulkConfirmButtons
-
-                anchors.right: parent.right
-                anchors.rightMargin: Theme.spacingXS
-                anchors.verticalCenter: parent.verticalCenter
                 spacing: Theme.spacingXS
 
-                DankButton {
-                    text: "Cancel"
-                    buttonHeight: 28
-                    backgroundColor: Theme.surfaceContainer
-                    textColor: Theme.surfaceText
-                    onClicked: tab.confirmingBulkRemove = false
-                }
-
-                DankButton {
-                    text: "Keep files"
-                    buttonHeight: 28
-                    backgroundColor: Theme.surfaceContainer
-                    textColor: Theme.surfaceText
+                PillButton {
+                    text: bulkBar.finishedRows.length === 1 ? "Remove, keep the file" : "Remove, keep the files"
+                    size: 32
+                    kind: "filled"
                     onClicked: tab.runBulkRemove(true)
                 }
 
-                DankButton {
-                    text: "Delete files"
-                    buttonHeight: 28
-                    backgroundColor: Theme.error
-                    textColor: Theme.onPrimary
+                PillButton {
+                    text: bulkBar.finishedRows.length === 1 ? "Remove and delete file" : "Remove and delete files"
+                    size: 32
+                    kind: "dangerFilled"
                     onClicked: tab.runBulkRemove(false)
+                }
+
+                PillButton {
+                    text: "Cancel"
+                    size: 32
+                    kind: "text"
+                    onClicked: tab.confirmingBulkRemove = false
                 }
             }
         }
     }
 
     // ---- summary line for history ---------------------------------------
+    //: Clearing forgets for good, so it asks first, saying how much it forgets.
     Rectangle {
         id: clearHistoryConfirm
 
         anchors.top: bulkBar.bottom
-        anchors.topMargin: visible ? Theme.spacingS : 0
+        anchors.topMargin: visible ? 12 : 0
         width: parent.width - tab.scrollbarGutter
         visible: tab.historyMode && tab.confirmingClearHistory
-        height: visible ? 44 : 0
-        radius: Theme.cornerRadius
+        height: visible ? clearColumn.implicitHeight + 26 : 0
+        radius: 14
         color: Theme.withAlpha(Theme.error, 0.10)
         border.width: 1
         border.color: Theme.withAlpha(Theme.error, 0.35)
 
-        StyledText {
+        Column {
+            id: clearColumn
+
             anchors.left: parent.left
-            anchors.leftMargin: Theme.spacingM
-            anchors.right: clearHistoryButtons.left
-            anchors.rightMargin: Theme.spacingS
-            anchors.verticalCenter: parent.verticalCenter
-            text: "Forget every history entry? Files on disk are not touched."
-            font.pixelSize: Theme.fontSizeSmall
-            color: Theme.surfaceText
-            elide: Text.ElideRight
-        }
-
-        Row {
-            id: clearHistoryButtons
-
             anchors.right: parent.right
-            anchors.rightMargin: Theme.spacingXS
-            anchors.verticalCenter: parent.verticalCenter
-            spacing: Theme.spacingXS
+            anchors.top: parent.top
+            anchors.margins: 13
+            spacing: 6
 
-            DankButton {
-                text: "Cancel"
-                buttonHeight: 30
-                backgroundColor: Theme.surfaceContainerHigh
-                textColor: Theme.surfaceText
-                onClicked: tab.confirmingClearHistory = false
+            StyledText {
+                text: "Clear all history?"
+                font.pixelSize: Theme.fontSizeMedium
+                font.weight: Font.Bold
+                color: Theme.surfaceText
             }
 
-            DankButton {
-                text: "Clear history"
-                buttonHeight: 30
-                backgroundColor: Theme.error
-                textColor: Theme.onPrimary
-                onClicked: {
-                    tab.confirmingClearHistory = false
-                    tab.service.post("/api/history-clear", null, "History cleared", () => tab.service.loadHistory())
+            StyledText {
+                width: parent.width
+                wrapMode: Text.WordWrap
+                text: {
+                    const count = tab.service && tab.service.history ? ((tab.service.history.summary || {}).count || 0) : 0
+                    return "Forgets " + count + (count === 1 ? " entry" : " entries") + ". Files on disk are not touched."
+                }
+                font.pixelSize: Theme.fontSizeSmall
+                color: Theme.surfaceVariantText
+            }
+
+            Row {
+                topPadding: 4
+                spacing: 6
+
+                PillButton {
+                    text: "Clear history"
+                    size: 30
+                    kind: "dangerFilled"
+                    onClicked: {
+                        tab.confirmingClearHistory = false
+                        tab.service.post("/api/history-clear", null, "History cleared", () => tab.service.loadHistory())
+                    }
+                }
+
+                PillButton {
+                    text: "Cancel"
+                    size: 30
+                    kind: "text"
+                    onClicked: tab.confirmingClearHistory = false
                 }
             }
         }
@@ -593,9 +814,11 @@ Item {
         id: historySummary
 
         anchors.top: clearHistoryConfirm.bottom
-        anchors.topMargin: Theme.spacingS
+        anchors.topMargin: visible ? 12 : 0
         width: parent.width
-        visible: tab.historyMode
+        //: Board 15 goes straight to the day groups; the count is in the
+        //: clear confirmation, where it matters.
+        visible: false
         height: visible ? implicitHeight : 0
         text: {
             if (!tab.service || !tab.service.history)
@@ -605,6 +828,7 @@ Item {
         }
         font.pixelSize: Theme.fontSizeSmall
         color: Theme.surfaceVariantText
+        wrapMode: Text.NoWrap
         elide: Text.ElideRight
     }
 
@@ -613,11 +837,11 @@ Item {
         id: list
 
         anchors.top: historySummary.bottom
-        anchors.topMargin: Theme.spacingS
+        anchors.topMargin: historySummary.visible ? 8 : 12
         anchors.bottom: parent.bottom
         width: parent.width
         clip: true
-        spacing: Theme.spacingXS
+        spacing: 6
         visible: !tab.historyMode
         model: tab.gids
 
@@ -630,9 +854,15 @@ Item {
             dl: tab.byGid[modelData] || ({})
             expanded: tab.expandedGid === modelData
             selectable: tab.selecting
-            selected: tab.isSelected(modelData)
-            onToggleSelected: tab.toggleSelection(modelData)
-            onToggleExpand: tab.expandedGid = (tab.expandedGid === modelData ? "" : modelData)
+            listMode: tab.pickMode && !tab.selecting
+            selected: tab.isSelected(modelData) || (tab.pickMode && tab.selectedGid === modelData)
+            onToggleSelected: range => tab.toggleSelection(modelData, range)
+            onToggleExpand: {
+                if (tab.pickMode)
+                    tab.selectedGid = modelData
+                else
+                    tab.expandedGid = (tab.expandedGid === modelData ? "" : modelData)
+            }
         }
     }
 
@@ -640,20 +870,44 @@ Item {
         id: historyList
 
         anchors.top: historySummary.bottom
-        anchors.topMargin: Theme.spacingS
+        anchors.topMargin: historySummary.visible ? 8 : 12
         anchors.bottom: parent.bottom
         width: parent.width
         clip: true
-        spacing: Theme.spacingXS
+        spacing: 6
         visible: tab.historyMode
-        model: tab.historyEntries
+        model: tab.historyRows
 
-        delegate: HistoryRow {
+        //: A day header, or an entry.
+        delegate: Item {
+            id: historyItem
+
             required property var modelData
 
             width: historyList.width - tab.scrollbarGutter
-            service: tab.service
-            entry: modelData
+            height: modelData.header ? 32 : historyRow.height
+
+            StyledText {
+                anchors.left: parent.left
+                anchors.leftMargin: 6
+                anchors.bottom: parent.bottom
+                anchors.bottomMargin: 4
+                visible: !!historyItem.modelData.header
+                text: (historyItem.modelData.header || "").toUpperCase()
+                font.pixelSize: Theme.fontSizeSmall - 1
+                font.weight: Font.DemiBold
+                font.letterSpacing: 0.7
+                color: Theme.surfaceVariantText
+            }
+
+            HistoryRow {
+                id: historyRow
+
+                width: parent.width
+                visible: !historyItem.modelData.header
+                service: tab.service
+                entry: historyItem.modelData.entry || ({})
+            }
         }
     }
 
@@ -666,9 +920,12 @@ Item {
 
         readonly property string kind: {
             if (tab.historyMode)
-                return "history"
+                return tab.search ? "historySearch" : "history"
             if (tab.search)
                 return "search"
+            // Nothing at all, not just nothing under this filter.
+            if (tab.filter === "all" && tab.service && (tab.service.counts.total || 0) === 0)
+                return "first"
             return tab.filter
         }
 
@@ -680,7 +937,9 @@ Item {
                 "complete": ["task_alt", "Nothing finished since aria2c started", "aria2 forgets finished downloads when it restarts. History keeps them."],
                 "error": ["task_alt", "Nothing has failed", "Downloads that stop with an error land here, with the reason and a Retry button."],
                 "history": ["history", "No history yet", "Every finished download is recorded here and kept across restarts, even after aria2 forgets it."],
-                "search": ["search_off", "Nothing matches “" + tab.search + "”", "Older downloads that aria2 no longer holds are in History."]
+                "historySearch": ["search_off", "Nothing in history matches “" + tab.search + "”", "History keeps finished and failed downloads, by the name they were saved under."],
+                "search": ["search_off", "Nothing matches “" + tab.search + "”", (tab.suggestion ? "Did you mean “" + tab.suggestion + "”? " : "") + "Older downloads that aria2 no longer holds are in History."],
+                "first": ["download", "No downloads yet", "Paste a link anywhere in this panel with Ctrl V, or send one from the browser extension."]
             })
 
         readonly property var lines: copy[kind] || copy["all"]
@@ -696,7 +955,7 @@ Item {
             width: 56
             height: 56
             radius: 28
-            color: emptyState.kind === "all" ? Theme.withAlpha(Theme.primary, 0.14)
+            color: emptyState.kind === "all" || emptyState.kind === "first" ? Theme.withAlpha(Theme.primary, 0.14)
                    : emptyState.kind === "error" ? Theme.withAlpha(Theme.success, 0.14)
                    : Theme.surfaceContainerHigh
 
@@ -704,7 +963,7 @@ Item {
                 anchors.centerIn: parent
                 name: emptyState.lines[0]
                 size: 28
-                color: emptyState.kind === "all" ? Theme.primary
+                color: emptyState.kind === "all" || emptyState.kind === "first" ? Theme.primary
                        : emptyState.kind === "error" ? Theme.success
                        : Theme.surfaceVariantText
             }
@@ -735,35 +994,49 @@ Item {
             spacing: Theme.spacingS
             topPadding: Theme.spacingXS
 
-            DankButton {
-                visible: emptyState.kind === "all"
+            PillButton {
+                visible: emptyState.kind === "all" || emptyState.kind === "first"
                 text: "Add download"
-                iconName: "add"
-                buttonHeight: 36
-                backgroundColor: Theme.primary
-                textColor: Theme.onPrimary
+                icon: "add"
+                size: 34
+                kind: "filled"
                 onClicked: tab.adding = true
             }
 
-            DankButton {
-                visible: emptyState.kind === "search"
+            PillButton {
+                visible: emptyState.kind === "first"
+                text: "Paste from clipboard"
+                icon: "content_paste"
+                size: 34
+                kind: "outlined"
+                onClicked: tab.pasteFromClipboard()
+            }
+
+            PillButton {
+                visible: emptyState.kind === "search" || emptyState.kind === "historySearch"
                 text: "Clear search"
-                buttonHeight: 36
-                backgroundColor: Theme.surfaceContainerHigh
-                textColor: Theme.surfaceText
+                size: 34
+                kind: "outlined"
                 onClicked: searchField.text = ""
             }
 
-            DankButton {
-                visible: emptyState.kind !== "all" && emptyState.kind !== "search" && emptyState.kind !== "history"
+            //: The file finished yesterday is not under All any more; the
+            //: same words may find it in History.
+            PillButton {
+                visible: emptyState.kind === "search"
+                text: "Search History"
+                icon: "history"
+                size: 34
+                kind: "outlined"
+                onClicked: tab.setFilter("history")
+            }
+
+            PillButton {
+                visible: ["all", "first", "search", "history", "historySearch"].indexOf(emptyState.kind) === -1
                 text: "Show all downloads"
-                buttonHeight: 36
-                backgroundColor: Theme.surfaceContainerHigh
-                textColor: Theme.surfaceText
-                onClicked: {
-                    chips.currentIndex = 0
-                    tab.setFilter("all")
-                }
+                size: 34
+                kind: "outlined"
+                onClicked: tab.setFilter("all")
             }
         }
     }

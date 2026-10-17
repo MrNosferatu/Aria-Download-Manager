@@ -8,9 +8,10 @@ import qs.Widgets
 Item {
     id: row
 
-    //: {icon, text, detail, enabled, danger, muted, toggle, action} — or
-    //: {separator: true}. `toggle` (a bool) draws a switch in that state;
-    //: `muted` greys a row out until it is hovered.
+    //: {icon, text, subtitle, detail, enabled, danger, muted, toggle, action}
+    //: — or {separator: true}. `toggle` (a bool) draws a switch in that state;
+    //: `muted` greys a row out until it is hovered; `subtitle` is a second,
+    //: smaller line under the text (give the row the height for it).
     required property var entry
 
     property int rowHeight: 34
@@ -26,10 +27,12 @@ Item {
     Rectangle {
         anchors.left: parent.left
         anchors.right: parent.right
+        anchors.leftMargin: 6
+        anchors.rightMargin: 6
         anchors.verticalCenter: parent.verticalCenter
         height: 1
         visible: row.isSeparator
-        color: Theme.outlineHeavy
+        color: Theme.outlineVariant
     }
 
     Rectangle {
@@ -45,39 +48,53 @@ Item {
 
         anchors.fill: parent
         visible: !row.isSeparator
-        radius: Theme.cornerRadius
+        radius: 10
         opacity: row.usable ? 1 : 0.4
+        //: `highlight` raises a row onto the surface tone (the clipboard row
+        //: when it leads the menu).
         color: {
-            if (!area.containsMouse || !row.usable)
-                return "transparent"
-            if (row.entry.danger)
-                return Theme.errorHover
-            return BlurService.hoverColor(Theme.widgetBaseHoverColor)
+            if (area.containsMouse && row.usable)
+                return row.entry.danger ? Theme.withAlpha(Theme.error, 0.12) : Theme.withAlpha(Theme.surfaceText, 0.08)
+            return row.entry.highlight ? Theme.surfaceContainerHigh : "transparent"
         }
 
         DankIcon {
             id: rowIcon
 
             anchors.left: parent.left
-            anchors.leftMargin: Theme.spacingS
+            anchors.leftMargin: 10
             anchors.verticalCenter: parent.verticalCenter
             name: row.entry.icon || ""
-            size: 16
-            color: surface.tint
-            opacity: 0.8
+            size: row.entry.highlight ? 20 : 18
+            color: row.entry.highlight ? Theme.primary : surface.tint
         }
 
-        StyledText {
+        Column {
             anchors.left: rowIcon.right
-            anchors.leftMargin: Theme.spacingS
+            anchors.leftMargin: 10
             anchors.right: rowDetail.left
-            anchors.rightMargin: row.entry.toggle !== undefined ? 44 : Theme.spacingXS
+            anchors.rightMargin: row.entry.toggle !== undefined ? 48 : 4
             anchors.verticalCenter: parent.verticalCenter
-            text: row.entry.text || ""
-            font.pixelSize: Theme.fontSizeSmall
-            color: surface.tint
-            elide: Text.ElideRight
-            wrapMode: Text.NoWrap
+            spacing: 1
+
+            StyledText {
+                width: parent.width
+                text: row.entry.text || ""
+                font.pixelSize: Theme.fontSizeSmall + 1
+                color: surface.tint
+                elide: Text.ElideRight
+                wrapMode: Text.NoWrap
+            }
+
+            StyledText {
+                width: parent.width
+                visible: !!row.entry.subtitle
+                text: row.entry.subtitle || ""
+                font.pixelSize: Theme.fontSizeSmall - 1
+                color: Theme.surfaceVariantText
+                elide: Text.ElideMiddle
+                wrapMode: Text.NoWrap
+            }
         }
 
         StyledText {
@@ -99,12 +116,12 @@ Item {
             readonly property bool on: row.entry.toggle === true
 
             anchors.right: parent.right
-            anchors.rightMargin: Theme.spacingS
+            anchors.rightMargin: 10
             anchors.verticalCenter: parent.verticalCenter
             visible: row.entry.toggle !== undefined
-            width: 34
-            height: 20
-            radius: 10
+            width: 38
+            height: 22
+            radius: 11
             color: on ? Theme.primary : "transparent"
             border.width: on ? 0 : 2
             border.color: Theme.outline
@@ -112,7 +129,7 @@ Item {
             Rectangle {
                 x: rowSwitch.on ? parent.width - width - 3 : 4
                 anchors.verticalCenter: parent.verticalCenter
-                width: rowSwitch.on ? 14 : 10
+                width: rowSwitch.on ? 16 : 12
                 height: width
                 radius: width / 2
                 color: rowSwitch.on ? Theme.onPrimary : Theme.outline

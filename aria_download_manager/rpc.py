@@ -32,6 +32,7 @@ STATUS_KEYS = [
     "numPieces",
     "pieceLength",
     "verifiedLength",
+    "verifyIntegrityPending",
     "infoHash",
 ]
 

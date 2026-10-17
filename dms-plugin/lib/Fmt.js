@@ -114,3 +114,135 @@ function basename(path) {
     var parts = String(path || "").split("/")
     return parts[parts.length - 1] || path || ""
 }
+
+// The glyph for a download's status tile: what kind of file it is, so a list
+// can be scanned by shape as well as by name. Shared by live rows and history.
+function kindIcon(name, isTorrent, isMetadata) {
+    if (isMetadata || (isTorrent && !name))
+        return "hub"
+    var lower = String(name || "").toLowerCase()
+    var ext = (lower.match(/\.([a-z0-9]+)$/) || [])[1] || ""
+    var kinds = [
+        ["movie", ["mkv", "mp4", "webm", "avi", "mov", "m4v", "wmv", "flv", "ts"]],
+        ["music_note", ["mp3", "flac", "ogg", "opus", "wav", "m4a", "aac"]],
+        ["album", ["iso", "img", "qcow2", "vdi", "vmdk"]],
+        ["folder_zip", ["zip", "7z", "rar", "gz", "xz", "zst", "bz2", "tar", "tgz"]],
+        ["image", ["png", "jpg", "jpeg", "gif", "webp", "svg", "avif"]],
+        ["description", ["pdf", "epub", "doc", "docx", "odt", "txt", "md"]],
+        ["inventory_2", ["deb", "rpm", "appimage", "exe", "msi", "pkg", "flatpak"]]
+    ]
+    for (var i = 0; i < kinds.length; i++) {
+        if (kinds[i][1].indexOf(ext) >= 0)
+            return kinds[i][0]
+    }
+    return isTorrent ? "hub" : "draft"
+}
+
+// Which day group a timestamp falls in, for History's section headers.
+function dayGroup(ts) {
+    if (!ts)
+        return "Earlier"
+    var midnight = new Date()
+    midnight.setHours(0, 0, 0, 0)
+    var start = midnight.getTime() / 1000
+    if (ts >= start)
+        return "Today"
+    if (ts >= start - 86400)
+        return "Yesterday"
+    if (ts >= start - 6 * 86400)
+        return "This week"
+    return "Earlier"
+}
+
+// A time short enough for a meta line: "13:52" today, "Mon 13:52" this week,
+// "2026-09-14" before that.
+function shortWhen(ts) {
+    if (!ts)
+        return ""
+    var date = new Date(ts * 1000)
+    var group = dayGroup(ts)
+    if (group === "Today")
+        return date.toLocaleTimeString(Qt.locale(), "HH:mm")
+    if (group === "Yesterday")
+        return "yesterday " + date.toLocaleTimeString(Qt.locale(), "HH:mm")
+    if (group === "This week")
+        return date.toLocaleString(Qt.locale(), "ddd HH:mm")
+    return date.toLocaleDateString(Qt.locale(), "yyyy-MM-dd")
+}
+
+// "~/Downloads" rather than "/home/someone/Downloads".
+function homePath(path, home) {
+    var text = String(path || "")
+    if (home && text.indexOf(home) === 0)
+        return "~" + text.slice(home.length)
+    return text
+}
+
+// What kind of file a name is, in a word: "Disk image", "Video".
+function kindLabel(name, contentType) {
+    var words = {
+        "movie": "Video",
+        "music_note": "Audio",
+        "album": "Disk image",
+        "folder_zip": "Archive",
+        "image": "Image",
+        "description": "Document",
+        "inventory_2": "Installer"
+    }
+    var icon = kindIcon(name, false, false)
+    if (words[icon])
+        return words[icon]
+    var type = String(contentType || "").split(";")[0].trim()
+    return type || "File"
+}
+
+// A link short enough for a list line: host, then the end of the path.
+function shortLink(url) {
+    var text = String(url || "")
+    if (/^magnet:/i.test(text)) {
+        var name = text.match(/[?&]dn=([^&]+)/)
+        if (name)
+            return "magnet · " + decodeURIComponent(name[1].replace(/\+/g, " "))
+        var hash = text.match(/btih:([a-z0-9]+)/i)
+        return "magnet · " + (hash ? hash[1].slice(0, 8) + "…" : "torrent")
+    }
+    var m = text.match(/^[a-z]+:\/\/([^/?#]+)([^?#]*)/i)
+    if (!m)
+        return text
+    var parts = m[2].split("/").filter(function (p) { return p.length > 0 })
+    if (!parts.length)
+        return m[1]
+    var tail = parts[parts.length - 1]
+    try {
+        tail = decodeURIComponent(tail)
+    } catch (e) {}
+    return m[1] + (parts.length > 1 ? "/…/" : "/") + tail
+}
+
+// "12 min ago", "3 h ago", "yesterday", then the date.
+function ago(ts) {
+    if (!ts)
+        return ""
+    var s = Math.max(0, Date.now() / 1000 - ts)
+    if (s < 60)
+        return "just now"
+    if (s < 3600)
+        return Math.floor(s / 60) + " min ago"
+    if (s < 86400)
+        return Math.floor(s / 3600) + " h ago"
+    if (s < 2 * 86400)
+        return "yesterday"
+    return shortWhen(ts)
+}
+
+// What a search for `text` also looks for: the word as typed, and its stem
+// before an English plural ("retry" finds "retries", "proxy" "proxies").
+function searchForms(text) {
+    var needle = String(text || "").trim().toLowerCase()
+    if (!needle)
+        return []
+    var out = [needle]
+    if (needle.length > 3 && /[^aeiou]y$/.test(needle))
+        out.push(needle.slice(0, -1) + "i")
+    return out
+}

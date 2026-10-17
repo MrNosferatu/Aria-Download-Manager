@@ -10,24 +10,28 @@ Rectangle {
     property alias text: edit.text
     property string placeholderText: ""
     property int minimumHeight: 64
+    //: Links read best in a fixed-width face.
+    property bool mono: false
+    //: The links box is sunk below the panel (darker); other boxes are filled.
+    property bool sunken: false
     readonly property bool hasFocus: edit.activeFocus
 
     signal accepted
 
-    implicitHeight: Math.max(minimumHeight, edit.contentHeight + Theme.spacingM * 2)
-    radius: Theme.cornerRadius
-    color: Theme.surfaceContainerHigh
-    border.width: hasFocus ? 2 : 1
-    border.color: hasFocus ? Theme.primary : Theme.withAlpha(Theme.outline, 0.25)
+    implicitHeight: Math.max(minimumHeight, edit.contentHeight + 24)
+    radius: root.sunken ? 12 : 10
+    color: root.sunken ? Theme.surfaceContainerLowest : Theme.surfaceContainerHigh
+    border.width: hasFocus ? 1 : (root.sunken ? 1 : 0)
+    border.color: hasFocus ? Theme.primary : Theme.outlineVariant
 
     TextEdit {
         id: edit
 
         anchors.fill: parent
-        anchors.margins: Theme.spacingM
+        anchors.margins: 12
         color: Theme.surfaceText
-        font.pixelSize: Theme.fontSizeMedium
-        font.family: Theme.fontFamily
+        font.pixelSize: root.mono ? Theme.fontSizeSmall : Theme.fontSizeSmall + 1
+        font.family: root.mono ? "monospace" : Theme.fontFamily
         selectByMouse: true
         selectionColor: Theme.primarySelected
         wrapMode: TextEdit.Wrap
@@ -43,12 +47,12 @@ Rectangle {
     StyledText {
         anchors.left: parent.left
         anchors.top: parent.top
-        anchors.margins: Theme.spacingM
+        anchors.margins: 12
         text: root.placeholderText
-        color: Theme.outlineButton
-        font.pixelSize: Theme.fontSizeMedium
+        color: Theme.outline
+        font.pixelSize: Theme.fontSizeSmall
         visible: edit.text.length === 0
         wrapMode: Text.WordWrap
-        width: parent.width - Theme.spacingM * 2
+        width: parent.width - 24
     }
 }

@@ -6,33 +6,79 @@ import qs.Widgets
 import "../lib/Fmt.js" as Fmt
 import "../lib/FileTree.js" as FileTree
 
-// A download's details, in the order people look for things: what is wrong
-// (if anything), its files, its options, and only then the technical record.
-// Every change saves as it is made; there is no Apply. While reviewing (the
-// Add panel's held torrent) nothing is saved until Start.
+// A download's details as short tabs instead of one long scroll: Overview
+// (the numbers, the piece map, the paths), Files, Peers or Connections, and
+// Options. What is wrong, if anything, sits above them all. Every change saves
+// as it is made; there is no Apply. While reviewing (the Add panel's held
+// torrent) nothing is saved until Start.
 Column {
     id: detail
 
     property var service: null
+    //: The tone of tiles, path rows and fields: one step darker than what the
+    //: panel sits on (the raised row in the popout, the window's pane).
+    property color tileColor: Theme.surfaceContainer
     property string gid: ""
     //: Shown by the Add panel for a torrent held for its file choice: its
     //: choices are kept here and sent together by the Start button.
     property bool reviewing: false
     //: Sent with the options on start while reviewing (the Add panel's folder).
     property var extraOptions: ({})
+    //: A torrent the Add panel added held, opened from its row: the file
+    //: choice comes first and nothing is transferred until Start.
+    property bool held: false
 
     signal started
+    //: Reviewing: the Add panel's Cancel, at the foot of the file list.
+    signal cancelRequested
 
     property var dl: ({})
     property var detailData: null
     property bool optionsInitialized: false
+
+    // ---- tabs --------------------------------------------------------------
+    property string section: ""
+
+    readonly property bool multiFile: structureFiles.length > 1
+    readonly property var tabs: {
+        const out = [{
+                         "key": "overview",
+                         "label": "Overview"
+                     }]
+        if (multiFile)
+            out.push({
+                         "key": "files",
+                         "label": "Files · " + structureFiles.length
+                     })
+        if (isTorrent)
+            out.push({
+                         "key": "peers",
+                         "label": "Peers · " + peers.length
+                     })
+        else if (hostGroups.length || uris.length > 1)
+            out.push({
+                         "key": "connections",
+                         "label": "Connections · " + servers.length
+                     })
+        out.push({
+                     "key": "options",
+                     "label": "Options"
+                 })
+        return out
+    }
+    //: A held torrent opens on its files: choosing them is what it waits for.
+    readonly property string current: {
+        if (tabs.some(t => t.key === section))
+            return section
+        return (held && multiFile) ? "files" : "overview"
+    }
 
     // ---- files -----------------------------------------------------------
     //: file index -> 0 skip, 1 normal, 2 high, 3 maximum, as chosen here.
     property var levels: ({})
     property double editedAt: 0
     //: The file list's shape, replaced only when it changes, so the 2 s
-    //: refresh does not rebuild the rows (and shut an open priority menu).
+    //: refresh does not rebuild the rows.
     property var structureFiles: []
     //: file index -> bytes done, refreshed every tick and read by the rows.
     property var progress: ({})
@@ -40,10 +86,10 @@ Column {
     property string filter: ""
     property string sortKey: "name"
     property bool sortDesc: false
-    readonly property var levelLabels: ["Normal", "High", "Maximum"]
+    readonly property var levelLabels: ["Normal", "High", "Max"]
 
     readonly property var tree: FileTree.treeBuild(structureFiles, statusInfo.dir || "")
-    readonly property var rows: structureFiles.length > 1 ? FileTree.treeRows(tree, levels, collapsed, filter, sortKey, sortDesc) : []
+    readonly property var rows: multiFile ? FileTree.treeRows(tree, levels, collapsed, filter, sortKey, sortDesc) : []
     readonly property var summary: FileTree.treeSummary(structureFiles, levels)
 
     // ---- options ---------------------------------------------------------
@@ -51,11 +97,15 @@ Column {
     property bool sequential: false
     property bool firstLast: false
     property bool showAdvanced: false
-    property bool showDetails: false
     property string savedText: ""
     property var pendingOptions: ({})
+    //: The options as they were when the panel opened, and which have been
+    //: changed since: what Undo puts back.
+    property var initialOptions: ({})
+    property var changedOptions: ({})
+    readonly property int changeCount: Object.keys(changedOptions).length
 
-    readonly property bool isTorrent: !!statusInfo.bittorrent
+    readonly property bool isTorrent: !!statusInfo.bittorrent || !!dl.isTorrent
     //: A torrent run by qBittorrent rather than aria2c.
     readonly property bool isQb: !!(detailData && detailData.engine === "qbittorrent")
     //: The global setting covers every torrent; the panel then just says so.
@@ -65,7 +115,10 @@ Column {
     readonly property var files: (detailData && detailData.files) || []
     readonly property var pieces: (detailData && detailData.pieceMap) || []
     readonly property var uris: (detailData && detailData.uris) || []
-    readonly property var peers: (detailData && detailData.peers) || []
+    readonly property var peers: {
+        const list = ((detailData && detailData.peers) || []).slice()
+        return list.sort((a, b) => (Number(b.downloadSpeed) || 0) - (Number(a.downloadSpeed) || 0))
+    }
     readonly property var servers: {
         const out = []
         const groups = (detailData && detailData.servers) || []
@@ -77,6 +130,30 @@ Column {
         return out
     }
 
+    //: The live connections grouped by host: {host, speed, count, slow}. A
+    //: mirror thirty times slower than the best one is marked slow.
+    readonly property var hostGroups: {
+        const byHost = ({})
+        for (const s of servers) {
+            const uri = s.currentUri || s.uri || ""
+            const m = uri.match(/^[a-z]+:\/\/([^/?#:]+)/i)
+            const host = m ? m[1] : uri
+            if (!byHost[host])
+                byHost[host] = {
+                    "host": host,
+                    "speed": 0,
+                    "count": 0
+                }
+            byHost[host].speed += Number(s.downloadSpeed) || 0
+            byHost[host].count++
+        }
+        const list = Object.keys(byHost).map(k => byHost[k]).sort((a, b) => b.speed - a.speed)
+        const best = list.length ? list[0].speed : 0
+        return list.map(g => Object.assign({}, g, {
+                                               "slow": list.length > 1 && best > 0 && g.speed * 30 < best
+                                           }))
+    }
+
     //: Reused for another download (the Add panel's next torrent): start over.
     onGidChanged: {
         optionsInitialized = false
@@ -86,6 +163,7 @@ Column {
         editedAt = 0
         collapsed = ({})
         filter = ""
+        changedOptions = ({})
         refresh()
     }
 
@@ -120,13 +198,20 @@ Column {
                         }
                         if (!detail.optionsInitialized) {
                             const opts = payload.options || ({})
-                            splitField.text = opts["split"] || ""
-                            connField.text = opts["max-connection-per-server"] || ""
+                            splitField.value = opts["split"] || ""
+                            connField.value = opts["max-connection-per-server"] || ""
                             downField.raw = opts["max-download-limit"] || ""
                             upField.raw = opts["max-upload-limit"] || ""
                             detail.downloadOnly = opts["download-only"] === "true"
                             detail.sequential = opts["sequential-download"] === "true"
                             detail.firstLast = opts["first-last-piece-first"] === "true"
+                            if (!detail.changeCount) {
+                                const keep = ({})
+                                for (const key of ["split", "max-connection-per-server", "max-download-limit", "max-upload-limit",
+                                                   "download-only", "sequential-download", "first-last-piece-first"])
+                                    keep[key] = opts[key] !== undefined ? String(opts[key]) : ""
+                                detail.initialOptions = keep
+                            }
                             detail.optionsInitialized = true
                         }
                     })
@@ -163,6 +248,21 @@ Column {
         levelTimer.restart()
     }
 
+    //: One click steps a file through the levels people actually use:
+    //: Normal → High → Skip → Normal. A file at Max (set elsewhere) goes to
+    //: Skip next, like High.
+    function stepLevel(r) {
+        if (r.state === 0) {
+            changeLevels(FileTree.treeSetChosen(levels, r.indices, true))
+            return
+        }
+        const chosen = r.indices.filter(i => FileTree.treeLevelOf(levels, i) > 0)
+        if (r.level === 1 || r.level === -1)
+            changeLevels(FileTree.treeSetLevel(levels, chosen, 2))
+        else
+            changeLevels(FileTree.treeSetChosen(levels, r.indices, false))
+    }
+
     //: Options save shortly after the last change, so typing a limit is one
     //: request; a switch goes out on the same short timer.
     function queueOption(key, value) {
@@ -171,8 +271,43 @@ Column {
         const next = Object.assign({}, pendingOptions)
         next[key] = value
         pendingOptions = next
+        const changed = Object.assign({}, changedOptions)
+        const before = initialOptions[key] || ""
+        const same = String(value) === before || (before === "" && (value === "0" || value === "false"))
+        if (same)
+            delete changed[key]
+        else
+            changed[key] = true
+        changedOptions = changed
         savedText = "Saving…"
         optionTimer.restart()
+    }
+
+    //: Put back every option changed since the panel opened.
+    function undoOptions() {
+        const options = ({})
+        for (const key in changedOptions) {
+            const before = initialOptions[key] || ""
+            const isSwitch = key === "download-only" || key === "sequential-download" || key === "first-last-piece-first"
+            options[key] = before !== "" ? before : (isSwitch ? "false" : "0")
+        }
+        if (!Object.keys(options).length)
+            return
+        optionTimer.stop()
+        pendingOptions = ({})
+        service.request("POST", "/api/download/" + gid + "/options", {
+                            "options": options
+                        }, (data, error) => {
+                            if (error) {
+                                detail.service.showFailure("Couldn't undo", error)
+                                return
+                            }
+                            detail.changedOptions = ({})
+                            detail.savedText = "Undone"
+                            // Read the options back into the fields.
+                            detail.optionsInitialized = false
+                            detail.refresh()
+                        })
     }
 
     function optionsToSend() {
@@ -181,10 +316,10 @@ Column {
             options["sequential-download"] = detail.sequential ? "true" : "false"
             options["first-last-piece-first"] = detail.firstLast ? "true" : "false"
         }
-        if (splitField.text.trim() && !detail.isQb)
-            options["split"] = splitField.text.trim()
-        if (connField.text.trim() && !detail.isQb)
-            options["max-connection-per-server"] = connField.text.trim()
+        if (splitField.value && !detail.isQb && !detail.isTorrent)
+            options["split"] = splitField.value
+        if (connField.value && !detail.isQb)
+            options["max-connection-per-server"] = connField.value
         if (downField.value)
             options["max-download-limit"] = downField.value
         const noUpload = detail.isTorrent && (detail.downloadOnly || detail.downloadOnlyEverywhere)
@@ -199,13 +334,18 @@ Column {
     //: Review: the files, then the options, then go.
     function start() {
         if (summary.chosen === 0) {
-            ToastService.showError("Aria", "Pick at least one file to download")
+            ToastService.showError("Pick at least one file", "A torrent with nothing chosen has nothing to download.")
             return
         }
         const gid = detail.gid
-        const resume = () => service.post("/api/download/" + gid + "/resume", null, "Started", () => detail.started())
+        const resume = () => service.post("/api/download/" + gid + "/resume", null, "Started", () => {
+                                              detail.service.releaseHold(gid)
+                                              if (detail.dl.following)
+                                                  detail.service.releaseHold(detail.dl.following)
+                                              detail.started()
+                                          })
         const sendOptions = () => {
-            const options = detail.optionsToSend()
+            const options = detail.reviewing ? detail.optionsToSend() : ({})
             if (Object.keys(options).length === 0)
                 resume()
             else
@@ -213,12 +353,50 @@ Column {
                                  "options": options
                              }, "", resume)
         }
-        if (structureFiles.length > 1)
+        if (multiFile)
             service.post("/api/download/" + gid + "/files", {
                              "levels": levels
                          }, "", sendOptions)
         else
             sendOptions()
+    }
+
+    //: "Start 2 files · 2.8 GB", or plain Start for a single file.
+    //: Reviewing (board 5) it counts files; for a held torrent opened from its
+    //: row (board 17) it adds the size.
+    readonly property string startLabel: {
+        if (!multiFile)
+            return "Start download"
+        const files = "Start " + summary.chosen + (summary.chosen === 1 ? " file" : " files")
+        return reviewing ? files : files + " · " + Fmt.bytes(summary.selected)
+    }
+
+    //: Count of set bits in aria2's hex bitfield, for a peer's "has".
+    function bitsOf(hex) {
+        let count = 0
+        const text = String(hex || "")
+        for (let i = 0; i < text.length; i++) {
+            let v = parseInt(text[i], 16)
+            while (v) {
+                count += v & 1
+                v >>= 1
+            }
+        }
+        return count
+    }
+
+    function peerHas(p) {
+        if (p.progress !== undefined && p.progress !== null)
+            return Math.round(Number(p.progress) * 100)
+        if (p.seeder === "true")
+            return 100
+        const pieces = Number(statusInfo.numPieces) || 0
+        return pieces ? Math.min(100, Math.round(bitsOf(p.bitfield) / pieces * 100)) : 0
+    }
+
+    function copy(label, value) {
+        Quickshell.execDetached(["dms", "cl", "copy", String(value)])
+        service.notice("Copied " + label.toLowerCase())
     }
 
     spacing: Theme.spacingS
@@ -246,7 +424,7 @@ Column {
                                    }, (data, error) => {
                                        if (error) {
                                            detail.savedText = ""
-                                           ToastService.showError("Aria", error)
+                                           detail.service.showFailure("Couldn't save the file choice", error)
                                        } else {
                                            detail.savedText = "Saved"
                                        }
@@ -268,12 +446,26 @@ Column {
                                    }, (data, error) => {
                                        if (error) {
                                            detail.savedText = ""
-                                           ToastService.showError("Aria", error)
+                                           detail.service.showFailure("Couldn't save", error)
                                        } else {
                                            detail.savedText = "Saved"
                                        }
                                    })
         }
+    }
+
+    //: Small inline pieces, told their state rather than reading the panel's
+    //: (inline components cannot see this file's ids).
+    component SectionLabel: StyledText {
+        font.pixelSize: Theme.fontSizeSmall
+        font.weight: Font.Medium
+        color: Theme.surfaceVariantText
+    }
+
+    component Dot: Rectangle {
+        width: 10
+        height: 10
+        radius: 3
     }
 
     // ---- what is wrong, where it cannot be missed -------------------------
@@ -287,151 +479,410 @@ Column {
         StyledText {
             id: errorText
 
-            anchors.fill: parent
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.top: parent.top
             anchors.margins: Theme.spacingS
             wrapMode: Text.WordWrap
-            text: detail.statusInfo.errorMessage || ""
+            text: {
+                const raw = detail.statusInfo.errorMessage || ""
+                const known = detail.service ? detail.service.explainError(raw) : null
+                return known ? Fmt.label(known.why) + ". " + known.todo + "\n" + raw : raw
+            }
             font.pixelSize: Theme.fontSizeSmall
             color: Theme.error
         }
     }
 
-    // ---- files: a tree, like qBittorrent's --------------------------------
+    // ---- a held torrent says how to go on (board 17) -----------------------
+    Column {
+        width: parent.width
+        visible: detail.held && !detail.reviewing
+        spacing: 6
+
+        Row {
+            spacing: 8
+
+            DankIcon {
+                anchors.verticalCenter: parent.verticalCenter
+                name: "pending_actions"
+                size: 20
+                color: Theme.primary
+            }
+
+            StyledText {
+                anchors.verticalCenter: parent.verticalCenter
+                text: "Pick files, then start"
+                font.pixelSize: Theme.fontSizeMedium
+                font.weight: Font.Bold
+                color: Theme.surfaceText
+            }
+        }
+
+        StyledText {
+            width: parent.width
+            wrapMode: Text.WordWrap
+            text: "This torrent was added held so you can choose what to download. Nothing is being transferred yet."
+            font.pixelSize: Theme.fontSizeSmall
+            color: Theme.surfaceVariantText
+        }
+    }
+
+    // ---- tabs: underlined, over a hairline ---------------------------------
     Item {
         width: parent.width
-        height: 32
-        visible: detail.structureFiles.length > 1
+        height: 34
+        visible: !detail.reviewing && !detail.held
+
+        Rectangle {
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.bottom: parent.bottom
+            height: 1
+            color: Theme.outlineVariant
+        }
 
         Row {
             anchors.left: parent.left
-            anchors.verticalCenter: parent.verticalCenter
-            spacing: Theme.spacingS
+            anchors.top: parent.top
+            anchors.bottom: parent.bottom
+            spacing: 2
 
-            StyledText {
-                anchors.verticalCenter: parent.verticalCenter
-                text: "Files"
-                font.pixelSize: Theme.fontSizeMedium
-                font.weight: Font.Medium
-                color: Theme.surfaceText
-            }
+            Repeater {
+                model: detail.tabs
 
-            StyledText {
-                anchors.verticalCenter: parent.verticalCenter
-                text: detail.summary.chosen + " of " + detail.summary.count + " · " + Fmt.bytes(detail.summary.selected) + " of " + Fmt.bytes(detail.summary.total)
-                font.pixelSize: Theme.fontSizeSmall
-                color: Theme.surfaceVariantText
-            }
+                Item {
+                    id: tabItem
 
-            StyledText {
-                anchors.verticalCenter: parent.verticalCenter
-                visible: !detail.reviewing && detail.savedText !== ""
-                text: "· " + detail.savedText
-                font.pixelSize: Theme.fontSizeSmall
-                color: Theme.surfaceVariantText
-            }
-        }
+                    required property var modelData
 
-        DankButton {
-            anchors.right: parent.right
-            anchors.verticalCenter: parent.verticalCenter
-            //: A torrent held for its file choice says how to go on.
-            visible: !detail.reviewing && detail.isTorrent && detail.statusInfo.status === "paused"
-            text: "Start download"
-            iconName: "play_arrow"
-            buttonHeight: 32
-            backgroundColor: Theme.primary
-            textColor: Theme.onPrimary
-            onClicked: detail.service.post("/api/download/" + detail.gid + "/resume", null, "Started")
-        }
-    }
+                    readonly property bool selected: detail.current === modelData.key
 
-    Row {
-        width: parent.width
-        visible: detail.structureFiles.length > 1
-        spacing: Theme.spacingS
+                    width: tabLabel.implicitWidth + 24
+                    height: parent.height
 
-        DankActionButton {
-            anchors.verticalCenter: parent.verticalCenter
-            iconName: detail.summary.chosen === detail.summary.count ? "check_box" : (detail.summary.chosen > 0 ? "indeterminate_check_box" : "check_box_outline_blank")
-            iconColor: detail.summary.chosen > 0 ? Theme.primary : Theme.surfaceVariantText
-            tooltipText: detail.summary.chosen === detail.summary.count ? "Download none" : "Download all"
-            onClicked: detail.changeLevels(FileTree.treeSetChosen(detail.levels, detail.structureFiles.map(f => String(f.index)), detail.summary.chosen !== detail.summary.count))
-        }
+                    Rectangle {
+                        anchors.fill: parent
+                        anchors.bottomMargin: 2
+                        radius: 8
+                        color: tabArea.containsMouse && !tabItem.selected ? Theme.withAlpha(Theme.surfaceText, 0.06) : "transparent"
+                    }
 
-        DankTextField {
-            anchors.verticalCenter: parent.verticalCenter
-            visible: detail.structureFiles.length >= 12
-            width: Math.min(220, parent.width * 0.4)
-            height: 36
-            leftIconName: "search"
-            placeholderText: "Filter files"
-            onTextChanged: detail.filter = text
-        }
+                    StyledText {
+                        id: tabLabel
 
-        Item {
-            width: Math.max(0, parent.width - 40 - (detail.structureFiles.length >= 12 ? Math.min(220, parent.width * 0.4) + Theme.spacingS : 0) - 170 - Theme.spacingS * 2)
-            height: 1
-        }
+                        anchors.centerIn: parent
+                        anchors.verticalCenterOffset: -1
+                        text: tabItem.modelData.label
+                        font.pixelSize: Theme.fontSizeSmall + 1
+                        font.weight: tabItem.selected ? Font.DemiBold : Font.Normal
+                        color: tabItem.selected ? Theme.primary : Theme.surfaceVariantText
+                    }
 
-        DankDropdown {
-            anchors.verticalCenter: parent.verticalCenter
-            width: 170
-            height: 36
-            compactMode: true
-            currentValue: "Priority for all…"
-            options: ["Priority for all…"].concat(detail.levelLabels)
-            onValueChanged: label => {
-                const level = detail.levelLabels.indexOf(label) + 1
-                if (level > 0) {
-                    const chosen = detail.structureFiles.map(f => String(f.index)).filter(i => FileTree.treeLevelOf(detail.levels, i) > 0)
-                    detail.changeLevels(FileTree.treeSetLevel(detail.levels, chosen, level))
+                    Rectangle {
+                        anchors.left: parent.left
+                        anchors.right: parent.right
+                        anchors.bottom: parent.bottom
+                        height: 2
+                        radius: 1
+                        visible: tabItem.selected
+                        color: Theme.primary
+                    }
+
+                    MouseArea {
+                        id: tabArea
+
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: detail.section = tabItem.modelData.key
+                    }
                 }
-                currentValue = "Priority for all…"
             }
         }
     }
 
-    //: Column headers; a click sorts by that column, again reverses it.
-    Row {
-        id: header
+    // ======== overview =====================================================
+    //: The numbers that used to be squeezed into one meta line, a labelled
+    //: tile each.
+    Grid {
+        id: statGrid
 
-        readonly property int sizeWidth: 64
-        readonly property int doneWidth: 104
-        readonly property int levelWidth: 124
+        readonly property var stats: {
+            const d = detail.dl
+            const out = [
+                ["Size", d.total ? Fmt.bytes(d.total) : "Unknown"],
+                ["Downloaded", Fmt.bytes(d.completed)],
+                ["Speed", d.status === "active" ? Fmt.speed(d.downloadSpeed) : "—"],
+                ["Time left", d.status === "active" && d.eta !== null && d.eta !== undefined ? Fmt.eta(d.eta) : "—"]
+            ]
+            if (detail.isTorrent) {
+                const ratio = d.total ? (d.uploaded || 0) / d.total : 0
+                out.push(["Uploaded", Fmt.bytes(d.uploaded || 0)])
+                out.push(["Ratio", ratio.toFixed(2)])
+                out.push(["Seeders", String(d.numSeeders || 0)])
+                out.push(["Connections", String(d.connections || 0)])
+            } else {
+                out.push(["Connections", String(d.connections || 0)])
+                out.push(["Parts", detail.initialOptions["split"] || "—"])
+                out.push(["Added", Fmt.shortWhen(d.addedAt) || "—"])
+                out.push(["Finished", Fmt.shortWhen(d.finishedAt) || "—"])
+            }
+            return out
+        }
 
         width: parent.width
-        height: 22
-        visible: detail.structureFiles.length > 1
-        spacing: Theme.spacingS
+        visible: !detail.reviewing && !detail.held && detail.current === "overview"
+        //: Four across in a row; two in the window's narrow detail pane.
+        columns: width < 460 ? 2 : 4
+        columnSpacing: 8
+        rowSpacing: 8
 
         Repeater {
-            model: [["name", "Name"], ["size", "Size"], ["progress", "Done"], ["priority", "Priority"]]
+            model: statGrid.stats
 
-            StyledText {
-                id: column
+            Rectangle {
+                id: statTile
 
                 required property var modelData
-                required property int index
 
-                width: index === 0 ? header.width - header.sizeWidth - header.doneWidth - header.levelWidth - Theme.spacingS * 3
-                                   : [0, header.sizeWidth, header.doneWidth, header.levelWidth][index]
-                horizontalAlignment: index === 1 ? Text.AlignRight : Text.AlignLeft
-                text: column.modelData[1] + (detail.sortKey === column.modelData[0] ? (detail.sortDesc ? " ↓" : " ↑") : "")
-                font.pixelSize: Theme.fontSizeSmall
-                font.weight: Font.Medium
-                color: detail.sortKey === column.modelData[0] ? Theme.primary : Theme.surfaceVariantText
+                width: (statGrid.width - 8 * (statGrid.columns - 1)) / statGrid.columns
+                height: 52
+                radius: 10
+                color: detail.tileColor
 
-                MouseArea {
-                    anchors.fill: parent
-                    cursorShape: Qt.PointingHandCursor
-                    onClicked: detail.sortBy(column.modelData[0])
+                Column {
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.leftMargin: 12
+                    anchors.rightMargin: 8
+                    anchors.verticalCenter: parent.verticalCenter
+                    spacing: 2
+
+                    StyledText {
+                        text: statTile.modelData[0]
+                        font.pixelSize: Theme.fontSizeSmall - 1
+                        color: Theme.surfaceVariantText
+                    }
+
+                    StyledText {
+                        width: parent.width
+                        text: statTile.modelData[1]
+                        font.pixelSize: Theme.fontSizeMedium + 1
+                        font.weight: Font.DemiBold
+                        color: Theme.surfaceText
+                        wrapMode: Text.NoWrap
+                        elide: Text.ElideRight
+                    }
                 }
             }
         }
+    }
+
+    //: The piece map as a grid of small squares, in three tones that differ
+    //: in lightness as well as hue, with a legend.
+    Column {
+        id: pieceBlock
+
+        readonly property color haveColor: Theme.primary
+        readonly property color partColor: Theme.outline
+        readonly property color missingColor: Theme.surfaceContainerHighest
+        readonly property int cell: 10
+        readonly property int gap: 2
+        readonly property int columns: Math.max(1, Math.floor((width + gap) / (cell + gap)))
+        readonly property int rows: 4
+        //: The manager's 256 buckets, resampled to the cells the grid has.
+        readonly property var cells: {
+            const src = detail.pieces
+            const n = columns * rows
+            if (!src.length)
+                return []
+            const out = []
+            for (let i = 0; i < n; i++)
+                out.push(src[Math.min(src.length - 1, Math.floor(i * src.length / n))])
+            return out
+        }
+
+        width: parent.width
+        visible: !detail.reviewing && !detail.held && detail.current === "overview" && detail.pieces.length > 0
+        spacing: 6
+
+        Item {
+            width: parent.width
+            height: 16
+
+            SectionLabel {
+                anchors.left: parent.left
+                text: "Pieces · " + (detail.statusInfo.numPieces || 0) + " × " + Fmt.bytes(detail.statusInfo.pieceLength || 0)
+            }
+
+            SectionLabel {
+                anchors.right: parent.right
+                text: Math.floor(detail.dl.progress || 0) + "% have"
+            }
+        }
+
+        Grid {
+            columns: pieceBlock.columns
+            spacing: pieceBlock.gap
+
+            Repeater {
+                model: pieceBlock.visible ? pieceBlock.cells : []
+
+                Rectangle {
+                    required property var modelData
+
+                    width: pieceBlock.cell
+                    height: 8
+                    radius: 2
+                    color: modelData >= 100 ? pieceBlock.haveColor : (modelData > 0 ? pieceBlock.partColor : pieceBlock.missingColor)
+                }
+            }
+        }
+
+        Row {
+            spacing: 14
+
+            Repeater {
+                model: [["Have", pieceBlock.haveColor], ["Downloading", pieceBlock.partColor], ["Missing", pieceBlock.missingColor]]
+
+                Row {
+                    id: legendItem
+
+                    required property var modelData
+
+                    spacing: 5
+
+                    Rectangle {
+                        anchors.verticalCenter: parent.verticalCenter
+                        width: 8
+                        height: 8
+                        radius: 2
+                        color: legendItem.modelData[1]
+                    }
+
+                    StyledText {
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: legendItem.modelData[0]
+                        font.pixelSize: Theme.fontSizeSmall - 1
+                        color: Theme.surfaceVariantText
+                    }
+                }
+            }
+        }
+    }
+
+    //: Where it is and where it came from, each with a copy button.
+    Column {
+        width: parent.width
+        visible: !detail.reviewing && !detail.held && detail.current === "overview"
+        spacing: 8
+
+        Repeater {
+            model: [
+                ["Folder", detail.statusInfo.dir || detail.dl.dir || ""],
+                ["Source", detail.dl.firstUri || (detail.files.length === 1 ? (detail.files[0].path || "") : "")]
+            ]
+
+            Rectangle {
+                id: pathRow
+
+                required property var modelData
+
+                width: detail.width
+                visible: String(modelData[1]).length > 0
+                height: visible ? 44 : 0
+                radius: 10
+                color: detail.tileColor
+
+                StyledText {
+                    id: pathLabel
+
+                    anchors.left: parent.left
+                    anchors.leftMargin: 12
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: 54
+                    text: pathRow.modelData[0]
+                    font.pixelSize: Theme.fontSizeSmall
+                    color: Theme.surfaceVariantText
+                }
+
+                StyledText {
+                    anchors.left: pathLabel.right
+                    anchors.leftMargin: 12
+                    anchors.right: copyButton.left
+                    anchors.rightMargin: 8
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: Fmt.homePath(pathRow.modelData[1], Quickshell.env("HOME") || "")
+                    wrapMode: Text.NoWrap
+                    elide: Text.ElideMiddle
+                    font.pixelSize: Theme.fontSizeSmall
+                    font.family: "monospace"
+                    color: Theme.surfaceText
+                }
+
+                DankActionButton {
+                    id: copyButton
+
+                    anchors.right: parent.right
+                    anchors.rightMargin: 6
+                    anchors.verticalCenter: parent.verticalCenter
+                    buttonSize: 30
+                    iconSize: 16
+                    iconName: "content_copy"
+                    iconColor: Theme.surfaceVariantText
+                    tooltipText: "Copy the " + pathRow.modelData[0].toLowerCase()
+                    onClicked: detail.copy(pathRow.modelData[0], pathRow.modelData[1])
+                }
+            }
+        }
+    }
+
+    // ======== files: a tree, like qBittorrent's (boards 5, 17) =============
+    //: Shown on the Files tab, while reviewing in the Add panel, and as the
+    //: whole panel of a held torrent.
+    readonly property bool filesShown: multiFile && (reviewing || held || current === "files")
+    //: The columns at the end of a file row. The bar and the priority chip
+    //: step aside for a held torrent, which only needs its choice.
+    readonly property int fileSizeWidth: 64
+    readonly property int fileBarWidth: reviewing || held ? 0 : 70
+    readonly property int fileChipWidth: held ? 0 : 60
+
+    Item {
+        width: parent.width
+        height: 22
+        visible: detail.filesShown
+
+        StyledText {
+            anchors.left: parent.left
+            anchors.verticalCenter: parent.verticalCenter
+            text: detail.reviewing ? detail.summary.chosen + " of " + detail.summary.count + " files · " + Fmt.bytes(detail.summary.selected) + " of " + Fmt.bytes(detail.summary.total)
+                                   : detail.summary.chosen + " of " + detail.summary.count + " selected · " + Fmt.bytes(detail.summary.selected)
+            font.pixelSize: Theme.fontSizeSmall
+            color: Theme.surfaceVariantText
+        }
+
+        StyledText {
+            anchors.right: parent.right
+            anchors.verticalCenter: parent.verticalCenter
+            visible: !detail.reviewing && !detail.held
+            text: detail.savedText === "Saving…" ? "Saving…" : "Changes apply live"
+            font.pixelSize: Theme.fontSizeSmall
+            color: Theme.surfaceVariantText
+        }
+    }
+
+    SearchPill {
+        width: parent.width
+        fill: detail.reviewing ? Theme.surfaceContainerHigh : detail.tileColor
+        visible: detail.filesShown && (detail.reviewing || detail.structureFiles.length >= 12)
+        size: 36
+        placeholderText: "Filter files"
+        onTextChanged: detail.filter = text
     }
 
     Repeater {
-        model: detail.rows
+        model: detail.filesShown ? detail.rows : []
 
         Item {
             id: fileRow
@@ -440,13 +891,14 @@ Column {
             readonly property var r: modelData
             readonly property real done: detail.doneOf(r.indices)
             readonly property real pct: r.size ? Math.min(100, done / r.size * 100) : 0
+            readonly property bool skipped: r.state === 0
 
             width: detail.width
-            height: 34
+            height: 36
 
             Rectangle {
                 anchors.fill: parent
-                radius: Theme.cornerRadius
+                radius: 8
                 color: rowHover.hovered ? Theme.withAlpha(Theme.surfaceText, 0.05) : "transparent"
             }
 
@@ -454,624 +906,753 @@ Column {
                 id: rowHover
             }
 
+            Item {
+                id: indent
+
+                anchors.left: parent.left
+                width: fileRow.r.depth * 18
+                height: parent.height
+            }
+
+            //: The fold arrow sits before the checkbox, as in qBittorrent.
+            Item {
+                id: fold
+
+                anchors.left: indent.right
+                width: fileRow.r.isDir || detail.rows.some(x => x.isDir) ? 20 : 0
+                height: parent.height
+
+                DankIcon {
+                    anchors.centerIn: parent
+                    visible: fileRow.r.isDir
+                    name: fileRow.r.open ? "expand_more" : "chevron_right"
+                    size: 18
+                    color: Theme.surfaceVariantText
+                }
+
+                MouseArea {
+                    anchors.fill: parent
+                    enabled: fileRow.r.isDir
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: detail.toggleFold(fileRow.r.key, fileRow.r.open)
+                }
+            }
+
+            Item {
+                id: check
+
+                anchors.left: fold.right
+                width: 28
+                height: parent.height
+
+                DankIcon {
+                    anchors.centerIn: parent
+                    name: fileRow.r.state === 2 ? "check_box" : (fileRow.r.state === 1 ? "indeterminate_check_box" : "check_box_outline_blank")
+                    size: 18
+                    color: fileRow.r.state > 0 ? Theme.primary : Theme.outline
+                }
+
+                MouseArea {
+                    anchors.fill: parent
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: detail.changeLevels(FileTree.treeSetChosen(detail.levels, fileRow.r.indices, fileRow.r.state !== 2))
+                }
+            }
+
+            DankIcon {
+                id: kindGlyph
+
+                anchors.left: check.right
+                anchors.leftMargin: 4
+                anchors.verticalCenter: parent.verticalCenter
+                visible: !detail.held
+                name: fileRow.r.isDir ? "folder" : Fmt.kindIcon(fileRow.r.name, false, false)
+                size: 16
+                color: fileRow.skipped ? Theme.outline : Theme.surfaceVariantText
+            }
+
+            StyledText {
+                anchors.left: kindGlyph.visible ? kindGlyph.right : check.right
+                anchors.leftMargin: 8
+                anchors.right: tail.left
+                anchors.rightMargin: 10
+                anchors.verticalCenter: parent.verticalCenter
+                text: fileRow.r.name
+                wrapMode: Text.NoWrap
+                elide: Text.ElideMiddle
+                font.pixelSize: Theme.fontSizeSmall + 1
+                font.weight: fileRow.r.isDir ? Font.DemiBold : Font.Normal
+                color: fileRow.skipped ? Theme.outline : Theme.surfaceText
+
+                MouseArea {
+                    anchors.fill: parent
+                    enabled: fileRow.r.isDir
+                    cursorShape: fileRow.r.isDir ? Qt.PointingHandCursor : Qt.ArrowCursor
+                    onClicked: detail.toggleFold(fileRow.r.key, fileRow.r.open)
+                }
+            }
+
             Row {
-                anchors.fill: parent
-                spacing: Theme.spacingS
+                id: tail
 
-                Row {
-                    id: nameCell
+                anchors.right: parent.right
+                anchors.verticalCenter: parent.verticalCenter
+                spacing: 10
 
-                    width: header.width - header.sizeWidth - header.doneWidth - header.levelWidth - Theme.spacingS * 3
-                    height: parent.height
-                    spacing: 4
+                //: Per-file progress; a finished file turns green. A folder
+                //: says how far it is in words.
+                Item {
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: detail.fileBarWidth
+                    height: 8
+                    visible: width > 0
 
-                    Item {
-                        width: fileRow.r.depth * 16
-                        height: 1
-                    }
-
-                    Item {
-                        width: 20
-                        height: parent.height
-
-                        DankIcon {
-                            anchors.centerIn: parent
-                            visible: fileRow.r.isDir
-                            name: fileRow.r.open ? "expand_more" : "chevron_right"
-                            size: 18
-                            color: Theme.surfaceVariantText
-                        }
-
-                        MouseArea {
-                            anchors.fill: parent
-                            enabled: fileRow.r.isDir
-                            cursorShape: Qt.PointingHandCursor
-                            onClicked: detail.toggleFold(fileRow.r.key, fileRow.r.open)
-                        }
-                    }
-
-                    Item {
-                        width: 24
-                        height: parent.height
-
-                        DankIcon {
-                            anchors.centerIn: parent
-                            name: fileRow.r.state === 2 ? "check_box" : (fileRow.r.state === 1 ? "indeterminate_check_box" : "check_box_outline_blank")
-                            size: 20
-                            color: fileRow.r.state > 0 ? Theme.primary : Theme.surfaceVariantText
-                        }
-
-                        MouseArea {
-                            anchors.fill: parent
-                            cursorShape: Qt.PointingHandCursor
-                            onClicked: detail.changeLevels(FileTree.treeSetChosen(detail.levels, fileRow.r.indices, fileRow.r.state !== 2))
-                        }
-                    }
-
-                    DankIcon {
+                    Rectangle {
                         anchors.verticalCenter: parent.verticalCenter
-                        visible: fileRow.r.isDir
-                        name: "folder"
-                        size: 18
-                        color: Theme.primary
-                    }
+                        width: parent.width
+                        height: 4
+                        radius: 2
+                        visible: !fileRow.r.isDir
+                        color: Theme.surfaceContainerHighest
 
-                    StyledText {
-                        anchors.verticalCenter: parent.verticalCenter
-                        width: Math.max(0, nameCell.width - fileRow.r.depth * 16 - 20 - 24 - (fileRow.r.isDir ? 22 : 0) - 16)
-                        text: fileRow.r.name
-                        elide: Text.ElideMiddle
-                        font.pixelSize: Theme.fontSizeSmall
-                        font.weight: fileRow.r.isDir ? Font.Medium : Font.Normal
-                        color: fileRow.r.state === 0 ? Theme.surfaceVariantText : Theme.surfaceText
-
-                        MouseArea {
-                            anchors.fill: parent
-                            enabled: fileRow.r.isDir
-                            cursorShape: fileRow.r.isDir ? Qt.PointingHandCursor : Qt.ArrowCursor
-                            onClicked: detail.toggleFold(fileRow.r.key, fileRow.r.open)
+                        Rectangle {
+                            width: parent.width * fileRow.pct / 100
+                            height: parent.height
+                            radius: 2
+                            visible: !fileRow.skipped
+                            color: fileRow.pct >= 100 ? Theme.success : Theme.primary
                         }
                     }
                 }
 
                 StyledText {
                     anchors.verticalCenter: parent.verticalCenter
-                    width: header.sizeWidth
+                    width: detail.fileSizeWidth
                     horizontalAlignment: Text.AlignRight
                     text: Fmt.bytes(fileRow.r.size)
                     font.pixelSize: Theme.fontSizeSmall
-                    color: Theme.surfaceVariantText
+                    color: fileRow.skipped ? Theme.outline : Theme.surfaceVariantText
                 }
 
-                Row {
+                //: Priority as a small chip that steps on click; a folder
+                //: shows its progress there instead.
+                Item {
                     anchors.verticalCenter: parent.verticalCenter
-                    width: header.doneWidth
-                    spacing: 6
+                    width: detail.fileChipWidth
+                    height: 22
+                    visible: width > 0
+
+                    StyledText {
+                        anchors.right: parent.right
+                        anchors.verticalCenter: parent.verticalCenter
+                        visible: fileRow.r.isDir && !detail.reviewing
+                        text: Math.round(fileRow.pct) + "%"
+                        font.pixelSize: Theme.fontSizeSmall
+                        color: Theme.surfaceVariantText
+                    }
 
                     Rectangle {
-                        anchors.verticalCenter: parent.verticalCenter
-                        width: header.doneWidth - 46
-                        height: 6
-                        radius: 3
-                        color: Theme.withAlpha(Theme.outline, 0.25)
+                        id: levelChip
 
-                        Rectangle {
-                            width: parent.width * fileRow.pct / 100
-                            height: parent.height
-                            radius: 3
-                            color: fileRow.r.state === 0 ? Theme.outline : Theme.primary
+                        readonly property string word: fileRow.skipped ? "Skip"
+                                                                        : (fileRow.r.level === -1 ? "Mixed" : (detail.levelLabels[fileRow.r.level - 1] || "Normal"))
+                        readonly property bool raised: !fileRow.skipped && fileRow.r.level >= 2
+
+                        anchors.right: parent.right
+                        anchors.verticalCenter: parent.verticalCenter
+                        visible: !fileRow.r.isDir || detail.reviewing
+                        width: levelText.implicitWidth + 16
+                        height: 20
+                        radius: 8
+                        color: raised ? Theme.primaryContainer : (fileRow.skipped ? "transparent" : Theme.surfaceContainerHighest)
+                        border.width: fileRow.skipped ? 1 : 0
+                        border.color: Theme.outlineVariant
+
+                        StyledText {
+                            id: levelText
+
+                            anchors.centerIn: parent
+                            text: levelChip.word
+                            font.pixelSize: Theme.fontSizeSmall - 1
+                            font.weight: Font.DemiBold
+                            color: levelChip.raised ? Theme.onPrimaryContainer : (fileRow.skipped ? Theme.outline : Theme.surfaceVariantText)
                         }
-                    }
 
-                    StyledText {
-                        anchors.verticalCenter: parent.verticalCenter
-                        width: 40
-                        horizontalAlignment: Text.AlignRight
-                        text: (fileRow.pct >= 100 || fileRow.pct <= 0 ? Math.round(fileRow.pct) : fileRow.pct.toFixed(fileRow.pct < 10 ? 1 : 0)) + "%"
-                        font.pixelSize: Theme.fontSizeSmall
-                        color: Theme.surfaceVariantText
-                    }
-                }
-
-                Item {
-                    width: header.levelWidth
-                    height: parent.height
-
-                    DankDropdown {
-                        anchors.verticalCenter: parent.verticalCenter
-                        visible: fileRow.r.state > 0
-                        width: parent.width
-                        height: 30
-                        compactMode: true
-                        currentValue: fileRow.r.level === -1 ? "Mixed" : (detail.levelLabels[fileRow.r.level - 1] || "Normal")
-                        options: detail.levelLabels
-                        onValueChanged: label => {
-                            const level = detail.levelLabels.indexOf(label) + 1
-                            if (level > 0 && level !== fileRow.r.level) {
-                                const chosen = fileRow.r.indices.filter(i => FileTree.treeLevelOf(detail.levels, i) > 0)
-                                detail.changeLevels(FileTree.treeSetLevel(detail.levels, chosen, level))
-                            }
+                        MouseArea {
+                            anchors.fill: parent
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: detail.stepLevel(fileRow.r)
                         }
-                    }
-
-                    StyledText {
-                        anchors.verticalCenter: parent.verticalCenter
-                        visible: fileRow.r.state === 0
-                        text: "Not downloading"
-                        font.pixelSize: Theme.fontSizeSmall
-                        color: Theme.surfaceVariantText
                     }
                 }
             }
         }
     }
 
-    // ---- options, in plain words ------------------------------------------
+    //: A held torrent's choice ends in its two buttons (board 17).
     Row {
-        width: parent.width
-        spacing: Theme.spacingS
-        topPadding: Theme.spacingS
+        anchors.right: parent.right
+        visible: detail.held && !detail.reviewing
+        spacing: 8
+        topPadding: 6
 
-        StyledText {
-            text: "Options"
-            font.pixelSize: Theme.fontSizeMedium
-            font.weight: Font.Medium
-            color: Theme.surfaceText
+        PillButton {
+            size: 36
+            kind: "outlined"
+            text: "Remove"
+            onClicked: {
+                detail.service.releaseHold(detail.gid)
+                detail.service.removeDownload(detail.gid, true, "Removed")
+            }
+        }
+
+        PillButton {
+            size: 36
+            kind: "filled"
+            icon: "play_arrow"
+            text: detail.startLabel
+            onClicked: detail.start()
+        }
+    }
+
+    // ======== peers =========================================================
+    Column {
+        width: parent.width
+        visible: !detail.reviewing && detail.current === "peers"
+        spacing: 2
+
+        Item {
+            width: parent.width
+            height: 22
+
+            SectionLabel {
+                anchors.left: parent.left
+                anchors.verticalCenter: parent.verticalCenter
+                font.weight: Font.Normal
+                text: detail.peers.length + " connected · " + (detail.dl.numSeeders || 0) + " seeders"
+            }
+
+            SectionLabel {
+                anchors.right: parent.right
+                anchors.verticalCenter: parent.verticalCenter
+                font.weight: Font.Normal
+                visible: detail.peers.length > 1
+                text: "Sorted by ↓"
+            }
         }
 
         StyledText {
-            visible: !detail.reviewing && detail.savedText !== "" && detail.structureFiles.length <= 1
-            text: "· " + detail.savedText
+            width: parent.width
+            visible: detail.peers.length === 0
+            wrapMode: Text.WordWrap
+            text: detail.dl.status === "active" ? "No peers connected right now." : "Peers show while the torrent is running."
             font.pixelSize: Theme.fontSizeSmall
             color: Theme.surfaceVariantText
         }
-    }
 
-    Item {
-        width: parent.width
-        height: 42
+        //: A table: peer, client, down, up, how much it has.
+        Row {
+            id: peerHeader
 
-        StyledText {
-            anchors.left: parent.left
-            anchors.verticalCenter: parent.verticalCenter
-            text: "Download speed limit"
-            font.pixelSize: Theme.fontSizeSmall
-            color: Theme.surfaceText
+            readonly property int clientWidth: 120
+            readonly property int speedWidth: 76
+            readonly property int hasWidth: 44
+
+            width: parent.width
+            height: 30
+            visible: detail.peers.length > 0
+            spacing: Theme.spacingS
+
+            Repeater {
+                model: ["PEER", "CLIENT", "↓", "↑", "HAS"]
+
+                StyledText {
+                    required property string modelData
+                    required property int index
+
+                    width: [peerHeader.width - peerHeader.clientWidth - peerHeader.speedWidth * 2 - peerHeader.hasWidth - Theme.spacingS * 4,
+                            peerHeader.clientWidth, peerHeader.speedWidth, peerHeader.speedWidth, peerHeader.hasWidth][index]
+                    anchors.verticalCenter: parent.verticalCenter
+                    horizontalAlignment: index >= 2 ? Text.AlignRight : Text.AlignLeft
+                    text: modelData
+                    font.pixelSize: Theme.fontSizeSmall - 1
+                    font.weight: Font.DemiBold
+                    font.letterSpacing: 0.5
+                    color: Theme.outline
+                }
+            }
         }
 
-        UnitField {
-            id: downField
+        Repeater {
+            model: detail.current === "peers" ? detail.peers.slice(0, 40) : []
 
-            anchors.right: parent.right
-            anchors.verticalCenter: parent.verticalCenter
-            width: 220
-            kind: "speed"
-            onEdited: value => detail.queueOption("max-download-limit", value || "0")
+            Item {
+                id: peerRow
+
+                required property var modelData
+
+                width: detail.width
+                height: 37
+
+                //: A hairline between rows, as a real table has.
+                Rectangle {
+                    width: parent.width
+                    height: 1
+                    color: Theme.outlineVariant
+                }
+
+                Row {
+                    anchors.fill: parent
+                    spacing: Theme.spacingS
+
+
+                    StyledText {
+                        anchors.verticalCenter: parent.verticalCenter
+                        width: peerHeader.width - peerHeader.clientWidth - peerHeader.speedWidth * 2 - peerHeader.hasWidth - Theme.spacingS * 4
+                        text: peerRow.modelData.ip + (peerRow.modelData.port ? ":" + peerRow.modelData.port : "")
+                        font.pixelSize: Theme.fontSizeSmall
+                        font.family: "monospace"
+                        color: Theme.surfaceText
+                        wrapMode: Text.NoWrap
+                        elide: Text.ElideMiddle
+                    }
+
+                    StyledText {
+                        anchors.verticalCenter: parent.verticalCenter
+                        width: peerHeader.clientWidth
+                        text: peerRow.modelData.client || "—"
+                        font.pixelSize: Theme.fontSizeSmall
+                        color: Theme.surfaceVariantText
+                        wrapMode: Text.NoWrap
+                        elide: Text.ElideRight
+                    }
+
+                    StyledText {
+                        anchors.verticalCenter: parent.verticalCenter
+                        width: peerHeader.speedWidth
+                        horizontalAlignment: Text.AlignRight
+                        text: Fmt.speed(peerRow.modelData.downloadSpeed)
+                        font.pixelSize: Theme.fontSizeSmall
+                        color: Theme.surfaceText
+                    }
+
+                    StyledText {
+                        anchors.verticalCenter: parent.verticalCenter
+                        width: peerHeader.speedWidth
+                        horizontalAlignment: Text.AlignRight
+                        text: Fmt.speed(peerRow.modelData.uploadSpeed)
+                        font.pixelSize: Theme.fontSizeSmall
+                        color: Theme.surfaceVariantText
+                    }
+
+                    StyledText {
+                        anchors.verticalCenter: parent.verticalCenter
+                        width: peerHeader.hasWidth
+                        horizontalAlignment: Text.AlignRight
+                        text: detail.peerHas(peerRow.modelData) + "%"
+                        font.pixelSize: Theme.fontSizeSmall
+                        color: Theme.surfaceVariantText
+                    }
+                }
+            }
+        }
+
+        //: qBittorrent's trackers, which aria2 does not report.
+        SectionLabel {
+            visible: detail.isQb && detail.uris.length > 0
+            topPadding: Theme.spacingS
+            text: "Trackers · " + detail.uris.length
+        }
+
+        Repeater {
+            model: detail.isQb && detail.current === "peers" ? detail.uris.slice(0, 12) : []
+
+            StyledText {
+                required property var modelData
+
+                width: detail.width
+                text: modelData.uri + (modelData.status ? " · " + modelData.status : "")
+                font.pixelSize: Theme.fontSizeSmall
+                color: Theme.surfaceVariantText
+                wrapMode: Text.NoWrap
+                elide: Text.ElideMiddle
+            }
         }
     }
 
-    Item {
+    // ======== connections (HTTP / FTP) ======================================
+    //: Grouped by host, so it shows which mirror is pulling its weight.
+    Column {
         width: parent.width
-        height: 42
-        //: With sharing stopped, the upload limit is the manager's floor, not a choice.
-        visible: detail.isTorrent && !(detail.downloadOnly || detail.downloadOnlyEverywhere)
+        visible: !detail.reviewing && detail.current === "connections"
+        spacing: Theme.spacingXS
 
-        StyledText {
-            anchors.left: parent.left
-            anchors.verticalCenter: parent.verticalCenter
-            text: "Upload speed limit"
-            font.pixelSize: Theme.fontSizeSmall
-            color: Theme.surfaceText
+        SectionLabel {
+            font.weight: Font.Normal
+            text: detail.hostGroups.length + (detail.hostGroups.length === 1 ? " mirror · " : " mirrors · ")
+                  + detail.servers.length + (detail.servers.length === 1 ? " connection" : " connections")
         }
 
-        UnitField {
-            id: upField
+        Repeater {
+            model: detail.current === "connections" ? detail.hostGroups : []
 
-            anchors.right: parent.right
-            anchors.verticalCenter: parent.verticalCenter
-            width: 220
-            kind: "speed"
-            onEdited: value => detail.queueOption("max-upload-limit", value || "0")
+            Rectangle {
+                id: hostCard
+
+                required property var modelData
+
+                width: detail.width
+                height: hostColumn.implicitHeight + 24
+                radius: 12
+                color: detail.tileColor
+
+                Column {
+                    id: hostColumn
+
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.top: parent.top
+                    anchors.margins: 12
+                    spacing: 8
+
+                    Item {
+                        width: parent.width
+                        height: 20
+
+                        Rectangle {
+                            id: hostDot
+
+                            anchors.left: parent.left
+                            anchors.verticalCenter: parent.verticalCenter
+                            width: 8
+                            height: 8
+                            radius: 4
+                            color: hostCard.modelData.slow || hostCard.modelData.speed === 0 ? Theme.warning : Theme.success
+                        }
+
+                        StyledText {
+                            anchors.left: hostDot.right
+                            anchors.leftMargin: Theme.spacingS
+                            anchors.right: hostSpeed.left
+                            anchors.rightMargin: Theme.spacingS
+                            anchors.verticalCenter: parent.verticalCenter
+                            text: hostCard.modelData.host
+                            font.pixelSize: Theme.fontSizeSmall + 1
+                            font.weight: Font.DemiBold
+                            font.family: "monospace"
+                            color: Theme.surfaceText
+                            wrapMode: Text.NoWrap
+                            elide: Text.ElideMiddle
+                        }
+
+                        StyledText {
+                            id: hostSpeed
+
+                            anchors.right: parent.right
+                            anchors.verticalCenter: parent.verticalCenter
+                            text: Fmt.speed(hostCard.modelData.speed) + " · " + hostCard.modelData.count + " conn"
+                            font.pixelSize: Theme.fontSizeSmall
+                            color: Theme.surfaceVariantText
+                        }
+                    }
+
+                    //: Its share of the speed, against the fastest server.
+                    Rectangle {
+                        width: parent.width
+                        height: 6
+                        radius: 3
+                        visible: !hostCard.modelData.slow && detail.hostGroups.length > 0
+                        color: Theme.surfaceContainerHighest
+
+                        Rectangle {
+                            width: parent.width * (detail.hostGroups[0].speed > 0 ? hostCard.modelData.speed / detail.hostGroups.reduce((a, g) => a + g.speed, 0) : 0)
+                            height: parent.height
+                            radius: 3
+                            color: Theme.primary
+                        }
+                    }
+
+                    StyledText {
+                        visible: hostCard.modelData.slow
+                        text: "Slow — " + Math.round(detail.hostGroups[0].speed / Math.max(1, hostCard.modelData.speed)) + "× slower than the fastest mirror"
+                        font.pixelSize: Theme.fontSizeSmall
+                        color: Theme.warning
+                    }
+                }
+            }
+        }
+
+        SectionLabel {
+            visible: detail.uris.length > 0
+            topPadding: Theme.spacingXS
+            text: (detail.uris.length === 1 ? "Link" : "Links · " + detail.uris.length)
+        }
+
+        Repeater {
+            model: detail.current === "connections" ? detail.uris.slice(0, 12) : []
+
+            StyledText {
+                required property var modelData
+
+                width: detail.width
+                text: modelData.uri + (modelData.status ? " · " + modelData.status : "")
+                font.pixelSize: Theme.fontSizeSmall
+                color: Theme.surfaceVariantText
+                wrapMode: Text.NoWrap
+                elide: Text.ElideMiddle
+            }
         }
     }
 
-    StyledText {
-        width: parent.width
-        visible: detail.isTorrent && detail.downloadOnlyEverywhere
-        wrapMode: Text.WordWrap
-        text: "Sharing stops when a download finishes, for every torrent (Settings)."
-        font.pixelSize: Theme.fontSizeSmall
-        color: Theme.surfaceVariantText
-    }
+    // ======== options, in plain words (board 6) =============================
+    //: One labelled row each; changes save as they are made, and the line at
+    //: the foot counts them with an Undo.
+    component OptionRow: Item {
+        id: optionRow
 
-    Item {
-        width: parent.width
-        height: Math.max(40, shareText.implicitHeight + 8)
-        visible: detail.isTorrent && !detail.downloadOnlyEverywhere
+        property string label: ""
+        property string hint: ""
+        default property alias control: slot.data
+
+        width: parent ? parent.width : 0
+        height: Math.max(48, labels.implicitHeight + 12)
 
         Column {
-            id: shareText
+            id: labels
 
             anchors.left: parent.left
-            anchors.right: shareSwitch.left
-            anchors.rightMargin: Theme.spacingM
+            anchors.right: slot.left
+            anchors.rightMargin: 12
             anchors.verticalCenter: parent.verticalCenter
             spacing: 2
 
             StyledText {
-                text: "Stop sharing when done"
-                font.pixelSize: Theme.fontSizeSmall
+                width: parent.width
+                text: optionRow.label
+                font.pixelSize: Theme.fontSizeSmall + 1
                 color: Theme.surfaceText
+                wrapMode: Text.NoWrap
+                elide: Text.ElideRight
             }
 
             StyledText {
                 width: parent.width
+                visible: optionRow.hint !== ""
+                text: optionRow.hint
                 wrapMode: Text.WordWrap
-                text: "Uploads as little as possible and stops the moment the download finishes."
                 font.pixelSize: Theme.fontSizeSmall - 1
                 color: Theme.surfaceVariantText
             }
         }
 
-        BoolSwitch {
-            id: shareSwitch
+        Item {
+            id: slot
 
             anchors.right: parent.right
             anchors.verticalCenter: parent.verticalCenter
-            checked: detail.downloadOnly
-            onToggled: value => {
-                detail.downloadOnly = value
-                detail.queueOption("download-only", value ? "true" : "false")
-            }
-        }
-    }
-
-    // What only matters to someone tuning, folded away.
-    Item {
-        width: parent.width
-        height: 32
-
-        Row {
-            anchors.verticalCenter: parent.verticalCenter
-            spacing: 4
-
-            DankIcon {
-                anchors.verticalCenter: parent.verticalCenter
-                name: detail.showAdvanced ? "expand_more" : "chevron_right"
-                size: 18
-                color: Theme.surfaceVariantText
-            }
-
-            StyledText {
-                anchors.verticalCenter: parent.verticalCenter
-                text: "Advanced"
-                font.pixelSize: Theme.fontSizeSmall
-                color: Theme.surfaceVariantText
-            }
-        }
-
-        MouseArea {
-            anchors.fill: parent
-            cursorShape: Qt.PointingHandCursor
-            onClicked: detail.showAdvanced = !detail.showAdvanced
-        }
-    }
-
-    Repeater {
-        model: detail.showAdvanced && detail.isQb ? [["sequential", "sequential-download", "Download in order", "Lets you start watching a video before it finishes. Can be slower."], ["firstLast", "first-last-piece-first", "First and last pieces first", "Helps media players open the file sooner."]] : []
-
-        Item {
-            id: advRow
-
-            required property var modelData
-
-            width: detail.width
-            height: Math.max(40, advText.implicitHeight + 8)
-
-            Column {
-                id: advText
-
-                anchors.left: parent.left
-                anchors.leftMargin: 22
-                anchors.right: advSwitch.left
-                anchors.rightMargin: Theme.spacingM
-                anchors.verticalCenter: parent.verticalCenter
-                spacing: 2
-
-                StyledText {
-                    text: advRow.modelData[2]
-                    font.pixelSize: Theme.fontSizeSmall
-                    color: Theme.surfaceText
-                }
-
-                StyledText {
-                    width: parent.width
-                    wrapMode: Text.WordWrap
-                    text: advRow.modelData[3]
-                    font.pixelSize: Theme.fontSizeSmall - 1
-                    color: Theme.surfaceVariantText
-                }
-            }
-
-            BoolSwitch {
-                id: advSwitch
-
-                anchors.right: parent.right
-                anchors.verticalCenter: parent.verticalCenter
-                checked: detail[advRow.modelData[0]]
-                onToggled: value => {
-                    detail[advRow.modelData[0]] = value
-                    detail.queueOption(advRow.modelData[1], value ? "true" : "false")
-                }
-            }
-        }
-    }
-
-    Grid {
-        id: optionGrid
-
-        width: parent.width
-        visible: detail.showAdvanced && !detail.isQb
-        columns: 2
-        columnSpacing: Theme.spacingS
-        rowSpacing: Theme.spacingXS
-
-        Column {
-            width: (optionGrid.width - Theme.spacingS) / 2
-            spacing: 1
-
-            StyledText {
-                text: "Parts"
-                font.pixelSize: Theme.fontSizeSmall
-                color: Theme.surfaceVariantText
-            }
-
-            DankTextField {
-                id: splitField
-                width: parent.width
-                height: 40
-                font.pixelSize: Theme.fontSizeSmall
-                onTextChanged: if (activeFocus && text.trim()) detail.queueOption("split", text.trim())
-            }
-        }
-
-        Column {
-            width: (optionGrid.width - Theme.spacingS) / 2
-            spacing: 1
-
-            StyledText {
-                text: "Connections per server"
-                font.pixelSize: Theme.fontSizeSmall
-                color: Theme.surfaceVariantText
-            }
-
-            DankTextField {
-                id: connField
-                width: parent.width
-                height: 40
-                font.pixelSize: Theme.fontSizeSmall
-                onTextChanged: if (activeFocus && text.trim()) detail.queueOption("max-connection-per-server", text.trim())
-            }
-        }
-    }
-
-    // ---- review: one button, everything at once ---------------------------
-    DankButton {
-        visible: detail.reviewing
-        text: "Start download"
-        iconName: "play_arrow"
-        buttonHeight: 40
-        backgroundColor: Theme.primary
-        textColor: Theme.onPrimary
-        onClicked: detail.start()
-    }
-
-    // ---- the technical record, folded away --------------------------------
-    Item {
-        width: parent.width
-        height: 32
-        visible: !detail.reviewing
-
-        Row {
-            anchors.verticalCenter: parent.verticalCenter
-            spacing: 4
-
-            DankIcon {
-                anchors.verticalCenter: parent.verticalCenter
-                name: detail.showDetails ? "expand_more" : "chevron_right"
-                size: 18
-                color: Theme.surfaceVariantText
-            }
-
-            StyledText {
-                anchors.verticalCenter: parent.verticalCenter
-                text: "Details"
-                font.pixelSize: Theme.fontSizeSmall
-                color: Theme.surfaceVariantText
-            }
-        }
-
-        MouseArea {
-            anchors.fill: parent
-            cursorShape: Qt.PointingHandCursor
-            onClicked: detail.showDetails = !detail.showDetails
+            width: childrenRect.width
+            height: childrenRect.height
         }
     }
 
     Column {
+        id: optionsBlock
+
         width: parent.width
-        visible: detail.showDetails && !detail.reviewing
-        spacing: Theme.spacingS
+        visible: detail.reviewing || (!detail.held && detail.current === "options")
+        spacing: 0
 
-        Repeater {
-            model: [
-                {
-                    "label": "Folder",
-                    "value": detail.statusInfo.dir || ""
-                },
-                {
-                    "label": "File",
-                    "value": detail.files.length === 1 ? detail.files[0].path : ""
-                },
-                {
-                    "label": "Size",
-                    "value": Fmt.bytes(detail.statusInfo.completedLength) + " of " + Fmt.bytes(detail.statusInfo.totalLength)
-                },
-                {
-                    "label": "Connections",
-                    "value": String(detail.statusInfo.connections || 0)
-                },
-                {
-                    "label": "Added",
-                    "value": Fmt.dateTime(detail.dl.addedAt)
-                },
-                {
-                    "label": "Finished",
-                    "value": Fmt.dateTime(detail.dl.finishedAt)
-                },
-                {
-                    "label": "Info hash",
-                    "value": detail.statusInfo.infoHash || ""
-                },
-                {
-                    "label": "ID",
-                    "value": detail.gid
+        OptionRow {
+            visible: !detail.reviewing
+            label: "Download limit"
+
+            UnitField {
+                id: downField
+
+                split: true
+                fill: detail.tileColor
+                kind: "speed"
+                placeholderText: "none"
+                onEdited: value => detail.queueOption("max-download-limit", value || "0")
+            }
+        }
+
+        OptionRow {
+            //: With sharing stopped, the upload limit is the manager's floor, not a choice.
+            visible: !detail.reviewing && detail.isTorrent && !(detail.downloadOnly || detail.downloadOnlyEverywhere)
+            label: "Upload limit"
+
+            UnitField {
+                id: upField
+
+                split: true
+                fill: detail.tileColor
+                kind: "speed"
+                placeholderText: "none"
+                onEdited: value => detail.queueOption("max-upload-limit", value || "0")
+            }
+        }
+
+        OptionRow {
+            visible: !detail.reviewing && !detail.isQb
+            label: "Connections per server"
+
+            Stepper {
+                id: connField
+
+                fill: detail.tileColor
+                minimum: 1
+                maximum: 16
+                onEdited: value => {
+                    if (value)
+                        detail.queueOption("max-connection-per-server", value)
                 }
-            ]
+            }
+        }
 
-            Item {
-                id: kv
+        OptionRow {
+            visible: !detail.reviewing && !detail.isQb && !detail.isTorrent
+            label: "Parts"
 
-                required property var modelData
+            Stepper {
+                id: splitField
 
-                width: detail.width
-                visible: String(kv.modelData.value).length > 0
-                //: Tall enough for a long path to wrap instead of running into the next row.
-                height: visible ? Math.max(18, kvValue.implicitHeight) : 0
-
-                StyledText {
-                    width: 92
-                    text: kv.modelData.label
-                    font.pixelSize: Theme.fontSizeSmall
-                    color: Theme.surfaceVariantText
+                fill: detail.tileColor
+                minimum: 1
+                onEdited: value => {
+                    if (value)
+                        detail.queueOption("split", value)
                 }
+            }
+        }
 
-                StyledText {
-                    id: kvValue
+        OptionRow {
+            visible: detail.isTorrent && !detail.downloadOnlyEverywhere
+            label: detail.reviewing ? "Download only, never seed" : "Stop sharing when done"
 
-                    x: 92 + Theme.spacingS
-                    width: Math.max(0, parent.width - x)
-                    text: kv.modelData.value
-                    wrapMode: Text.WrapAnywhere
-                    font.pixelSize: Theme.fontSizeSmall
-                    color: Theme.surfaceText
-
-                    MouseArea {
-                        anchors.fill: parent
-                        cursorShape: Qt.PointingHandCursor
-                        onClicked: {
-                            Quickshell.execDetached(["dms", "cl", "copy", String(kv.modelData.value)])
-                            detail.service.notice("Copied " + kv.modelData.label.toLowerCase())
-                        }
-                    }
+            BoolSwitch {
+                checked: detail.downloadOnly
+                onToggled: value => {
+                    detail.downloadOnly = value
+                    detail.queueOption("download-only", value ? "true" : "false")
                 }
             }
         }
 
         StyledText {
             width: parent.width
-            visible: detail.pieces.length > 0
-            text: "Pieces · " + (detail.statusInfo.numPieces || 0) + " × " + Fmt.bytes(detail.statusInfo.pieceLength || 0)
+            visible: !detail.reviewing && detail.isTorrent && detail.downloadOnlyEverywhere
+            topPadding: 8
+            bottomPadding: 8
+            wrapMode: Text.WordWrap
+            text: "Sharing stops when a download finishes, for every torrent (Settings)."
             font.pixelSize: Theme.fontSizeSmall
-            font.weight: Font.Medium
             color: Theme.surfaceVariantText
-            topPadding: Theme.spacingXS
         }
 
-        Flow {
-            width: parent.width
-            visible: detail.pieces.length > 0
-            spacing: 1
+        //: qBittorrent's two playback helpers.
+        OptionRow {
+            visible: !detail.reviewing && detail.isQb
+            label: "Download in order"
+            hint: "Start watching a video before it finishes. Can be slower."
 
-            Repeater {
-                model: detail.showDetails ? detail.pieces : []
+            BoolSwitch {
+                checked: detail.sequential
+                onToggled: value => {
+                    detail.sequential = value
+                    detail.queueOption("sequential-download", value ? "true" : "false")
+                }
+            }
+        }
+
+        OptionRow {
+            visible: !detail.reviewing && detail.isQb
+            label: "First and last pieces first"
+            hint: "Helps media players open the file sooner."
+
+            BoolSwitch {
+                checked: detail.firstLast
+                onToggled: value => {
+                    detail.firstLast = value
+                    detail.queueOption("first-last-piece-first", value ? "true" : "false")
+                }
+            }
+        }
+
+        //: Saved as they change; this says how many, and puts them all back.
+        Item {
+            width: parent.width
+            height: 44
+            visible: !detail.reviewing
+
+            Rectangle {
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.top: parent.top
+                anchors.topMargin: 4
+                height: 1
+                color: Theme.outlineVariant
+            }
+
+            Row {
+                anchors.left: parent.left
+                anchors.verticalCenter: parent.verticalCenter
+                anchors.verticalCenterOffset: 2
+                spacing: 8
 
                 Rectangle {
-                    id: piece
-
-                    required property var modelData
-
-                    width: 4
-                    height: 10
-                    radius: 1
-                    color: piece.modelData >= 100 ? Theme.primary : (piece.modelData > 0 ? Theme.withAlpha(Theme.primary, 0.45) : Theme.withAlpha(Theme.outline, 0.25))
+                    anchors.verticalCenter: parent.verticalCenter
+                    visible: detail.changeCount > 0
+                    width: 6
+                    height: 6
+                    radius: 3
+                    color: Theme.primary
                 }
-            }
-        }
-
-        Repeater {
-            model: [
-                {
-                    "title": "Connections · " + detail.servers.length,
-                    "items": detail.servers.map(s => [s.currentUri || s.uri || "", Fmt.speed(s.downloadSpeed)])
-                },
-                {
-                    "title": (detail.isQb ? "Trackers · " : "Links · ") + detail.uris.length,
-                    "items": detail.uris.slice(0, 12).map(u => [u.uri, u.status])
-                },
-                {
-                    "title": "Peers · " + detail.peers.length,
-                    "items": detail.peers.slice(0, 25).map(p => [p.ip + ":" + p.port + (p.client ? " · " + p.client : ""), "↓ " + Fmt.speed(p.downloadSpeed) + "  ↑ " + Fmt.speed(p.uploadSpeed)])
-                }
-            ]
-
-            Column {
-                id: listBlock
-
-                required property var modelData
-
-                width: detail.width
-                visible: listBlock.modelData.items.length > 0
-                spacing: 2
 
                 StyledText {
-                    text: listBlock.modelData.title
-                    font.pixelSize: Theme.fontSizeSmall
-                    font.weight: Font.Medium
-                    color: Theme.surfaceVariantText
-                    topPadding: Theme.spacingXS
-                }
-
-                Repeater {
-                    model: listBlock.modelData.items
-
-                    Row {
-                        id: line
-
-                        required property var modelData
-
-                        width: detail.width
-                        height: 20
-                        spacing: Theme.spacingXS
-
-                        StyledText {
-                            width: Math.max(0, parent.width - 150)
-                            text: line.modelData[0]
-                            font.pixelSize: Theme.fontSizeSmall
-                            color: Theme.surfaceVariantText
-                            elide: Text.ElideMiddle
-                        }
-
-                        StyledText {
-                            width: 146
-                            horizontalAlignment: Text.AlignRight
-                            text: line.modelData[1]
-                            font.pixelSize: Theme.fontSizeSmall
-                            color: Theme.surfaceText
-                        }
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: {
+                        if (detail.changeCount > 0)
+                            return detail.changeCount + (detail.changeCount === 1 ? " change" : " changes") + " · applies live"
+                                  + (detail.savedText === "Saving…" ? " · saving…" : "")
+                        return detail.savedText === "Undone" ? "Undone" : "Changes apply live"
                     }
+                    font.pixelSize: Theme.fontSizeSmall
+                    color: Theme.surfaceVariantText
                 }
             }
+
+            PillButton {
+                anchors.right: parent.right
+                anchors.verticalCenter: parent.verticalCenter
+                anchors.verticalCenterOffset: 2
+                visible: detail.changeCount > 0
+                size: 30
+                kind: "text"
+                text: "Undo"
+                onClicked: detail.undoOptions()
+            }
+        }
+    }
+
+    // ---- review: one button, everything at once ---------------------------
+    Row {
+        anchors.right: parent.right
+        visible: detail.reviewing
+        spacing: 8
+
+        PillButton {
+            size: 40
+            kind: "text"
+            text: "Cancel"
+            onClicked: detail.cancelRequested()
+        }
+
+        PillButton {
+            size: 40
+            kind: "filled"
+            text: detail.startLabel
+            onClicked: detail.start()
         }
     }
 }
