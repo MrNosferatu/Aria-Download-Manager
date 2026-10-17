@@ -216,6 +216,23 @@ def _display_env() -> dict[str, str]:
     return env
 
 
+async def open_path(path: str) -> bool:
+    """Open a file, or a folder, with the desktop's default app (xdg-open).
+
+    For the manager page's and popup's Open and Show-in-folder buttons: a
+    browser page cannot open a local file itself. Fire and forget — xdg-open
+    hands off to the app and exits. False when the path is gone or there is no
+    xdg-open to ask.
+    """
+    if not path or not os.path.exists(path) or not shutil.which("xdg-open"):
+        return False
+    await asyncio.create_subprocess_exec(
+        "xdg-open", path, env=_display_env(),
+        stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.DEVNULL,
+        stderr=asyncio.subprocess.DEVNULL, start_new_session=True)
+    return True
+
+
 async def pick_folder(start: str, title: str = "Save downloads to") -> str | None:
     """Ask the user for a folder. "" when cancelled, None when no picker exists."""
     for name, argv in PICKERS:

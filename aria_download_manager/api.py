@@ -155,6 +155,13 @@ class ProbeRequest(BaseModel):
     userAgent: str | None = None
 
 
+class OpenRequest(BaseModel):
+    #: Open the containing folder instead of the file itself.
+    folder: bool = False
+    #: History entry key, for /api/history/open.
+    key: str | None = None
+
+
 class FloatRequest(BaseModel):
     """One of our windows just opened: float it on a tiling compositor."""
 
@@ -1373,6 +1380,34 @@ def create_app(cfg: Config) -> FastAPI:
         if chosen is None:
             raise HTTPException(501, "no folder picker installed (zenity, kdialog or yad)")
         return {"ok": True, "path": chosen}
+
+    @app.post("/api/download/{gid}/open")
+    async def open_download(gid: str, req: OpenRequest):
+        """Open a download's file, or its folder, on the desktop.
+
+        Only paths the manager itself reported for that download are opened,
+        never one sent by the caller.
+        """
+        row = next((d for d in store.snapshot.get("downloads", []) if d.get("gid") == gid), None)
+        if not row:
+            raise HTTPException(404, "no such download")
+        return await _open_reported(row.get("path") or "", row.get("dir") or "", req.folder)
+
+    @app.post("/api/history/open")
+    async def open_history(req: OpenRequest):
+        """Open a past download's file, or its folder, from what history recorded."""
+        entry = history.get(req.key or "")
+        if not entry:
+            raise HTTPException(404, "no such history entry")
+        return await _open_reported(entry.get("path") or "", entry.get("dir") or "", req.folder)
+
+    async def _open_reported(path: str, folder: str, want_folder: bool) -> dict:
+        target = (folder or os.path.dirname(path)) if want_folder else path
+        if not target or not os.path.exists(target):
+            raise HTTPException(410, "the file is no longer there" if not want_folder else "the folder is no longer there")
+        if not await compositor.open_path(target):
+            raise HTTPException(501, "nothing to open it with (xdg-open is not installed)")
+        return {"ok": True, "opened": target}
 
     @app.post("/api/window/float")
     async def float_window(req: FloatRequest):

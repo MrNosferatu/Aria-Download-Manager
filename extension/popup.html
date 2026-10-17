@@ -8,13 +8,12 @@
 </head>
 <body class="popup">
 
+<!-- What is happening comes first, as in the DankBar's quick menu: a headline,
+     how fast and how long, then the downloads that matter, then the buttons. -->
 <header>
-  <div class="brand">
-    <span class="logo" aria-hidden="true"><svg class="ico" viewBox="0 0 24 24"><path d="M5 20h14v-2H5v2zM19 9h-4V3H9v6H5l7 7 7-7z"/></svg></span>
-    <div>
-      <h1>Aria Download Manager</h1>
-      <span id="status" class="status">Connecting…</span>
-    </div>
+  <div class="titles">
+    <h1 id="headline">Connecting…</h1>
+    <span id="subline" class="hint"></span>
   </div>
   <div class="chrome">
     <button id="open-ui" class="btn btn-icon" title="Open the manager" aria-label="Open the manager">
@@ -26,22 +25,43 @@
   </div>
 </header>
 
-<section class="hero" aria-label="Live totals">
-  <div class="rate"><label>Downloading</label><b id="down" class="quiet">–</b></div>
-  <div class="stat"><label>Active</label><b id="active">0</b></div>
-  <div class="stat"><label>Queued</label><b id="queued">0</b></div>
+<!-- When a link in the chain is broken: which one, and the fix. -->
+<section id="trouble" class="trouble" hidden>
+  <div class="t-head">
+    <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z"/></svg>
+    <b id="trouble-title"></b>
+  </div>
+  <p id="trouble-text" class="hint"></p>
+  <code id="trouble-cmd" class="cmd" hidden></code>
+  <div class="row">
+    <button id="trouble-primary" class="btn btn-primary btn-sm"></button>
+    <button id="trouble-secondary" class="btn btn-sm" hidden></button>
+  </div>
 </section>
+
+<div id="overall" class="overall" hidden>
+  <div class="progress"><i id="overall-bar"></i></div>
+  <span id="overall-text" class="hint"></span>
+</div>
+
+<div id="list" class="plist" hidden></div>
+
+<div id="bulk" class="bulk3" hidden>
+  <button id="b-pause" type="button"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg><span>Pause all</span></button>
+  <button id="b-resume" type="button"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg><span>Resume</span></button>
+  <button id="b-clear" type="button"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M16 11h-1V3c0-1.1-.9-2-2-2h-2c-1.1 0-2 .9-2 2v8H8c-2.76 0-5 2.24-5 5v7h18v-7c0-2.76-2.24-5-5-5zm3 10h-2v-3c0-.55-.45-1-1-1s-1 .45-1 1v3h-2v-3c0-.55-.45-1-1-1s-1 .45-1 1v3H9v-3c0-.55-.45-1-1-1s-1 .45-1 1v3H5v-5c0-1.65 1.35-3 3-3h8c1.65 0 3 1.35 3 3v5z"/></svg><span>Clear</span></button>
+</div>
+
+<div id="off-banner" class="offbanner" hidden>
+  <span class="hint">Catching is off — the browser keeps its downloads. Add still works.</span>
+  <button id="turn-on" class="btn btn-primary btn-sm">Turn on</button>
+</div>
 
 <form id="add" class="addrow">
   <input id="url" placeholder="Paste a link or magnet" autocomplete="off" aria-label="Link to download">
   <button type="submit" class="btn btn-primary">Add</button>
 </form>
-
-<div id="list" class="list"></div>
-<p id="empty" class="empty">
-  <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 20h14v-2H5v2zM19 9h-4V3H9v6H5l7 7 7-7z"/></svg>
-  <span id="empty-text">Nothing downloading right now.</span>
-</p>
+<span id="add-hint" class="hint add-hint" hidden></span>
 
 <footer>
   <!-- Same rows as the settings page, so a switch means the same thing in

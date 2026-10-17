@@ -157,3 +157,48 @@ function humanBytes(n) {
 }
 
 const humanSpeed = (n) => (Number(n) > 0 ? `${humanBytes(n)}/s` : '0 B/s');
+
+//: "48 s", "3 min", "2 h 5 min" — how long, in words a glance can take in.
+function humanEta(seconds) {
+  const s = Math.round(Number(seconds));
+  if (!Number.isFinite(s) || s < 0) return '';
+  if (s < 60) return `${s} s`;
+  if (s < 3600) return `${Math.round(s / 60)} min`;
+  const h = Math.floor(s / 3600);
+  const m = Math.round((s % 3600) / 60);
+  return m ? `${h} h ${m} min` : `${h} h`;
+}
+
+//: Which link between the browser and aria2 is broken, from a ManagerLink reply:
+//: "host" (the native-messaging helper is missing or crashed), "manager" (the
+//: helper ran but nothing listens on the socket), or "" (it answered).
+function linkProblem(reply) {
+  if (!reply || (reply.status >= 200 && reply.status < 500)) return '';
+  const error = String((reply.body && reply.body.error) || '');
+  if (reply.status === 0 && /native host/i.test(error)) return 'host';
+  return 'manager';
+}
+
+const INSTALL_HOST_CMD = 'python3 -m aria_download_manager --install-native-host';
+const START_MANAGER_CMD = 'systemctl --user start aria-download-manager';
+
+//: The running downloads summed up: bytes done of the total, and the time left
+//: at the current speed. progress is -1 while any has no size yet.
+function activeTotals(state) {
+  let done = 0;
+  let total = 0;
+  let unknown = false;
+  for (const d of (state && state.downloads) || []) {
+    if (d.status !== 'active') continue;
+    if (!d.total || d.isMetadata) { unknown = true; continue; }
+    done += d.completed || 0;
+    total += d.total;
+  }
+  const speed = Number((state && state.global && state.global.downloadSpeed) || 0);
+  const left = Math.max(0, total - done);
+  return {
+    completed: done, total, left,
+    progress: !unknown && total > 0 ? done / total : -1,
+    eta: speed > 0 && total > 0 ? left / speed : -1,
+  };
+}

@@ -8,42 +8,71 @@
 }
 .popup header {
   display: flex; align-items: center; gap: 10px;
-  & .brand { display: flex; align-items: center; gap: 10px; flex: 1; min-width: 0; }
-  & .logo {
-    width: 32px; height: 32px; border-radius: 10px; display: grid; place-items: center; flex: none;
-    background: var(--primary-container); color: var(--on-primary-container);
-    & .ico { width: 20px; height: 20px; }
-  }
-  & .brand div { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
-  & h1 { font-size: var(--fs-md); font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  & .titles { display: flex; flex-direction: column; gap: 1px; flex: 1; min-width: 0; }
+  & h1 { font-size: var(--fs-lg); font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   & .chrome { display: flex; gap: 0; flex: none; margin-right: -6px; }
 }
 
-/* The headline: what is coming in right now. */
-.hero {
-  display: grid; grid-template-columns: 1fr auto auto; gap: 16px; align-items: end;
-  padding: 14px 16px; border-radius: var(--r-lg); background: var(--surface-low);
-  & .rate { display: flex; flex-direction: column; gap: 2px; }
-  & .rate label { font-size: var(--fs-xs); color: var(--on-surface-var); text-transform: uppercase; letter-spacing: .05em; font-weight: 600; }
-  & .rate b { font-size: var(--fs-2xl); font-weight: 600; line-height: 1; letter-spacing: -0.01em; }
-  & .rate b.quiet { color: var(--on-surface-var); font-weight: 500; }
-  & .stat b { font-size: var(--fs-lg); }
+/* A broken link in the chain: which one, and the fix. */
+.trouble {
+  display: flex; flex-direction: column; gap: 8px; padding: 12px 14px;
+  border-radius: var(--r-md); background: var(--surface-high);
+  & .t-head { display: flex; align-items: center; gap: 8px; font-size: var(--fs-md); }
+  & .t-head .ico { width: 20px; height: 20px; color: var(--on-surface-var); }
+  & .cmd {
+    display: block; padding: 6px 10px; border-radius: var(--r-sm); background: var(--surface);
+    color: var(--on-surface); white-space: normal; overflow-wrap: anywhere; user-select: all;
+  }
+  &[data-kind="aria2"] { background: var(--error-container); }
+  &[data-kind="aria2"] .t-head .ico { color: var(--error); }
+}
+
+.overall { display: flex; flex-direction: column; gap: 6px; }
+.overall .progress { height: 6px; }
+
+.plist {
+  display: flex; flex-direction: column; padding: 4px;
+  border-radius: var(--r-md); background: var(--surface-low);
+  & .more {
+    border: 0; background: none; color: var(--primary); text-align: left;
+    font-size: var(--fs-sm); padding: 6px 10px 6px; cursor: pointer;
+  }
+}
+.pitem {
+  display: flex; align-items: center; gap: 8px; padding: 7px 4px 7px 10px; border-radius: var(--r-sm);
+  & .pmain { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 5px; }
+  & .ptop { display: flex; align-items: baseline; gap: 8px; }
+  & .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  & .figure { color: var(--on-surface-var); font-size: var(--fs-xs); flex: none; }
+  & .why { color: var(--error); font-size: var(--fs-xs); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  & .progress { height: 3px; }
+  &.is-paused .progress > i { background: var(--warning); }
+  &.is-waiting .progress > i { background: var(--outline); }
+  &.is-waiting .name { color: var(--on-surface-var); }
+  & .btn { flex: none; }
+}
+
+.bulk3 {
+  display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px;
+  & button {
+    height: 52px; border: 0; border-radius: var(--r-md); cursor: pointer;
+    background: var(--surface-mid); color: var(--on-surface); font-size: var(--fs-sm);
+    display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px;
+    transition: background var(--t-fast) var(--ease);
+  }
+  & button:hover:not(:disabled) { background: var(--surface-high); }
+  & button:disabled { color: var(--outline); cursor: default; }
+  & .ico { width: 20px; height: 20px; }
+}
+
+.offbanner {
+  display: flex; align-items: center; gap: 10px; padding: 10px 12px;
+  border-radius: var(--r-md); background: var(--surface-high);
+  & .hint { flex: 1; }
 }
 
 .addrow { display: flex; gap: 8px; & button { flex: none; } }
-
-.list { display: flex; flex-direction: column; gap: 6px; max-height: 300px; overflow-y: auto; margin: 0 -4px; padding: 0 4px; }
-.item {
-  padding: 8px 10px; border-radius: var(--r-md); background: var(--surface-low);
-  display: flex; flex-direction: column; gap: 6px;
-  & .top { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; }
-  & .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
-  & .speed { color: var(--on-surface-var); font-size: var(--fs-xs); flex: none; }
-  &.is-paused .progress > i { background: var(--warning); }
-  &.is-waiting .progress > i { background: var(--outline); }
-}
-.popup .empty { padding: 20px 8px; }
-.popup .empty .ico { width: 28px; height: 28px; }
+.add-hint { margin-top: -6px; padding-left: 4px; }
 
 .popup footer {
   display: flex; flex-direction: column; border-top: 1px solid var(--outline-var); padding-top: 2px;

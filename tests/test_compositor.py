@@ -155,6 +155,24 @@ async def desktop(tmp: Path) -> None:
     check("no picker at all: None", await compositor.pick_folder(str(tmp)) is None)
     os.environ["PATH"] = "/usr/bin:/bin"
 
+    print("\nopening a download")
+    (bin_dir / "xdg-open").write_text(f'#!/bin/sh\necho "$*" > "{tmp}/opened"\n')
+    (bin_dir / "xdg-open").chmod(0o755)
+    os.environ["PATH"] = f"{bin_dir}:/usr/bin:/bin"
+    target = tmp / "done.iso"
+    target.write_bytes(b"iso")
+    check("an existing file is handed to xdg-open", await compositor.open_path(str(target)))
+    for _ in range(50):
+        if (tmp / "opened").exists():
+            break
+        await asyncio.sleep(0.05)
+    check("with its path", (tmp / "opened").exists() and (tmp / "opened").read_text().strip() == str(target))
+    check("a missing file is refused", not await compositor.open_path(str(tmp / "gone.iso")))
+    check("an empty path is refused", not await compositor.open_path(""))
+    os.environ["PATH"] = "/nonexistent"
+    check("no xdg-open: refused", not await compositor.open_path(str(target)))
+    os.environ["PATH"] = "/usr/bin:/bin"
+
     print("\na web page saved as a file")
     page = tmp / "driver.exe"
     page.write_bytes(b"\n <!DOCTYPE html><html><body>verify you're human</body></html>")
