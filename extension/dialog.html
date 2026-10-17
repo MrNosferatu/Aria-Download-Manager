@@ -11,9 +11,11 @@
 <body class="dlg">
 
 <header class="dlg-head">
-  <span class="logo" aria-hidden="true"><svg class="ico" viewBox="0 0 24 24"><path d="M5 20h14v-2H5v2zM19 9h-4V3H9v6H5l7 7 7-7z"/></svg></span>
+  <span id="logo" class="logo" aria-hidden="true"><svg class="ico" viewBox="0 0 24 24"><path id="logo-path" d="M5 20h14v-2H5v2zM19 9h-4V3H9v6H5l7 7 7-7z"/></svg></span>
   <div class="titles">
     <h1 id="title">New download</h1>
+    <!-- For a plain file the name is the title, and editable in place. -->
+    <input id="f-name" class="title-input" autocomplete="off" spellcheck="false" aria-label="File name" hidden>
     <p id="subtitle" class="dim">Checking the link…</p>
   </div>
 </header>
@@ -25,31 +27,22 @@
 <!-- A plain file: what IDM asks before it starts. -->
 <template id="file-view">
   <div class="stack">
-    <p id="f-page" class="warn" hidden>This site only gives the file to the browser: the manager got a web
-      page instead (usually a captcha, a login, or a link good for one download).</p>
-    <label class="field">
-      <span>Address</span>
-      <input id="f-url" readonly>
-    </label>
-    <label class="field">
-      <span>File name</span>
-      <input id="f-name" autocomplete="off" spellcheck="false">
-    </label>
+    <div id="f-page" class="warn" hidden>
+      <b><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M1 21h22L12 2 1 21zm12-3h-2v-2h2v2zm0-4h-2v-4h2v4z"/></svg>This link gives a web page, not the file</b>
+      <span>Usually a login, a captcha or a link good for one download. Only the browser can fetch it.</span>
+    </div>
     <div class="field">
       <span>Save to</span>
+      <!-- The menu is the model; the chips are how it is shown and picked. -->
       <div class="folder">
-        <select id="f-dir" aria-label="Save to"></select>
-        <button type="button" class="btn btn-outline" id="f-browse">Choose…</button>
+        <div id="f-chips" class="fchips" role="radiogroup" aria-label="Save to"></div>
+        <select id="f-dir" aria-label="Save to" hidden></select>
+        <button type="button" class="btn btn-outline btn-sm" id="f-browse">Other…</button>
       </div>
       <input id="f-dir-custom" placeholder="/path/to/folder" spellcheck="false" hidden>
     </div>
-    <div class="facts">
-      <div><label>Size</label><b id="f-size">Unknown</b></div>
-      <div><label>Type</label><b id="f-type">—</b></div>
-      <div><label>Resume</label><b id="f-resume">—</b></div>
-    </div>
     <details id="f-more">
-      <summary>Connections and speed</summary>
+      <summary>Connections and speed <span id="f-more-sum" class="dim"></span></summary>
       <div class="grid3">
         <label class="field"><span>Connections per server</span><input id="f-conn" type="number" min="1" max="16"></label>
         <label class="field"><span>Parts</span><input id="f-split" type="number" min="1"></label>
@@ -70,8 +63,9 @@
     <div class="field">
       <span>Save to</span>
       <div class="folder">
-        <select id="t-dir" aria-label="Save to"></select>
-        <button type="button" class="btn btn-outline" id="t-browse">Choose…</button>
+        <div id="t-chips" class="fchips" role="radiogroup" aria-label="Save to"></div>
+        <select id="t-dir" aria-label="Save to" hidden></select>
+        <button type="button" class="btn btn-outline btn-sm" id="t-browse">Other…</button>
       </div>
       <input id="t-dir-custom" placeholder="/path/to/folder" spellcheck="false" hidden>
     </div>
@@ -107,14 +101,14 @@
 
 
 <footer class="dlg-foot">
-  <label class="check keep"><input type="checkbox" id="keep-asking" checked> Show this dialog for every download</label>
   <div class="buttons">
-    <button id="btn-browser" class="btn btn-text" hidden>Let the browser download it</button>
+    <button id="btn-browser" class="btn btn-text" hidden>Let the browser</button>
     <span class="spacer"></span>
-    <button id="btn-cancel" class="btn btn-outline">Cancel</button>
-    <button id="btn-later" class="btn btn-tonal" disabled>Download later</button>
+    <button id="btn-cancel" class="btn btn-text">Cancel</button>
+    <button id="btn-later" class="btn btn-outline" disabled title="Add it paused, to start from the manager">Queue</button>
     <button id="btn-start" class="btn btn-primary" disabled>Download</button>
   </div>
+  <label class="check keep"><input type="checkbox" id="keep-asking" checked> Ask me before every download</label>
   <p id="error" class="hint err" hidden></p>
 </footer>
 

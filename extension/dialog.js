@@ -82,14 +82,14 @@ async function setupFolder(pre, name, initial) {
 
   // "" is the manager's download folder. The preset folders follow, and the
   // one for this file's type (a .zip: Archives) is chosen to start with.
-  const base = option('', `Downloads · ${home(info.base || 'download folder')}`, info.base);
+  const base = option('', info.sorting ? 'By type' : home(info.base || 'Download folder'), info.base);
   // One flat list: the presets, then recent folders.
   const known = new Set(['', info.base]);
   const items = [base];
   for (const preset of info.presets || []) {
     if (known.has(preset.path)) continue;
     known.add(preset.path);
-    items.push(option(preset.path, `${preset.label} · ${home(preset.path)}`));
+    items.push(option(preset.path, home(preset.path), `${preset.label} · ${preset.path}`));
   }
   for (const dir of [initial, ...recent]) {
     if (!dir || known.has(dir)) continue;
@@ -100,6 +100,7 @@ async function setupFolder(pre, name, initial) {
   const start = initial || (info.suggested && info.suggested !== info.base ? info.suggested : '');
   sel.value = start;
   if (sel.value !== start) sel.value = '';
+  renderChips(pre);
 
   $(`${pre}-browse`).addEventListener('click', async (e) => {
     const button = e.currentTarget;
@@ -113,6 +114,7 @@ async function setupFolder(pre, name, initial) {
         }
         sel.value = picked.path;
         $(`${pre}-dir-custom`).hidden = true;
+        renderChips(pre);
       }
     } catch (err) {
       // No chooser on this desktop: type it instead.
@@ -125,6 +127,30 @@ async function setupFolder(pre, name, initial) {
       button.disabled = false;
     }
   });
+}
+
+//: The folder menu drawn as one-tap chips, the chosen one filled. The <select>
+//: stays the model, so everything that reads the folder reads it there.
+function renderChips(pre) {
+  const sel = $(`${pre}-dir`);
+  const box = $(`${pre}-chips`);
+  if (!box) return;
+  box.replaceChildren(...[...sel.options].map((opt) => {
+    const chip = document.createElement('button');
+    chip.type = 'button';
+    chip.className = 'chip';
+    chip.setAttribute('role', 'radio');
+    chip.setAttribute('aria-checked', String(opt.value === sel.value));
+    chip.classList.toggle('active', opt.value === sel.value);
+    chip.textContent = opt.textContent;
+    chip.title = opt.title || opt.value;
+    chip.addEventListener('click', () => {
+      sel.value = opt.value;
+      $(`${pre}-dir-custom`).hidden = true;
+      renderChips(pre);
+    });
+    return chip;
+  }));
 }
 
 // The folder chosen in a "Save to" menu ("" = the manager decides).
@@ -197,29 +223,45 @@ async function showFile() {
   const p = D.payload;
   const probe = D.probe || {};
   mount('file-view');
-  $('f-url').value = p.url;
-  $('f-name').value = (p.nameGuessed ? probe.name || p.filename : p.filename || probe.name)
+  const nameInput = $('f-name');
+  nameInput.value = (p.nameGuessed ? probe.name || p.filename : p.filename || probe.name)
     || filenameFromUrl(p.url);
-  setupFolder('f', $('f-name').value, p.dir || '');
-  if (pageInsteadOfFile($('f-name').value, p.mime, probe)) {
+  nameInput.hidden = false;
+  $('title').hidden = true;
+  setupFolder('f', nameInput.value, p.dir || '');
+
+  // One plain line instead of a read-only address field and three fact boxes:
+  // size · what it is · whether it can resume · where it comes from.
+  const size = p.size || probe.size;
+  const mime = (probe.contentType || p.mime || '').split(';')[0];
+  const kind = fileKind(nameInput.value, mime);
+  $('logo-path').setAttribute('d', kind.path);
+  const facts = [size ? humanBytes(size) : 'Size unknown', kind.label];
+  if (probe.resumable === true) facts.push('can resume');
+  if (probe.resumable === false) facts.push("can't resume");
+  facts.push(`from ${hostOf(p.url) || p.url}`);
+  $('subtitle').textContent = facts.join(' · ');
+  $('subtitle').title = [p.url, mime, probe.error].filter(Boolean).join('\n');
+
+  if (pageInsteadOfFile(nameInput.value, p.mime, probe)) {
     // The manager would only save that page: steer to the browser.
     $('f-page').hidden = false;
+    $('logo').classList.add('warn');
+    $('logo-path').setAttribute('d', FILE_KINDS.page[1]);
     $('btn-browser').className = 'btn btn-primary';
-    $('btn-start').className = 'btn btn-outline';
+    $('btn-browser').textContent = 'Let the browser download it';
+    $('btn-start').className = 'btn btn-text';
+    $('btn-start').textContent = 'Download anyway';
     $('btn-later').hidden = true;
   }
-  const size = p.size || probe.size;
-  $('f-size').textContent = size ? humanBytes(size) : 'Unknown';
-  $('f-type').textContent = (probe.contentType || p.mime || '—').split(';')[0] || '—';
-  $('f-resume').textContent = probe.resumable == null ? '—' : probe.resumable ? 'Yes' : 'No';
-  if (probe.error) $('f-resume').title = probe.error;
   try {
     const global = await call('GET', '/api/global/options');
     $('f-conn').placeholder = global['max-connection-per-server'] || '';
     $('f-split').placeholder = global.split || '';
+    const limit = Number(global['max-download-limit'] || 0);
+    $('f-more-sum').textContent = `· ${global['max-connection-per-server'] || '?'} connections, `
+      + `${global.split || '?'} parts, ${limit ? `${humanBytes(limit)}/s` : 'no limit'}`;
   } catch { /* placeholders are a nicety */ }
-  $('title').textContent = $('f-name').value || 'New download';
-  $('f-name').addEventListener('input', () => { $('title').textContent = $('f-name').value || 'New download'; });
   $('btn-start').disabled = false;
   $('btn-later').disabled = false;
   $('f-name').focus();
@@ -359,10 +401,24 @@ function showTorrent(data) {
     progress: false,
     onChange: (levels) => {
       D.levels = levels;
-      $('btn-start').disabled = !Object.values(levels).some((v) => Number(v) > 0);
+      paintTorrentTotals();
     },
   });
-  $('btn-start').disabled = !Object.values(D.levels).some((v) => Number(v) > 0);
+  $('logo-path').setAttribute('d', FILE_KINDS.torrent[1]);
+  paintTorrentTotals();
+}
+
+//: "3 of 5 files · 712 MiB of 1.1 GiB" in the subtitle, and a start button that
+//: says how many it starts.
+function paintTorrentTotals() {
+  const chosen = D.files.filter((f) => Number(D.levels[f.index]) > 0);
+  const size = (list) => list.reduce((sum, f) => sum + Number(f.length || 0), 0);
+  $('subtitle').textContent = `${chosen.length} of ${D.files.length} file${D.files.length === 1 ? '' : 's'} · `
+    + `${humanBytes(size(chosen))} of ${humanBytes(size(D.files))}`;
+  $('subtitle').title = D.payload.url;
+  $('btn-start').disabled = !chosen.length;
+  $('btn-start').textContent = D.files.length === 1 || chosen.length === D.files.length
+    ? 'Download' : `Start ${chosen.length} file${chosen.length === 1 ? '' : 's'}`;
 }
 
 async function submitTorrent() {
