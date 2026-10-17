@@ -127,6 +127,66 @@ async def float_window(title_part: str, width: int = 0, height: int = 0,
     return ""
 
 
+#: niri window id -> (width, height) it had before we filled the screen with it.
+_unfilled: dict[int, tuple[int, int]] = {}
+
+
+async def toggle_maximize(title_part: str, exact: bool = True) -> dict:
+    """Fill the screen with our window, or put it back; for its maximize button.
+
+    A floating window's own maximize request is ignored by niri, and the
+    DankBar window is always floating there, so the manager does it: the
+    window is sized to the whole working area and moved to its corner, and the
+    size it had is remembered for the way back. A tiled window is maximized to
+    the edges; Hyprland gets its maximize (fullscreen mode 1). Returns which
+    compositor did it ("" for none: the caller falls back to the plain
+    request) and whether the window now fills the screen.
+    """
+    escaped = re.escape(title_part.strip())
+    title = re.compile(f"^{escaped}$" if exact else escaped)
+
+    env = niri_env()
+    if env:
+        code, out = await _run(["niri", "msg", "-j", "windows"], env)
+        try:
+            matches = [w for w in json.loads(out or "[]") if title.search(str(w.get("title") or ""))] if code == 0 else []
+        except (ValueError, AttributeError):
+            matches = []
+        if matches and matches[-1].get("id") is not None:
+            window = matches[-1]
+            wid = int(window["id"])
+            arg = str(wid)
+            if not window.get("is_floating"):
+                await _run(["niri", "msg", "action", "maximize-window-to-edges", "--id", arg], env)
+                return {"by": "niri", "maximized": None}
+            if wid in _unfilled:
+                width, height = _unfilled.pop(wid)
+                await _run(["niri", "msg", "action", "set-window-width", "--id", arg, str(width)], env)
+                await _run(["niri", "msg", "action", "set-window-height", "--id", arg, str(height)], env)
+                await _run(["niri", "msg", "action", "center-window", "--id", arg], env)
+                return {"by": "niri", "maximized": False}
+            size = (window.get("layout") or {}).get("window_size") or [0, 0]
+            _unfilled[wid] = (int(size[0]) or 1120, int(size[1]) or 820)
+            await _run(["niri", "msg", "action", "set-window-width", "--id", arg, "100%"], env)
+            await _run(["niri", "msg", "action", "set-window-height", "--id", arg, "100%"], env)
+            await _run(["niri", "msg", "action", "move-floating-window", "--id", arg, "-x", "0", "-y", "0"], env)
+            return {"by": "niri", "maximized": True}
+
+    env = hyprland_env()
+    if env:
+        code, out = await _run(["hyprctl", "-j", "clients"], env)
+        try:
+            matches = [w for w in json.loads(out or "[]") if title.search(str(w.get("title") or ""))] if code == 0 else []
+        except (ValueError, AttributeError):
+            matches = []
+        if matches and matches[-1].get("address"):
+            window = matches[-1]
+            await _run(["hyprctl", "dispatch", "focuswindow", f"address:{window['address']}"], env)
+            await _run(["hyprctl", "dispatch", "fullscreen", "1"], env)
+            return {"by": "hyprland", "maximized": not window.get("fullscreen")}
+    return {"by": "", "maximized": None}
+
+
 # --------------------------------------------------------------------------
 # a native folder picker, for the download dialog's "Choose folder…"
 # --------------------------------------------------------------------------

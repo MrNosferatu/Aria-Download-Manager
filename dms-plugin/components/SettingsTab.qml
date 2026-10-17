@@ -42,36 +42,32 @@ Item {
 
     readonly property int scrollbarGutter: Layout.SCROLLBAR_GUTTER
 
-    //: Simple: the same seven the manager page shows, so both surfaces teach
-    //: the same starting point.
+    //: Simple: the settings the manager page shows, so both surfaces teach
+    //: the same starting point, each with one grey line (board 8). Counts are
+    //: steppers: [key, label, kind, help, minimum, maximum (0 = none)].
     readonly property var simpleOptions: [
-        ["max-concurrent-downloads", "Downloads at once", "number", "How many run in parallel; the rest wait in the queue."],
-        ["max-connection-per-server", "Connections per server", "number", "Up to 16. More connections usually means faster downloads from one server."],
-        ["split", "Parts per download", "number", "A file is fetched in this many pieces at the same time."],
-        ["max-overall-download-limit", "Download speed limit", "text", "Across every download. Blank means no limit."],
-        ["max-overall-upload-limit", "Upload speed limit", "text", "For torrents. Blank means no limit."],
-        ["download-only", "Torrents: download only", "bool", "Never seed. While a torrent downloads it uploads at most 1 B/s, and it stops the moment it finishes. Overrides the upload limit."],
-        ["continue", "Resume unfinished files", "bool", "Pick up a partial file where it stopped instead of starting over."]
+        ["max-concurrent-downloads", "Downloads at once", "stepper", "The rest wait in the queue", 1, 0],
+        ["max-connection-per-server", "Connections per server", "stepper", "More can be faster; some servers refuse", 1, 16],
+        ["split", "Parts per download", "stepper", "Split one file into this many pieces", 1, 0],
+        ["max-overall-download-limit", "Download speed limit", "text", "For everything together"],
+        ["max-overall-upload-limit", "Upload speed limit", "text", "Torrents only"],
+        ["download-only", "Torrents: download only", "bool", "Never seed; stop the moment a torrent finishes"],
+        ["continue", "Resume interrupted downloads", "bool", "Pick up where a download left off after a restart"]
     ]
 
-    // Same grouping the manager page uses, so both front-ends teach the same
-    // map of aria2's option surface.
+    // The groups board 19 names, which the chips above them jump to.
     readonly property var groups: [
         {
-            "title": "Queue and parallelism",
-            "options": [["max-concurrent-downloads", "Downloads at once", "number"], ["max-connection-per-server", "Connections per server (up to 16)", "number"], ["split", "Parts per download", "number"], ["min-split-size", "Smallest part", "text"], ["optimize-concurrent-downloads", "Tune parallelism automatically", "bool"]]
+            "title": "Connection",
+            "options": [["max-concurrent-downloads", "Downloads at once", "number"], ["max-connection-per-server", "Connections per server", "number"], ["split", "Parts per download", "number"], ["min-split-size", "Smallest part", "text"], ["optimize-concurrent-downloads", "Tune parallelism automatically", "bool"], ["max-tries", "Max retries", "number"], ["retry-wait", "Retry wait (s)", "number"], ["timeout", "Timeout (s)", "number"], ["connect-timeout", "Connect timeout (s)", "number"], ["max-file-not-found", "Not-found replies before giving up", "number"]]
         },
         {
-            "title": "Speed limits",
+            "title": "Speed",
             "options": [["max-overall-download-limit", "Download limit, all downloads", "text"], ["max-download-limit", "Download limit, each download", "text"], ["max-overall-upload-limit", "Upload limit, all downloads", "text"], ["max-upload-limit", "Upload limit, each download", "text"], ["lowest-speed-limit", "Give up below this speed", "text"]]
         },
         {
-            "title": "Retries and timeouts",
-            "options": [["max-tries", "Attempts (0 = unlimited)", "number"], ["retry-wait", "Wait between attempts (s)", "number"], ["timeout", "Timeout (s)", "number"], ["connect-timeout", "Connect timeout (s)", "number"], ["max-file-not-found", "Not-found replies before giving up", "number"]]
-        },
-        {
-            "title": "Disk and files",
-            "options": [["dir", "Download folder", "text"], ["file-allocation", "File allocation", "select:none,prealloc,trunc,falloc"], ["disk-cache", "Disk cache", "text"], ["continue", "Resume unfinished files", "bool"], ["allow-overwrite", "Overwrite existing files", "bool"], ["auto-file-renaming", "Rename duplicates automatically", "bool"], ["remote-time", "Keep the server's timestamps", "bool"]]
+            "title": "Files",
+            "options": [["file-allocation", "File allocation", "select:none,prealloc,trunc,falloc"], ["disk-cache", "Disk cache", "text"], ["continue", "Resume unfinished files", "bool"], ["allow-overwrite", "Overwrite existing files", "bool"], ["auto-file-renaming", "Rename duplicates automatically", "bool"], ["remote-time", "Keep the server's timestamps", "bool"]]
         },
         {
             "title": "HTTP",
@@ -93,7 +89,7 @@ Item {
 
     readonly property var advancedKeys: {
         const opts = service ? service.globalOptions : ({})
-        const keys = Object.keys(opts).filter(k => coveredKeys.indexOf(k) === -1)
+        const keys = Object.keys(opts).filter(k => coveredKeys.indexOf(k) === -1 && k !== "dir")
         keys.sort()
         return keys
     }
@@ -137,18 +133,124 @@ Item {
         return out
     }
 
+    //: How many of these options the search finds, for a group's "N of M".
+    function hits(options) {
+        let n = 0
+        for (const o of options) {
+            if (matches(o[0], o[1]))
+                n++
+        }
+        return n
+    }
+
+    //: Every match on the page, for the search field's "N found".
+    readonly property int searchHits: {
+        if (!search)
+            return 0
+        let n = 0
+        for (const g of groups)
+            n += hits(g.options)
+        return n + hits(advancedKeys.map(k => [k, k]))
+    }
+
+    //: "Every aria2 option" is long, so it stays folded unless asked for.
+    property bool everyExpanded: false
+
+    //: aria2's download folder as saved, and whether the field differs.
+    readonly property string savedDir: {
+        const opts = service ? service.globalOptions : ({})
+        return opts["dir"] === undefined || opts["dir"] === null ? "" : String(opts["dir"])
+    }
+    readonly property bool dirEdited: dirField.text !== savedDir
+
+    //: The folder chooser for a type's folder; zenity, as DirectoryField.
+    function pickFolder(category) {
+        const start = (routingFolders[category] || "").indexOf("/") === 0 ? routingFolders[category] : savedDir
+        const args = ["zenity", "--file-selection", "--directory", "--title=Folder for " + routingLabels[category]]
+        if (start)
+            args.push("--filename=" + start.replace(/\/*$/, "/"))
+        Proc.runCommand("ariaDownloadManager.pickDir.route." + category, args, (stdout, exitCode) => {
+                            const path = stdout.trim()
+                            if (exitCode === 0 && path)
+                                tab.setRoutingFolder(category, path)
+                        }, 0)
+    }
+
     function matches(key, label) {
         if (!search)
             return true
-        const needle = search.toLowerCase()
-        return key.toLowerCase().indexOf(needle) >= 0 || label.toLowerCase().indexOf(needle) >= 0
+        for (const needle of Fmt.searchForms(search)) {
+            if (key.toLowerCase().indexOf(needle) >= 0 || label.toLowerCase().indexOf(needle) >= 0)
+                return true
+        }
+        return false
     }
+
+    //: Whether any option was touched since the last save; drives the save bar.
+    //: `edits` is written in place, which notifies nothing, hence the flag.
+    property bool optionsDirty: false
+    readonly property bool dirty: optionsDirty || routingDirty
 
     function record(key, value) {
         edits[key] = value
+        // Fields report their value when they are seeded too, so "touched"
+        // is not enough: dirty means some edit differs from what is saved.
+        const current = service ? service.globalOptions : ({})
+        let differs = false
+        for (const k in edits) {
+            const original = current[k] === undefined || current[k] === null ? "" : String(current[k])
+            if (!Units.same(edits[k], original)) {
+                differs = true
+                break
+            }
+        }
+        optionsDirty = differs
+    }
+
+    //: Bumped by Discard: every field goes back to what is saved.
+    property int generation: 0
+
+    //: The wide window: a list of the page's sections on the left that jumps
+    //: to each, the options on the right.
+    property bool wide: false
+
+    readonly property var sections: {
+        const out = [["Download folder", simpleCard]]
+        if (routingEnabled)
+            out.push(["Where each type goes", routingCard])
+        if (advanced) {
+            for (let i = 0; i < groups.length; i++)
+                out.push([groups[i].title, "group:" + i])
+            out.push(["Every aria2 option", everySection])
+            out.push(["aria2c process", procCard])
+            out.push(["Event log", logCard])
+        }
+        return out
+    }
+
+    function jumpTo(target) {
+        const item = typeof target === "string" ? groupRepeater.itemAt(Number(target.split(":")[1])) : target
+        if (!item)
+            return
+        flick.contentY = Math.max(0, Math.min(item.y, flick.contentHeight - flick.height))
+        if (item === logCard)
+            tab.logExpanded = true
+    }
+    //: Why the last save failed, shown above the save bar with Retry; the
+    //: edits stay so nothing typed is lost.
+    property string saveError: ""
+
+    function discard() {
+        edits = ({})
+        optionsDirty = false
+        saveError = ""
+        seedRouting()
+        generation++
+        dirField.text = Qt.binding(() => tab.savedDir)
     }
 
     function save() {
+        saveError = ""
         const options = ({})
         const current = service.globalOptions
         var changed = 0
@@ -165,16 +267,34 @@ Item {
                                     "enabled": tab.routingEnabled,
                                     "folders": tab.routingFolders,
                                     "extensions": tab.routingExtensions
-                                }, changed ? undefined : "Sorting saved")
-            tab.routingDirty = false
+                                }, changed ? undefined : "Sorting saved", error => {
+                                    if (error)
+                                        tab.saveError = tab.plainSaveError(error)
+                                    else
+                                        tab.routingDirty = false
+                                })
         } else if (!changed) {
+            optionsDirty = false
             service.notice("Nothing changed")
             return
         }
-        if (!changed)
+        if (!changed) {
+            optionsDirty = false
             return
-        service.saveOptions(options, "Applied " + changed + " change" + (changed === 1 ? "" : "s"))
-        edits = ({})
+        }
+        service.saveOptions(options, "Applied " + changed + " change" + (changed === 1 ? "" : "s"), error => {
+                                if (error) {
+                                    tab.saveError = tab.plainSaveError(error)
+                                    return
+                                }
+                                tab.edits = ({})
+                                tab.optionsDirty = false
+                            })
+    }
+
+    function plainSaveError(error) {
+        const known = service.explainError(error)
+        return "Couldn't save — " + (known ? known.why : error)
     }
 
     //: Unfold the log and go to it: it is the last thing on a long page.
@@ -187,14 +307,28 @@ Item {
             service.requestedLog = false
     }
 
+    //: The page keeps growing after the log is unfolded — the options load,
+    //: the groups lay out — so for a moment the view stays pinned to the
+    //: bottom as it grows, until the user scrolls or the page settles.
+    property bool followLog: false
+
     Timer {
         id: scrollToLog
 
-        //: The flickable's contentHeight only grows once the unfolded log has
-        //: been laid out, and scrolling before that lands short of the bottom.
         interval: 60
         repeat: false
-        onTriggered: flick.contentY = Math.max(0, flick.contentHeight - flick.height)
+        onTriggered: {
+            tab.followLog = true
+            flick.contentY = Math.max(0, flick.contentHeight - flick.height)
+            stopFollowing.restart()
+        }
+    }
+
+    Timer {
+        id: stopFollowing
+
+        interval: 2000
+        onTriggered: tab.followLog = false
     }
 
     Component.onCompleted: {
@@ -261,54 +395,126 @@ Item {
         }
     }
 
-    // ---- header: mode, search, save --------------------------------------
-    Item {
+    // ---- header: Simple / Advanced and what the page holds -----------------
+    Row {
         id: header
 
-        width: parent.width
-        height: 44
+        width: parent.width - tab.scrollbarGutter
+        height: 34
+        spacing: 12
 
-        DankButtonGroup {
+        Segmented {
             id: modeGroup
 
-            anchors.left: parent.left
             anchors.verticalCenter: parent.verticalCenter
-            size: "small"
             model: ["Simple", "Advanced"]
             currentIndex: tab.advanced ? 1 : 0
-            onSelectionChanged: (index, selected) => {
-                if (selected)
-                    tab.setMode(index === 1 ? "advanced" : "simple")
+            onPicked: index => tab.setMode(index === 1 ? "advanced" : "simple")
+        }
+
+        StyledText {
+            anchors.verticalCenter: parent.verticalCenter
+            width: Math.max(0, header.width - modeGroup.width - 12)
+            text: tab.advanced ? "Every option aria2 reports, the process and its log"
+                               : "The settings that decide how a download behaves"
+            font.pixelSize: Theme.fontSizeSmall
+            color: Theme.surfaceVariantText
+            wrapMode: Text.NoWrap
+            elide: Text.ElideRight
+        }
+    }
+
+    Column {
+        id: sectionNav
+
+        anchors.top: header.bottom
+        anchors.topMargin: 12
+        anchors.left: parent.left
+        width: 190
+        visible: tab.wide
+        spacing: 2
+
+        Repeater {
+            model: tab.wide ? tab.sections : []
+
+            Rectangle {
+                id: navItem
+
+                required property var modelData
+
+                width: sectionNav.width
+                height: 36
+                radius: 10
+                color: navArea.containsMouse ? Theme.withAlpha(Theme.surfaceText, 0.06) : "transparent"
+
+                StyledText {
+                    anchors.left: parent.left
+                    anchors.leftMargin: 14
+                    anchors.right: parent.right
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: navItem.modelData[0]
+                    font.pixelSize: Theme.fontSizeSmall + 1
+                    color: Theme.surfaceText
+                    wrapMode: Text.NoWrap
+                    elide: Text.ElideRight
+                }
+
+                MouseArea {
+                    id: navArea
+
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: tab.jumpTo(navItem.modelData[1])
+                }
             }
         }
+    }
 
-        DankTextField {
-            id: searchField
+    //: A card of the page: a raised block with 16px of room inside.
+    component Card: Rectangle {
+        default property alias body: cardColumn.data
+        property int padding: 16
 
-            anchors.left: modeGroup.right
-            anchors.leftMargin: Theme.spacingS
-            anchors.right: saveButton.left
-            anchors.rightMargin: Theme.spacingS
+        height: visible ? cardColumn.implicitHeight + padding * 2 : 0
+        radius: 16
+        color: Theme.surfaceContainer
+
+        Column {
+            id: cardColumn
+
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.top: parent.top
+            anchors.margins: parent.padding
+        }
+    }
+
+    //: A card's heading: a bold title, and a figure or note on the right.
+    component CardTitle: Item {
+        property string text: ""
+        property string note: ""
+        property color noteColor: Theme.surfaceVariantText
+
+        width: parent ? parent.width : 0
+        height: 30
+
+        StyledText {
+            anchors.left: parent.left
             anchors.verticalCenter: parent.verticalCenter
-            height: 40
-            visible: tab.advanced
-            leftIconName: "search"
-            placeholderText: "Find an option"
-            showClearButton: true
-            onTextChanged: tab.search = text
+            text: parent.text
+            font.pixelSize: Theme.fontSizeMedium
+            font.weight: Font.Bold
+            color: Theme.surfaceText
         }
 
-        DankButton {
-            id: saveButton
-
+        StyledText {
             anchors.right: parent.right
             anchors.verticalCenter: parent.verticalCenter
-            text: "Save changes"
-            iconName: "save"
-            buttonHeight: 40
-            backgroundColor: Theme.primary
-            textColor: Theme.onPrimary
-            onClicked: tab.save()
+            visible: parent.note !== ""
+            text: parent.note
+            font.pixelSize: Theme.fontSizeSmall - 1
+            color: parent.noteColor
         }
     }
 
@@ -316,12 +522,21 @@ Item {
         id: flick
 
         anchors.top: header.bottom
-        anchors.topMargin: Theme.spacingS
-        anchors.bottom: parent.bottom
-        width: parent.width
+        anchors.topMargin: 12
+        anchors.bottom: errorBar.visible ? errorBar.top : (saveBar.visible ? saveBar.top : parent.bottom)
+        anchors.bottomMargin: errorBar.visible || saveBar.visible ? 12 : 0
+        anchors.left: sectionNav.visible ? sectionNav.right : parent.left
+        anchors.leftMargin: sectionNav.visible ? 16 : 0
+        anchors.right: parent.right
         clip: true
         contentHeight: content.implicitHeight
         contentWidth: width
+
+        onContentHeightChanged: {
+            if (tab.followLog)
+                contentY = Math.max(0, contentHeight - height)
+        }
+        onMovementStarted: tab.followLog = false
 
         Column {
             id: content
@@ -329,92 +544,107 @@ Item {
             // The scrollbar is drawn over the flickable's right edge, so the
             // content stops short of it.
             width: parent.width - tab.scrollbarGutter
-            spacing: Theme.spacingM
+            spacing: 12
 
-            StyledText {
+            // ---- advanced: find an option, or jump to a group --------------
+            Column {
                 width: parent.width
-                text: {
-                    const cfg = tab.service ? tab.service.serverConfig : null
-                    const where = cfg && cfg.config_path ? " and saved to " + cfg.config_path : ""
-                    return "Changes apply to the running aria2c right away" + where + "."
+                visible: tab.advanced
+                spacing: 10
+
+                SearchPill {
+                    id: searchField
+
+                    width: parent.width
+                    placeholderText: "Find an aria2 option"
+                    trailingText: tab.searchHits + " found"
+                    onTextChanged: tab.search = text.trim()
                 }
-                font.pixelSize: Theme.fontSizeSmall
-                color: Theme.surfaceVariantText
-                wrapMode: Text.WordWrap
-            }
 
-            // ---- simple ------------------------------------------------
-            Rectangle {
-                width: parent.width
-                visible: !tab.advanced
-                height: visible ? simpleColumn.implicitHeight + Theme.spacingM * 2 : 0
-                radius: Theme.cornerRadius
-                color: Theme.surfaceContainer
-
-                Column {
-                    id: simpleColumn
-
-                    anchors.left: parent.left
-                    anchors.right: parent.right
-                    anchors.top: parent.top
-                    anchors.margins: Theme.spacingM
-                    spacing: Theme.spacingS
+                //: The window's section list already jumps; the chips are for
+                //: the popout.
+                Flow {
+                    width: parent.width
+                    visible: !tab.search && !tab.wide
+                    spacing: 6
 
                     Repeater {
-                        model: tab.advanced ? [] : tab.simpleOptions
+                        model: tab.groups
 
-                        OptionField {
-                            id: simpleOption
-
+                        PillButton {
                             required property var modelData
+                            required property int index
 
-                            width: simpleColumn.width
-                            optionKey: simpleOption.modelData[0]
-                            label: simpleOption.modelData[1]
-                            kind: simpleOption.modelData[2]
-                            description: simpleOption.modelData[3]
-                            original: {
-                                const opts = tab.service ? tab.service.globalOptions : ({})
-                                const raw = opts[simpleOption.modelData[0]]
-                                return raw === undefined || raw === null ? "" : String(raw)
-                            }
-                            value: original
-                            onEdited: (key, newValue) => tab.record(key, newValue)
+                            size: 32
+                            kind: "outlined"
+                            text: modelData.title
+                            onClicked: tab.jumpTo("group:" + index)
+                        }
+                    }
+
+                    PillButton {
+                        size: 32
+                        kind: "outlined"
+                        text: "Every option"
+                        onClicked: {
+                            tab.everyExpanded = true
+                            tab.jumpTo(everySection)
                         }
                     }
                 }
             }
 
-            // ---- where downloads go, by what they are -------------------
-            Rectangle {
+            // ---- the download folder, sorting, and (Simple) the basics -----
+            Card {
+                id: simpleCard
+
                 width: content.width
-                height: routingColumn.implicitHeight + Theme.spacingM * 2
-                radius: Theme.cornerRadius
-                color: Theme.surfaceContainer
+                visible: !tab.advanced || !tab.search
 
                 Column {
-                    id: routingColumn
+                    width: parent.width
+                    spacing: 10
+                    bottomPadding: 6
 
-                    anchors.left: parent.left
-                    anchors.right: parent.right
-                    anchors.top: parent.top
-                    anchors.margins: Theme.spacingM
-                    spacing: Theme.spacingS
+                    CardTitle {
+                        text: "Download folder"
+                        note: tab.dirEdited ? "●  edited" : ""
+                        noteColor: Theme.primary
+                    }
+
+                    //: aria2's own download folder leads the card: every
+                    //: folder below is relative to it, so the two belong
+                    //: together. It is still an aria2 option, saved by Save.
+                    DirectoryField {
+                        id: dirField
+
+                        objectName: "routeDefault"
+                        width: parent.width
+                        placeholderText: "Where downloads go"
+                        text: tab.savedDir
+                        onTextChanged: tab.record("dir", text)
+                    }
 
                     Item {
                         width: parent.width
-                        height: 28
+                        height: Math.max(32, sortText.implicitHeight)
 
                         StyledText {
+                            id: sortText
+
                             anchors.left: parent.left
+                            anchors.right: sortSwitch.left
+                            anchors.rightMargin: 12
                             anchors.verticalCenter: parent.verticalCenter
-                            text: "Sort into folders by type"
-                            font.pixelSize: Theme.fontSizeMedium
-                            font.weight: Font.Medium
+                            text: "Sort into subfolders by type · " + tab.routingCategories.filter(c => c !== "other").map(c => tab.routingLabels[c]).join(", ")
+                            wrapMode: Text.WordWrap
+                            font.pixelSize: Theme.fontSizeSmall + 1
                             color: Theme.surfaceText
                         }
 
                         BoolSwitch {
+                            id: sortSwitch
+
                             anchors.right: parent.right
                             anchors.verticalCenter: parent.verticalCenter
                             checked: tab.routingEnabled
@@ -424,133 +654,297 @@ Item {
                             }
                         }
                     }
+                }
 
-                    StyledText {
+                Repeater {
+                    model: tab.advanced ? [] : tab.simpleOptions
+
+                    OptionField {
+                        id: simpleOption
+
+                        required property var modelData
+
                         width: parent.width
-                        text: "Everything starts in the download folder. With sorting on, each download goes to the subfolder its file type names below. Blank means the download folder itself, and an absolute path is used as it is."
-                        font.pixelSize: Theme.fontSizeSmall
-                        color: Theme.surfaceVariantText
-                        wrapMode: Text.WordWrap
+                        divider: true
+                        optionKey: simpleOption.modelData[0]
+                        label: simpleOption.modelData[1]
+                        kind: simpleOption.modelData[2]
+                        description: simpleOption.modelData[3]
+                        minimum: simpleOption.modelData[4] || 0
+                        maximum: simpleOption.modelData[5] || 0
+                        resetToken: tab.generation
+                        original: {
+                            const opts = tab.service ? tab.service.globalOptions : ({})
+                            const raw = opts[simpleOption.modelData[0]]
+                            return raw === undefined || raw === null ? "" : String(raw)
+                        }
+                        value: original
+                        onEdited: (key, newValue) => tab.record(key, newValue)
+                    }
+                }
+            }
+
+            // ---- where each type goes (board 19) ----------------------------
+            Card {
+                id: routingCard
+
+                width: content.width
+                visible: tab.routingEnabled && (!tab.advanced || !tab.search)
+                padding: 14
+
+                Column {
+                    width: parent.width
+                    spacing: 8
+
+                    CardTitle {
+                        text: "Where each type goes"
                     }
 
-                    //: aria2's own download folder leads the card: every folder
-                    //: below is relative to it, so the two belong together. It
-                    //: is still an aria2 option, saved by the page's Save.
-                    Item {
-                        width: parent.width
-                        height: 44
-
-                        StyledText {
-                            anchors.left: parent.left
-                            anchors.verticalCenter: parent.verticalCenter
-                            width: 140
-                            text: "Download folder"
-                            font.pixelSize: Theme.fontSizeSmall
-                            font.weight: Font.Medium
-                            color: Theme.surfaceText
-                            elide: Text.ElideRight
-                        }
-
-                        DirectoryField {
-                            objectName: "routeDefault"
-                            anchors.right: parent.right
-                            anchors.verticalCenter: parent.verticalCenter
-                            width: Math.max(0, parent.width - 150)
-                            placeholderText: "Where downloads go"
-                            text: {
-                                const opts = tab.service ? tab.service.globalOptions : ({})
-                                return opts["dir"] === undefined || opts["dir"] === null ? "" : String(opts["dir"])
-                            }
-                            onTextChanged: tab.record("dir", text)
-                        }
-                    }
-
+                    //: One card per type: where it goes, and which extensions
+                    //: count as it, as chips.
                     Repeater {
-                        model: tab.routingCategories
+                        model: tab.routingEnabled ? tab.routingCategories : []
 
-                        Item {
-                            id: folderRow
+                        Rectangle {
+                            id: categoryCard
 
                             required property var modelData
 
-                            width: routingColumn.width
-                            height: 44
+                            readonly property string category: modelData
+                            readonly property var extensions: tab.routingExtensions[category] || []
+                            property bool adding: false
 
-                            StyledText {
+                            width: parent.width
+                            height: categoryColumn.implicitHeight + 24
+                            radius: 12
+                            color: Theme.surfaceContainerHigh
+
+                            Column {
+                                id: categoryColumn
+
                                 anchors.left: parent.left
-                                anchors.verticalCenter: parent.verticalCenter
-                                width: 140
-                                text: tab.routingLabels[folderRow.modelData]
-                                font.pixelSize: Theme.fontSizeSmall
-                                color: Theme.surfaceVariantText
-                                elide: Text.ElideRight
-                            }
-
-                            //: The same chooser the download folder has. A
-                            //: relative name is still typed by hand; the picker
-                            //: is for putting a category somewhere else entirely.
-                            DirectoryField {
-                                objectName: "routeFolder." + folderRow.modelData
                                 anchors.right: parent.right
-                                anchors.verticalCenter: parent.verticalCenter
-                                width: Math.max(0, parent.width - 150)
-                                placeholderText: "Download folder"
-                                startDir: {
-                                    const opts = tab.service ? tab.service.globalOptions : ({})
-                                    return opts["dir"] ? String(opts["dir"]) : ""
+                                anchors.top: parent.top
+                                anchors.margins: 12
+                                spacing: 8
+
+                                Item {
+                                    width: parent.width
+                                    height: 26
+
+                                    DankIcon {
+                                        id: categoryIcon
+
+                                        anchors.left: parent.left
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        name: ({
+                                                   "archive": "folder_zip",
+                                                   "music": "music_note",
+                                                   "video": "movie",
+                                                   "image": "image",
+                                                   "other": "draft"
+                                               })[categoryCard.category] || "folder"
+                                        size: 18
+                                        color: Theme.primary
+                                    }
+
+                                    StyledText {
+                                        id: categoryLabel
+
+                                        anchors.left: categoryIcon.right
+                                        anchors.leftMargin: 10
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        text: tab.routingLabels[categoryCard.category]
+                                        font.pixelSize: Theme.fontSizeMedium
+                                        font.weight: Font.DemiBold
+                                        color: Theme.surfaceText
+                                    }
+
+                                    //: "→ Video/": a relative name is a subfolder
+                                    //: of the download folder; typed in place, or
+                                    //: chosen with the folder button.
+                                    Row {
+                                        anchors.right: parent.right
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        spacing: 4
+
+                                        StyledText {
+                                            anchors.verticalCenter: parent.verticalCenter
+                                            text: "→"
+                                            font.pixelSize: Theme.fontSizeSmall - 1
+                                            color: Theme.surfaceVariantText
+                                        }
+
+                                        TextInput {
+                                            id: folderInput
+
+                                            anchors.verticalCenter: parent.verticalCenter
+                                            width: Math.min(Math.max(contentWidth + 2, folderHint.visible ? folderHint.implicitWidth : 8),
+                                                            categoryCard.width - categoryLabel.x - categoryLabel.width - 90)
+                                            horizontalAlignment: TextInput.AlignRight
+                                            text: tab.routingFolders[categoryCard.category] || ""
+                                            color: Theme.surfaceText
+                                            selectByMouse: true
+                                            clip: true
+                                            font.pixelSize: Theme.fontSizeSmall - 1
+                                            font.family: "monospace"
+                                            onTextEdited: tab.setRoutingFolder(categoryCard.category, text.trim())
+
+                                            StyledText {
+                                                id: folderHint
+
+                                                anchors.right: parent.right
+                                                anchors.verticalCenter: parent.verticalCenter
+                                                visible: folderInput.text.length === 0
+                                                text: "download folder"
+                                                font.pixelSize: Theme.fontSizeSmall - 1
+                                                font.family: "monospace"
+                                                color: Theme.surfaceVariantText
+                                            }
+                                        }
+
+                                        DankActionButton {
+                                            anchors.verticalCenter: parent.verticalCenter
+                                            buttonSize: 26
+                                            iconSize: 15
+                                            iconName: "folder_open"
+                                            iconColor: Theme.surfaceVariantText
+                                            tooltipText: "Choose a folder for " + tab.routingLabels[categoryCard.category]
+                                            onClicked: tab.pickFolder(categoryCard.category)
+                                        }
+                                    }
                                 }
-                                dialogTitle: "Folder for " + tab.routingLabels[folderRow.modelData]
-                                text: tab.routingFolders[folderRow.modelData] || ""
-                                onTextChanged: {
-                                    if (text !== (tab.routingFolders[folderRow.modelData] || ""))
-                                        tab.setRoutingFolder(folderRow.modelData, text)
-                                }
-                            }
-                        }
-                    }
 
-                    StyledText {
-                        width: parent.width
-                        visible: tab.advanced
-                        text: "Which extensions count as what"
-                        font.pixelSize: Theme.fontSizeSmall
-                        font.weight: Font.Medium
-                        color: Theme.surfaceVariantText
-                        topPadding: Theme.spacingS
-                    }
+                                //: "Everything else" is whatever no list claims.
+                                Flow {
+                                    width: parent.width
+                                    visible: categoryCard.category !== "other"
+                                    spacing: 6
 
-                    Repeater {
-                        //: "other" is whatever no list claims, so it has none.
-                        model: tab.advanced ? tab.routingCategories.slice(0, 4) : []
+                                    Repeater {
+                                        model: categoryCard.extensions
 
-                        Item {
-                            id: extRow
+                                        Rectangle {
+                                            id: extChip
 
-                            required property var modelData
+                                            required property string modelData
 
-                            width: routingColumn.width
-                            height: 44
+                                            width: extRow.implicitWidth + 18
+                                            height: 26
+                                            radius: 13
+                                            color: Theme.surfaceContainerHighest
 
-                            StyledText {
-                                anchors.left: parent.left
-                                anchors.verticalCenter: parent.verticalCenter
-                                width: 140
-                                text: tab.routingLabels[extRow.modelData]
-                                font.pixelSize: Theme.fontSizeSmall
-                                color: Theme.surfaceVariantText
-                                elide: Text.ElideRight
-                            }
+                                            Row {
+                                                id: extRow
 
-                            DankTextField {
-                                anchors.right: parent.right
-                                anchors.verticalCenter: parent.verticalCenter
-                                width: Math.max(0, parent.width - 150)
-                                height: 40
-                                font.pixelSize: Theme.fontSizeSmall
-                                text: (tab.routingExtensions[extRow.modelData] || []).join(" ")
-                                onTextChanged: {
-                                    if (text !== (tab.routingExtensions[extRow.modelData] || []).join(" "))
-                                        tab.setRoutingExtensions(extRow.modelData, text)
+                                                anchors.centerIn: parent
+                                                spacing: 4
+
+                                                StyledText {
+                                                    anchors.verticalCenter: parent.verticalCenter
+                                                    text: extChip.modelData
+                                                    font.pixelSize: Theme.fontSizeSmall - 1
+                                                    color: Theme.surfaceText
+                                                }
+
+                                                DankIcon {
+                                                    anchors.verticalCenter: parent.verticalCenter
+                                                    visible: extArea.containsMouse
+                                                    name: "close"
+                                                    size: 12
+                                                    color: Theme.surfaceVariantText
+                                                }
+                                            }
+
+                                            MouseArea {
+                                                id: extArea
+
+                                                anchors.fill: parent
+                                                hoverEnabled: true
+                                                cursorShape: Qt.PointingHandCursor
+                                                onClicked: tab.setRoutingExtensions(categoryCard.category,
+                                                                                    categoryCard.extensions.filter(x => x !== extChip.modelData).join(" "))
+                                            }
+                                        }
+                                    }
+
+                                    //: A dashed "+ add" that turns into a box.
+                                    Item {
+                                        width: categoryCard.adding ? 80 : addLabel.implicitWidth + 20
+                                        height: 26
+
+                                        Canvas {
+                                            anchors.fill: parent
+
+                                            property color tint: Theme.outlineVariant
+                                            property bool active: categoryCard.adding
+
+                                            onTintChanged: requestPaint()
+                                            onWidthChanged: requestPaint()
+                                            onActiveChanged: requestPaint()
+
+                                            onPaint: {
+                                                const ctx = getContext("2d")
+                                                ctx.reset()
+                                                const r = (height - 1) / 2
+                                                ctx.strokeStyle = active ? Theme.primary : tint
+                                                ctx.lineWidth = 1
+                                                ctx.setLineDash(active ? [] : [3, 3])
+                                                ctx.beginPath()
+                                                ctx.moveTo(r + 0.5, 0.5)
+                                                ctx.lineTo(width - r - 0.5, 0.5)
+                                                ctx.arc(width - r - 0.5, r + 0.5, r, -Math.PI / 2, Math.PI / 2)
+                                                ctx.lineTo(r + 0.5, height - 0.5)
+                                                ctx.arc(r + 0.5, r + 0.5, r, Math.PI / 2, Math.PI * 1.5)
+                                                ctx.stroke()
+                                            }
+                                        }
+
+                                        StyledText {
+                                            id: addLabel
+
+                                            anchors.centerIn: parent
+                                            visible: !categoryCard.adding
+                                            text: "+ add"
+                                            font.pixelSize: Theme.fontSizeSmall - 1
+                                            color: Theme.surfaceText
+                                        }
+
+                                        MouseArea {
+                                            anchors.fill: parent
+                                            visible: !categoryCard.adding
+                                            cursorShape: Qt.PointingHandCursor
+                                            onClicked: {
+                                                categoryCard.adding = true
+                                                extInput.forceActiveFocus()
+                                            }
+                                        }
+
+                                        TextInput {
+                                            id: extInput
+
+                                            anchors.fill: parent
+                                            anchors.leftMargin: 10
+                                            anchors.rightMargin: 10
+                                            verticalAlignment: TextInput.AlignVCenter
+                                            visible: categoryCard.adding
+                                            color: Theme.surfaceText
+                                            clip: true
+                                            font.pixelSize: Theme.fontSizeSmall - 1
+                                            font.family: Theme.fontFamily
+                                            onAccepted: {
+                                                const added = text.trim().replace(/^\./, "").toLowerCase()
+                                                if (added && categoryCard.extensions.indexOf(added) === -1)
+                                                    tab.setRoutingExtensions(categoryCard.category, categoryCard.extensions.concat([added]).join(" "))
+                                                text = ""
+                                            }
+                                            onActiveFocusChanged: if (!activeFocus) {
+                                                                      text = ""
+                                                                      categoryCard.adding = false
+                                                                  }
+                                            Keys.onEscapePressed: focus = false
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -558,114 +952,119 @@ Item {
                 }
             }
 
-            // ---- advanced: curated groups -------------------------------
+            // ---- advanced: the curated groups -------------------------------
             Repeater {
+                id: groupRepeater
+
                 model: tab.advanced ? tab.groups : []
 
-                Rectangle {
+                Card {
                     id: group
 
                     required property var modelData
 
                     width: content.width
-                    height: visible ? groupColumn.implicitHeight + Theme.spacingM * 2 : 0
-                    radius: Theme.cornerRadius
-                    color: Theme.surfaceContainer
-                    visible: {
-                        if (!tab.search)
-                            return true
-                        const opts = group.modelData.options
-                        for (var i = 0; i < opts.length; i++) {
-                            if (tab.matches(opts[i][0], opts[i][1]))
-                                return true
-                        }
-                        return false
+                    padding: 14
+                    visible: tab.hits(group.modelData.options) > 0
+
+                    CardTitle {
+                        text: group.modelData.title
+                        note: tab.search ? tab.hits(group.modelData.options) + " of " + group.modelData.options.length : ""
                     }
 
-                    Column {
-                        id: groupColumn
+                    Repeater {
+                        model: group.modelData.options
 
-                        anchors.left: parent.left
-                        anchors.right: parent.right
-                        anchors.top: parent.top
-                        anchors.margins: Theme.spacingM
-                        spacing: Theme.spacingXS
+                        OptionField {
+                            id: option
 
-                        StyledText {
-                            text: group.modelData.title.toUpperCase()
-                            font.pixelSize: Theme.fontSizeSmall - 1
-                            font.weight: Font.Bold
-                            font.letterSpacing: 0.8
-                            color: Theme.surfaceVariantText
-                            bottomPadding: Theme.spacingXS
-                        }
-
-                        Grid {
-                            id: groupGrid
+                            required property var modelData
+                            required property int index
 
                             width: parent.width
-                            //: Two columns whenever each still gets a usable
-                            //: width — the popout manages that; only a window
-                            //: narrower than that falls back to one.
-                            columns: Math.max(1, Math.min(2, Math.floor(width / 240)))
-                            columnSpacing: Theme.spacingM
-                            rowSpacing: Theme.spacingXS
-
-                            Repeater {
-                                model: group.modelData.options
-
-                                OptionField {
-                                    id: option
-
-                                    required property var modelData
-
-                                    width: (groupGrid.width - (groupGrid.columns - 1) * Theme.spacingM) / groupGrid.columns
-                                    optionKey: option.modelData[0]
-                                    label: option.modelData[1]
-                                    kind: option.modelData[2]
-                                    original: {
-                                        const opts = tab.service ? tab.service.globalOptions : ({})
-                                        const raw = opts[option.modelData[0]]
-                                        return raw === undefined || raw === null ? "" : String(raw)
-                                    }
-                                    value: original
-                                    visible: tab.matches(option.modelData[0], option.modelData[1])
-                                    height: visible ? implicitHeight : 0
-                                    onEdited: (key, newValue) => tab.record(key, newValue)
-                                }
+                            //: Only between rows that are shown.
+                            divider: group.modelData.options.slice(0, index).some(o => tab.matches(o[0], o[1]))
+                            optionKey: option.modelData[0]
+                            label: option.modelData[1]
+                            kind: option.modelData[2]
+                            showKey: true
+                            highlight: tab.search
+                            resetToken: tab.generation
+                            original: {
+                                const opts = tab.service ? tab.service.globalOptions : ({})
+                                const raw = opts[option.modelData[0]]
+                                return raw === undefined || raw === null ? "" : String(raw)
                             }
+                            value: original
+                            visible: tab.matches(option.modelData[0], option.modelData[1])
+                            height: visible ? implicitHeight : 0
+                            onEdited: (key, newValue) => tab.record(key, newValue)
                         }
                     }
                 }
             }
 
-            // ---- advanced: every option aria2 reports -------------------
-            DankCollapsibleSection {
+            // ---- advanced: every option aria2 reports -----------------------
+            Card {
+                id: everySection
+
+                readonly property int found: tab.hits(tab.advancedKeys.map(k => [k, k]))
+                readonly property bool open: tab.everyExpanded || tab.search !== ""
+
                 width: content.width
-                visible: tab.advanced
-                title: "Every aria2 option · " + tab.advancedKeys.length
-                expanded: false
-                showBackground: true
+                padding: 14
+                visible: tab.advanced && (!tab.search || found > 0)
+
+                Item {
+                    width: parent.width
+                    height: 30
+
+                    DankIcon {
+                        id: everyChevron
+
+                        anchors.left: parent.left
+                        anchors.verticalCenter: parent.verticalCenter
+                        visible: !tab.search
+                        name: everySection.open ? "expand_less" : "expand_more"
+                        size: 20
+                        color: Theme.surfaceVariantText
+                    }
+
+                    StyledText {
+                        anchors.left: everyChevron.visible ? everyChevron.right : parent.left
+                        anchors.leftMargin: everyChevron.visible ? 8 : 0
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: "Every aria2 option"
+                        font.pixelSize: Theme.fontSizeMedium
+                        font.weight: Font.Bold
+                        color: Theme.surfaceText
+                    }
+
+                    StyledText {
+                        anchors.right: parent.right
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: tab.search ? String(everySection.found) : String(tab.advancedKeys.length)
+                        font.pixelSize: Theme.fontSizeSmall - 1
+                        color: Theme.surfaceVariantText
+                    }
+
+                    MouseArea {
+                        anchors.fill: parent
+                        enabled: !tab.search
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: tab.everyExpanded = !tab.everyExpanded
+                    }
+                }
 
                 Repeater {
-                    model: tab.advanced ? tab.advancedGroups : []
+                    model: everySection.open ? tab.advancedGroups : []
 
                     Column {
                         id: advGroup
 
                         required property var modelData
 
-                        //: A DankCollapsibleSection hands its children to a
-                        //: ColumnLayout, which sizes a child it is not told to
-                        //: fill down to its implicit width — and the grid below
-                        //: takes its width from here, so the pair collapsed to
-                        //: a couple of crushed columns. Measured against that
-                        //: layout instead, which already allows for its own
-                        //: margins. (Its attached Layout.fillWidth is out of
-                        //: reach here: this file imports lib/Layout.js under
-                        //: that same name.)
-                        width: parent ? parent.width : 0
-                        spacing: Theme.spacingXS
+                        width: parent.width
                         visible: {
                             if (!tab.search)
                                 return true
@@ -678,207 +1077,416 @@ Item {
                         }
 
                         StyledText {
-                            text: advGroup.modelData.title.toUpperCase()
-                            font.pixelSize: Theme.fontSizeSmall - 1
-                            font.weight: Font.Bold
-                            font.letterSpacing: 0.8
+                            topPadding: 12
+                            bottomPadding: 2
+                            text: advGroup.modelData.title
+                            font.pixelSize: Theme.fontSizeSmall
+                            font.weight: Font.DemiBold
                             color: Theme.surfaceVariantText
-                            topPadding: Theme.spacingS
                         }
 
-                        Grid {
-                            id: advGrid
+                        Repeater {
+                            model: advGroup.modelData.keys
 
-                            //: From the same place the column above measures,
-                            //: so a layout-driven resize cannot shrink it.
-                            width: advGroup.parent ? advGroup.parent.width : 0
-                            columns: Math.max(1, Math.min(2, Math.floor(width / 240)))
-                            columnSpacing: Theme.spacingM
-                            rowSpacing: Theme.spacingXS
+                            OptionField {
+                                id: advancedOption
 
-                            Repeater {
-                                model: advGroup.modelData.keys
+                                required property var modelData
+                                required property int index
 
-                                OptionField {
-                                    id: advancedOption
-
-                                    required property var modelData
-
-                                    width: (advGrid.width - (advGrid.columns - 1) * Theme.spacingM) / advGrid.columns
-                                    optionKey: advancedOption.modelData
-                                    label: advancedOption.modelData
-                                    kind: (original === "true" || original === "false") ? "bool" : "text"
-                                    description: OptionHelp.forKey(advancedOption.modelData)
-                                    original: {
-                                        const opts = tab.service ? tab.service.globalOptions : ({})
-                                        const raw = opts[advancedOption.modelData]
-                                        return raw === undefined || raw === null ? "" : String(raw)
-                                    }
-                                    value: original
-                                    visible: tab.matches(advancedOption.modelData, advancedOption.modelData)
-                                    height: visible ? implicitHeight : 0
-                                    onEdited: (key, newValue) => tab.record(key, newValue)
+                                width: advGroup.width
+                                divider: advGroup.modelData.keys.slice(0, index).some(k => tab.matches(k, k))
+                                monoLabel: true
+                                optionKey: advancedOption.modelData
+                                label: advancedOption.modelData
+                                kind: (original === "true" || original === "false") ? "bool" : "text"
+                                description: OptionHelp.forKey(advancedOption.modelData) || "No description from aria2"
+                                highlight: tab.search
+                                resetToken: tab.generation
+                                original: {
+                                    const opts = tab.service ? tab.service.globalOptions : ({})
+                                    const raw = opts[advancedOption.modelData]
+                                    return raw === undefined || raw === null ? "" : String(raw)
                                 }
+                                value: original
+                                visible: tab.matches(advancedOption.modelData, advancedOption.modelData)
+                                height: visible ? implicitHeight : 0
+                                onEdited: (key, newValue) => tab.record(key, newValue)
                             }
                         }
                     }
                 }
             }
 
-            // ---- advanced: the two processes ----------------------------
-            Rectangle {
-                width: parent.width
-                visible: tab.advanced
-                height: visible ? procColumn.implicitHeight + Theme.spacingM * 2 : 0
-                radius: Theme.cornerRadius
-                color: Theme.surfaceContainer
+            // ---- advanced: the aria2c process -------------------------------
+            Card {
+                id: procCard
 
-                Column {
-                    id: procColumn
+                readonly property var aria2: tab.service ? tab.service.aria2 : ({})
+                readonly property string restarting: tab.service ? tab.service.restarting : ""
+                property bool showDetails: false
 
-                    anchors.left: parent.left
-                    anchors.right: parent.right
-                    anchors.top: parent.top
-                    anchors.margins: Theme.spacingM
-                    spacing: Theme.spacingXS
+                width: content.width
+                padding: 14
+                visible: tab.advanced && !tab.search
 
-                    Item {
+                //: Health first: a dot, the state in words, and version, pid
+                //: and uptime on the right.
+                Item {
+                    width: parent.width
+                    height: 28
+
+                    Rectangle {
+                        id: healthDot
+
+                        anchors.left: parent.left
+                        anchors.verticalCenter: parent.verticalCenter
+                        width: 8
+                        height: 8
+                        radius: 4
+                        color: procCard.restarting ? Theme.warning : (procCard.aria2.running ? Theme.success : Theme.error)
+                    }
+
+                    StyledText {
+                        anchors.left: healthDot.right
+                        anchors.leftMargin: 8
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: {
+                            if (procCard.restarting === "aria2c")
+                                return "aria2c restarting…"
+                            if (procCard.restarting === "manager")
+                                return "Manager restarting…"
+                            return procCard.aria2.running ? "aria2c running" : "aria2c stopped"
+                        }
+                        font.pixelSize: Theme.fontSizeMedium
+                        font.weight: Font.DemiBold
+                        color: Theme.surfaceText
+                    }
+
+                    StyledText {
+                        anchors.right: parent.right
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: {
+                            const a = procCard.aria2
+                            const bits = []
+                            if (a.version)
+                                bits.push(a.version)
+                            if (a.pid)
+                                bits.push("pid " + a.pid)
+                            if (a.running && a.uptime)
+                                bits.push("up " + Fmt.eta(a.uptime))
+                            return bits.join(" · ")
+                        }
+                        font.pixelSize: Theme.fontSizeSmall - 1
+                        color: Theme.surfaceVariantText
+                    }
+                }
+
+                //: While a restart runs, its button turns into the wait and
+                //: neither can be pressed again.
+                Row {
+                    topPadding: 6
+                    spacing: 6
+
+                    PillButton {
+                        size: 32
+                        kind: "outlined"
+                        text: procCard.restarting === "aria2c" ? "Restarting…" : "Restart aria2c"
+                        busy: procCard.restarting === "aria2c"
+                        enabled: procCard.restarting === ""
+                        onClicked: tab.service.restartAria2()
+                    }
+
+                    PillButton {
+                        size: 32
+                        kind: "outlined"
+                        text: procCard.restarting === "manager" ? "Restarting…" : "Restart manager"
+                        busy: procCard.restarting === "manager"
+                        enabled: procCard.restarting === ""
+                        onClicked: tab.service.restartManager()
+                    }
+
+                    PillButton {
+                        size: 32
+                        kind: "text"
+                        trailingIcon: procCard.showDetails ? "expand_less" : "expand_more"
+                        text: "Details"
+                        onClicked: procCard.showDetails = !procCard.showDetails
+                    }
+                }
+
+                Repeater {
+                    model: {
+                        if (!procCard.showDetails)
+                            return []
+                        const aria2 = procCard.aria2
+                        const cfg = tab.service ? tab.service.serverConfig : null
+                        return [["Managed", aria2.managed ? "Yes, started by the manager" : "No, external process"], ["RPC address", aria2.rpc_url || "—"], ["Restarts", String(aria2.restarts || 0)], ["Log file", aria2.log_file || "—"], ["Session file", aria2.session_file || "—"], ["Settings file", cfg && cfg.config_path ? cfg.config_path : "—"], ["Last error", aria2.last_error || "None"], ["Torrents", tab.torrentEngineText()]]
+                    }
+
+                    Row {
+                        id: procRow
+
+                        required property var modelData
+                        required property int index
+
                         width: parent.width
-                        height: 40
+                        height: 22
+                        topPadding: index === 0 ? 8 : 0
+                        spacing: 8
 
                         StyledText {
-                            anchors.left: parent.left
                             anchors.verticalCenter: parent.verticalCenter
-                            text: "aria2c process"
-                            font.pixelSize: Theme.fontSizeLarge
-                            font.weight: Font.Medium
-                            color: Theme.surfaceText
+                            width: 100
+                            text: procRow.modelData[0]
+                            font.pixelSize: Theme.fontSizeSmall - 1
+                            color: Theme.surfaceVariantText
                         }
 
-                        Row {
-                            anchors.right: parent.right
+                        //: One line each: aria2's errors arrive with line breaks
+                        //: and terminal colours in them.
+                        StyledText {
                             anchors.verticalCenter: parent.verticalCenter
-                            spacing: Theme.spacingS
-
-                            DankButton {
-                                text: "Restart manager"
-                                iconName: "restart_alt"
-                                buttonHeight: 34
-                                backgroundColor: Theme.surfaceContainerHigh
-                                textColor: Theme.surfaceText
-                                onClicked: tab.service.restartManager()
-                            }
-
-                            DankButton {
-                                text: "Restart aria2c"
-                                iconName: "restart_alt"
-                                buttonHeight: 34
-                                backgroundColor: Theme.errorHover
-                                textColor: Theme.error
-                                onClicked: tab.service.post("/api/aria2/restart", null, "aria2c restarted")
-                            }
-                        }
-                    }
-
-                    Repeater {
-                        model: {
-                            const aria2 = tab.service ? tab.service.aria2 : ({})
-                            return [["Managed", aria2.managed ? "Yes, started by the manager" : "No, external process"], ["Running", aria2.running ? "Yes" : "No"], ["PID", String(aria2.pid !== undefined && aria2.pid !== null ? aria2.pid : "—")], ["Version", aria2.version || "—"], ["RPC address", aria2.rpc_url || "—"], ["Uptime", Fmt.eta(aria2.uptime)], ["Restarts", String(aria2.restarts || 0)], ["Log file", aria2.log_file || "—"], ["Session file", aria2.session_file || "—"], ["Last error", aria2.last_error || "None"], ["Torrents", tab.torrentEngineText()]]
-                        }
-
-                        Row {
-                            id: procRow
-
-                            required property var modelData
-
-                            width: procColumn.width
-                            height: 20
-                            spacing: Theme.spacingS
-
-                            StyledText {
-                                width: 100
-                                text: procRow.modelData[0]
-                                font.pixelSize: Theme.fontSizeSmall
-                                color: Theme.surfaceVariantText
-                            }
-
-                            StyledText {
-                                width: Math.max(0, parent.width - 100 - Theme.spacingS)
-                                text: procRow.modelData[1]
-                                font.pixelSize: Theme.fontSizeSmall
-                                color: procRow.modelData[0] === "Last error" && procRow.modelData[1] !== "None" ? Theme.error : Theme.surfaceText
-                                elide: Text.ElideMiddle
-                            }
+                            width: Math.max(0, parent.width - 108)
+                            text: String(procRow.modelData[1]).replace(/\u001b\[[0-9;]*m/g, "").replace(/\s+/g, " ").trim()
+                            wrapMode: Text.NoWrap
+                            maximumLineCount: 1
+                            font.pixelSize: Theme.fontSizeSmall - 1
+                            font.family: "monospace"
+                            color: procRow.modelData[0] === "Last error" && procRow.modelData[1] !== "None" ? Theme.error : Theme.surfaceText
+                            elide: Text.ElideMiddle
                         }
                     }
                 }
             }
 
-            // ---- advanced: event log ------------------------------------
+            // ---- advanced: event log ----------------------------------------
             // Diagnostic material rather than a main view, so it holds no tab
             // of its own: it sits folded at the bottom, under the process card
-            // it usually explains.
-            Rectangle {
-                width: parent.width
-                visible: tab.advanced
-                height: visible ? logColumn.implicitHeight + Theme.spacingM * 2 : 0
-                radius: Theme.cornerRadius
-                color: Theme.surfaceContainer
+            // it usually explains, saying how many errors it holds.
+            Card {
+                id: logCard
 
-                Column {
-                    id: logColumn
+                readonly property var events: tab.service ? tab.service.events : []
+                readonly property int errors: events.filter(ev => ev.level === "error").length
 
-                    anchors.left: parent.left
-                    anchors.right: parent.right
-                    anchors.top: parent.top
-                    anchors.margins: Theme.spacingM
-                    spacing: Theme.spacingS
+                width: content.width
+                padding: 14
+                visible: tab.advanced && !tab.search
 
-                    Item {
-                        width: parent.width
-                        height: 32
+                Item {
+                    width: parent.width
+                    height: 30
 
-                        StyledText {
-                            anchors.left: parent.left
+                    DankIcon {
+                        id: logChevron
+
+                        anchors.left: parent.left
+                        anchors.verticalCenter: parent.verticalCenter
+                        name: tab.logExpanded ? "expand_less" : "expand_more"
+                        size: 20
+                        color: Theme.surfaceVariantText
+                    }
+
+                    StyledText {
+                        anchors.left: logChevron.right
+                        anchors.leftMargin: 8
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: "Event log"
+                        font.pixelSize: Theme.fontSizeMedium
+                        font.weight: tab.logExpanded ? Font.Bold : Font.Medium
+                        color: Theme.surfaceText
+                    }
+
+                    Row {
+                        anchors.right: parent.right
+                        anchors.verticalCenter: parent.verticalCenter
+                        spacing: 8
+
+                        Rectangle {
                             anchors.verticalCenter: parent.verticalCenter
-                            text: "Event log · " + (tab.service ? tab.service.events.length : 0)
-                            font.pixelSize: Theme.fontSizeLarge
-                            font.weight: Font.Medium
-                            color: Theme.surfaceText
-                        }
+                            visible: logCard.errors > 0
+                            width: errorsLabel.implicitWidth + 16
+                            height: 20
+                            radius: 10
+                            color: Theme.withAlpha(Theme.error, 0.16)
 
-                        DankIcon {
-                            anchors.right: parent.right
-                            anchors.verticalCenter: parent.verticalCenter
-                            name: "expand_more"
-                            rotation: tab.logExpanded ? 180 : 0
-                            size: Theme.iconSize - 4
-                            color: Theme.surfaceVariantText
+                            StyledText {
+                                id: errorsLabel
 
-                            Behavior on rotation {
-                                NumberAnimation {
-                                    duration: Theme.shortDuration
-                                    easing.type: Theme.standardEasing
-                                }
+                                anchors.centerIn: parent
+                                text: logCard.errors + (logCard.errors === 1 ? " error" : " errors")
+                                font.pixelSize: Theme.fontSizeSmall - 1
+                                color: Theme.error
                             }
                         }
 
-                        MouseArea {
-                            anchors.fill: parent
-                            cursorShape: Qt.PointingHandCursor
-                            onClicked: tab.logExpanded = !tab.logExpanded
+                        StyledText {
+                            anchors.verticalCenter: parent.verticalCenter
+                            text: String(logCard.events.length)
+                            font.pixelSize: Theme.fontSizeSmall - 1
+                            color: Theme.surfaceVariantText
                         }
                     }
 
-                    LogTab {
-                        // Inset again: this list carries its own scrollbar.
-                        width: parent.width - tab.scrollbarGutter
-                        visible: tab.logExpanded
-                        height: visible ? 320 : 0
-                        service: tab.service
-                        compact: true
+                    MouseArea {
+                        anchors.fill: parent
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: tab.logExpanded = !tab.logExpanded
                     }
                 }
+
+                LogTab {
+                    width: parent.width
+                    visible: tab.logExpanded
+                    height: visible ? 340 : 0
+                    service: tab.service
+                    compact: true
+                }
+            }
+        }
+    }
+
+    // ---- a save that failed (board 19) ---------------------------------------
+    //: Takes the save bar's place: says why, and offers Retry. The edits stay
+    //: so nothing typed is lost.
+    Rectangle {
+        id: errorBar
+
+        anchors.bottom: parent.bottom
+        width: parent.width - tab.scrollbarGutter
+        height: visible ? Math.max(50, errorLine.implicitHeight + 20) : 0
+        visible: tab.saveError !== "" && tab.dirty
+        radius: 14
+        color: Theme.withAlpha(Theme.error, 0.08)
+        border.width: 1
+        border.color: Theme.withAlpha(Theme.error, 0.45)
+
+        DankIcon {
+            id: errorIcon
+
+            anchors.left: parent.left
+            anchors.leftMargin: 14
+            anchors.verticalCenter: parent.verticalCenter
+            name: "error"
+            size: 18
+            color: Theme.error
+        }
+
+        StyledText {
+            id: errorLine
+
+            anchors.left: errorIcon.right
+            anchors.leftMargin: 10
+            anchors.right: errorButtons.left
+            anchors.rightMargin: 8
+            anchors.verticalCenter: parent.verticalCenter
+            text: tab.saveError
+            wrapMode: Text.WordWrap
+            maximumLineCount: 2
+            elide: Text.ElideRight
+            font.pixelSize: Theme.fontSizeSmall
+            color: Theme.surfaceText
+        }
+
+        Row {
+            id: errorButtons
+
+            anchors.right: parent.right
+            anchors.rightMargin: 8
+            anchors.verticalCenter: parent.verticalCenter
+            spacing: 2
+
+            PillButton {
+                size: 34
+                kind: "text"
+                text: "Discard"
+                onClicked: tab.discard()
+            }
+
+            PillButton {
+                size: 34
+                kind: "text"
+                text: "Details"
+                onClicked: tab.revealLog()
+            }
+
+            PillButton {
+                size: 34
+                kind: "filled"
+                text: "Retry"
+                onClicked: tab.save()
+            }
+        }
+    }
+
+    // ---- unsaved changes ---------------------------------------------------
+    //: Replaces the always-visible Save button: it appears only once
+    //: something was changed, and says so.
+    Rectangle {
+        id: saveBar
+
+        anchors.bottom: parent.bottom
+        width: parent.width - tab.scrollbarGutter
+        height: 50
+        visible: tab.dirty && !errorBar.visible
+        radius: 16
+        color: Theme.surfaceContainerHigh
+
+        Rectangle {
+            id: saveDot
+
+            anchors.left: parent.left
+            anchors.leftMargin: 16
+            anchors.verticalCenter: parent.verticalCenter
+            width: 6
+            height: 6
+            radius: 3
+            color: Theme.primary
+        }
+
+        StyledText {
+            anchors.left: saveDot.right
+            anchors.leftMargin: 10
+            anchors.right: saveNow.left
+            anchors.rightMargin: 8
+            anchors.verticalCenter: parent.verticalCenter
+            text: {
+                let n = 0
+                const current = tab.service ? tab.service.globalOptions : ({})
+                for (const k in tab.edits) {
+                    const original = current[k] === undefined || current[k] === null ? "" : String(current[k])
+                    if (!Units.same(tab.edits[k], original))
+                        n++
+                }
+                if (tab.routingDirty)
+                    n++
+                return n === 1 ? "1 unsaved change" : n + " unsaved changes"
+            }
+            font.pixelSize: Theme.fontSizeSmall + 1
+            color: Theme.surfaceText
+            wrapMode: Text.NoWrap
+            elide: Text.ElideRight
+        }
+
+        Row {
+            id: saveNow
+
+            anchors.right: parent.right
+            anchors.rightMargin: 8
+            anchors.verticalCenter: parent.verticalCenter
+            spacing: 4
+
+            PillButton {
+                kind: "text"
+                text: "Discard"
+                onClicked: tab.discard()
+            }
+
+            PillButton {
+                kind: "filled"
+                text: "Save"
+                onClicked: tab.save()
             }
         }
     }

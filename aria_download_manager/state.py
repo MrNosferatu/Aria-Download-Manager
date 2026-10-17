@@ -99,6 +99,10 @@ def normalize(item: dict) -> dict:
         "dir": item.get("dir", ""),
         "eta": eta,
         "numFiles": len(files),
+        # Set while aria2 checks a finished file against its checksum (or a
+        # torrent's pieces): how far it got, and whether it is queued for it.
+        "verifiedLength": _int(item.get("verifiedLength")),
+        "verifyPending": item.get("verifyIntegrityPending") == "true",
         "numPieces": _int(item.get("numPieces")),
         "pieceLength": _int(item.get("pieceLength")),
         "isTorrent": bool(item.get("bittorrent")),

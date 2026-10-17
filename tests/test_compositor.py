@@ -71,9 +71,41 @@ async def run(tmp: Path) -> None:
           and calls() == ["msg action move-window-to-floating --id 2", "msg action center-window --id 2"],
           str(calls()))
 
-    print("\nHyprland")
+    print("\nniri: the maximize button")
     log.unlink()
+    windows.write_text(json.dumps([{"id": 4, "title": "Aria Download Manager", "is_floating": True,
+                                    "layout": {"window_size": [1120, 820]}}]))
+    done = await compositor.toggle_maximize("Aria Download Manager")
+    check("a floating window is sized to the working area and moved to its corner",
+          done == {"by": "niri", "maximized": True} and calls() == [
+              "msg action set-window-width --id 4 100%",
+              "msg action set-window-height --id 4 100%",
+              "msg action move-floating-window --id 4 -x 0 -y 0"], f"{done} {calls()}")
+    log.unlink()
+    done = await compositor.toggle_maximize("Aria Download Manager")
+    check("the second press puts back the size it had",
+          done == {"by": "niri", "maximized": False} and calls() == [
+              "msg action set-window-width --id 4 1120",
+              "msg action set-window-height --id 4 820",
+              "msg action center-window --id 4"], f"{done} {calls()}")
+    log.unlink()
+    windows.write_text(json.dumps([{"id": 5, "title": "Aria Download Manager", "is_floating": False}]))
+    done = await compositor.toggle_maximize("Aria Download Manager")
+    check("a tiled one is maximized to the edges",
+          done["by"] == "niri" and calls() == ["msg action maximize-window-to-edges --id 5"], str(calls()))
+    log.unlink()
+    windows.write_text(json.dumps([{"id": 6, "title": "Aria Download Manager — Mozilla Firefox",
+                                    "is_floating": True}]))
+    done = await compositor.toggle_maximize("Aria Download Manager")
+    check("a browser page of that name is never touched", not calls(), str(calls()))
+
+    print("\nHyprland")
+    if log.exists():
+        log.unlink()
     del os.environ["NIRI_SOCKET"]
+    # A real niri may be on /usr/bin with its socket in the runtime directory:
+    # hide the socket, or the checks below would move the real window.
+    os.environ["XDG_RUNTIME_DIR"] = str(tmp / "empty-runtime")
     hypr_bin = tmp / "hypr-bin"
     hypr_bin.mkdir()
     install(hypr_bin, "hyprctl")
@@ -87,6 +119,11 @@ async def run(tmp: Path) -> None:
         "dispatch resizewindowpixel exact 640 700,address:0x55",
         "dispatch focuswindow address:0x55",
         "dispatch centerwindow"], str(calls()))
+    log.unlink()
+    windows.write_text(json.dumps([{"address": "0x66", "title": "Aria Download Manager", "fullscreen": 0}]))
+    done = await compositor.toggle_maximize("Aria Download Manager")
+    check("Hyprland maximizes it", done == {"by": "hyprland", "maximized": True} and calls() == [
+        "dispatch focuswindow address:0x66", "dispatch fullscreen 1"], f"{done} {calls()}")
 
     print("\nneither")
     log.unlink()

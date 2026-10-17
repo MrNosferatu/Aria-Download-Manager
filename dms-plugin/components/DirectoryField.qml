@@ -12,8 +12,10 @@ Item {
     property string placeholderText: "(default)"
     property string dialogTitle: "Choose a download directory"
     property string startDir: ""
+    //: The box's tone; one step darker than whatever card it sits on.
+    property color fill: Theme.surfaceContainerHigh
 
-    implicitHeight: 40
+    implicitHeight: 38
     height: implicitHeight
 
     function pick() {
@@ -32,29 +34,29 @@ Item {
                         }, 0)
     }
 
-    DankTextField {
+    FillField {
         id: input
 
         anchors.left: parent.left
         anchors.right: browseButton.left
-        anchors.rightMargin: Theme.spacingXS
+        anchors.rightMargin: 8
         anchors.verticalCenter: parent.verticalCenter
-        height: parent.height
-        leftIconName: "folder"
+        size: parent.height
+        mono: true
+        fill: field.fill
         placeholderText: field.placeholderText
     }
 
-    DankActionButton {
+    //: Board 8: the chooser is a labelled button beside the path.
+    PillButton {
         id: browseButton
 
         anchors.right: parent.right
         anchors.verticalCenter: parent.verticalCenter
-        buttonSize: parent.height
-        iconSize: Theme.iconSizeSmall
-        iconName: "folder_open"
-        tooltipText: "Browse…"
-        backgroundColor: Theme.surfaceContainerHigh
-        circular: false
+        size: parent.height
+        kind: "tonal"
+        icon: "folder_open"
+        text: "Browse"
         onClicked: field.pick()
     }
 }

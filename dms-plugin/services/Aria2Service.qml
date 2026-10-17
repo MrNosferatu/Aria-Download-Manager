@@ -57,6 +57,103 @@ Singleton {
     readonly property int waitingCount: (counts.waiting || 0) + (counts.paused || 0)
     readonly property int stoppedCount: counts.stopped || 0
     readonly property bool aria2Running: aria2.running === true
+    readonly property int pausedCount: counts.paused || 0
+    readonly property int queuedCount: counts.waiting || 0
+    readonly property int errorCount: counts.error || 0
+    readonly property int completeCount: counts.complete || 0
+
+    //: The running downloads summed up, for the bar ring, the quick menu and
+    //: the stat strip. `progress` is -1 while any running download has no size
+    //: yet (a magnet still fetching its file list), so the ring can stay away
+    //: rather than claim a fraction it does not know.
+    readonly property var activeTotals: {
+        let done = 0
+        let total = 0
+        let unknown = false
+        for (const d of downloads) {
+            if (d.status !== "active")
+                continue
+            if (!d.total || d.isMetadata) {
+                unknown = true
+                continue
+            }
+            done += d.completed || 0
+            total += d.total
+        }
+        const left = Math.max(0, total - done)
+        return {
+            "completed": done,
+            "total": total,
+            "left": left,
+            "progress": (!unknown && total > 0) ? done / total : -1,
+            "eta": downloadSpeed > 0 && total > 0 ? left / downloadSpeed : -1
+        }
+    }
+
+    //: The most interesting few downloads for the quick menu: running ones
+    //: first, then paused, then queued.
+    readonly property var topDownloads: {
+        const rank = {
+            "active": 0,
+            "paused": 1,
+            "waiting": 2
+        }
+        return downloads.filter(d => rank[d.status] !== undefined)
+                        .sort((a, b) => rank[a.status] - rank[b.status])
+                        .slice(0, 3)
+    }
+
+    //: What finished since midnight among the downloads aria2 still holds, and
+    //: the name of the latest, for the idle hover card and control-center tile.
+    readonly property var finishedToday: {
+        const midnight = new Date()
+        midnight.setHours(0, 0, 0, 0)
+        const since = midnight.getTime() / 1000
+        let count = 0
+        let last = null
+        for (const d of downloads) {
+            if (d.status !== "complete" || !(d.finishedAt >= since))
+                continue
+            count++
+            if (!last || d.finishedAt > last.finishedAt)
+                last = d
+        }
+        return {
+            "count": count,
+            "last": last ? (last.name || last.gid) : ""
+        }
+    }
+
+    //: Downloads that finished while nobody had the manager open. The bar
+    //: shows a dot until the panel is next opened. Counted from the "complete"
+    //: total, so a purge (which lowers it) never produces a false dot.
+    property int unseenFinished: 0
+    property int _lastCompleteCount: -1
+
+    onCompleteCountChanged: {
+        if (_lastCompleteCount >= 0 && completeCount > _lastCompleteCount && !viewerActive)
+            unseenFinished += completeCount - _lastCompleteCount
+        _lastCompleteCount = completeCount
+    }
+
+    onViewerActiveChanged: {
+        if (viewerActive)
+            unseenFinished = 0
+    }
+
+    //: The last minute of total download speed, one sample per snapshot, for
+    //: the stat strip's sparkline.
+    property var speedHistory: []
+
+    onSnapshotChanged: {
+        const next = speedHistory.concat([downloadSpeed])
+        speedHistory = next.length > 60 ? next.slice(next.length - 60) : next
+        // A restart is over once a snapshot shows it done (see restarting).
+        if (root.restarting === "manager" && root.connected)
+            root.restarting = ""
+        else if (root.restarting === "aria2c" && root.aria2Running && (root.aria2.pid || 0) !== root._restartPid)
+            root.restarting = ""
+    }
 
     // ---- lazily fetched sections ----------------------------------------
     property var globalOptions: ({})
@@ -77,9 +174,45 @@ Singleton {
     //: still go through ToastService, because they need attention.
     signal feedback(string message)
 
-    function notice(message) {
-        if (message)
-            root.feedback(message)
+    //: The undo for the feedback now showing, or null: {run: function}. Set
+    //: just before `feedback` fires, so the pill reads it with the message.
+    //: Only reversible actions offer one — pausing and resuming. Clearing,
+    //: removing and forgetting history do not: what they drop is gone.
+    property var pendingUndo: null
+
+    function notice(message, undo) {
+        if (!message)
+            return
+        root.pendingUndo = undo ? {
+                                      "run": undo
+                                  } : null
+        root.feedback(message)
+    }
+
+    //: Pause everything, remembering what was running so Undo resumes exactly
+    //: those and not whatever was paused before.
+    function pauseAllWithUndo(okMessage) {
+        const running = root.downloads.filter(d => d.status === "active").map(d => d.gid)
+        root.request("POST", "/api/global/pause-all", null, (data, error) => {
+            if (error) {
+                root.showFailure(root._whatFailed("POST", "/api/global/pause-all"), error)
+                return
+            }
+            root.notice(okMessage || "Paused everything",
+                        running.length ? () => root.bulk("resume", running, false, null, "Resumed " + running.length) : null)
+        })
+    }
+
+    //: Pause or resume one download, with the opposite as its undo.
+    function setPaused(gid, pause) {
+        const verb = pause ? "pause" : "resume"
+        root.request("POST", "/api/download/" + gid + "/" + verb, null, (data, error) => {
+            if (error) {
+                root.showFailure(root._whatFailed("POST", "/" + verb), error)
+                return
+            }
+            root.notice(pause ? "Paused" : "Resumed", () => root.request("POST", "/api/download/" + gid + "/" + (pause ? "resume" : "pause"), null, null))
+        })
     }
 
     //: Bar widgets listen for this so `dms ipc call ariaDownloadManager toggle` (or a
@@ -427,19 +560,82 @@ Singleton {
                     action: e.action || "",
                     name: e.message,
                     speed: e.speed || 0,
-                    detail: ""
+                    detail: "",
+                    //: Rebuilt from the log line, which already says it all.
+                    logLine: true
                 }))
         if (fired.length)
             root.triggers = fired
     }
 
+    //: Finishes and errors are toggled apart; a setup from before the split
+    //: has only the single `notify` key, which still turns on both.
+    readonly property bool notifyFinished: cfg.notifyFinished !== undefined ? cfg.notifyFinished === true : cfg.notify === true
+    readonly property bool notifyErrors: cfg.notifyErrors !== undefined ? cfg.notifyErrors === true : cfg.notify === true
+
     function _notify(event) {
-        if (!root.cfg.notify)
-            return
-        if (event.level === "error")
-            ToastService.showError("Aria", event.message)
-        else if (event.level === "info" && /finished|complete/i.test(event.message || ""))
+        if (event.level === "error" && root.notifyErrors)
+            root.showFailure("Aria", event.message)
+        else if (event.level === "info" && root.notifyFinished && /finished|complete/i.test(event.message || ""))
             ToastService.showInfo("Aria", event.message)
+    }
+
+    // ---- errors in plain words ---------------------------------------------
+    //: The failures people actually meet, matched on what aria2 or the manager
+    //: wrote, each turned into why it happened and what to do about it.
+    readonly property var _errorWords: [
+        [/status=404|\b404\b|not found/i, "the server says the file isn't there (404)", "Check the link, or copy it again from the page it came from."],
+        [/status=403|\b403\b|forbidden/i, "the server refused it (403)", "The link may have expired or need the browser's cookies. Send it from the browser extension instead."],
+        [/status=401|\b401\b|unauthori[sz]ed/i, "the server wants a login (401)", "Add cookies, or a user and password, under Advanced when adding it."],
+        [/not enough disk space|no space left|enospc/i, "the disk is full", "Free some space or pick another folder, then retry."],
+        [/permission denied|eacces|eperm|read-only file system/i, "the folder can't be written to", "Pick a folder you own, or fix its permissions."],
+        [/unsupported (protocol|scheme)|no uri|invalid uri|bad uri|not supported/i, "that isn't a link aria2 can fetch", "Use an http, https, ftp, sftp or magnet link."],
+        [/resolve|name or service not known|getaddrinfo/i, "the server's name couldn't be found", "Check the address and your connection."],
+        [/timed? ?out|timeout/i, "the server stopped answering", "Retry, or lower the number of connections."],
+        [/checksum|hash .*(mismatch|fail)/i, "the file doesn't match its checksum", "It was not kept. Download it again."]
+    ]
+
+    //: {why, todo} for an error we know, or null.
+    function explainError(raw) {
+        const text = String(raw || "")
+        for (const entry of root._errorWords) {
+            if (entry[0].test(text))
+                return {
+                    "why": entry[1],
+                    "todo": entry[2]
+                }
+        }
+        return null
+    }
+
+    //: What the user was trying to do, from the request that failed.
+    function _whatFailed(method, path) {
+        const p = String(path || "")
+        if (/^\/api\/downloads(\/file)?$/.test(p) || p === "/api/history/readd" || p === "/api/intake/add")
+            return "Couldn't add the download"
+        if (/\/pause$/.test(p) || p === "/api/global/pause-all")
+            return "Couldn't pause"
+        if (/\/resume$/.test(p) || p === "/api/global/resume-all")
+            return "Couldn't resume"
+        if (/\/retry$/.test(p))
+            return "Couldn't retry"
+        if (method === "DELETE" || /bulk$/.test(p))
+            return "Couldn't remove it"
+        if (/options$/.test(p) || p === "/api/routing" || p === "/api/rules")
+            return "Couldn't save"
+        if (p === "/api/aria2/restart" || p === "/api/restart")
+            return "Couldn't restart"
+        return "Aria"
+    }
+
+    //: One error toast: what failed and why as the headline, what to do and
+    //: the original message in the details.
+    function showFailure(what, raw) {
+        const known = root.explainError(raw)
+        if (known)
+            ToastService.showError(what + " — " + known.why, known.todo + "\n\n" + raw)
+        else
+            ToastService.showError(what, String(raw || ""))
     }
 
     // ---- API calls -------------------------------------------------------
@@ -463,7 +659,7 @@ Singleton {
     function act(method, path, body, okMessage, callback) {
         request(method, path, body, (data, error) => {
             if (error) {
-                ToastService.showError("Aria", error)
+                root.showFailure(root._whatFailed(method, path), error)
                 return
             }
             root.notice(okMessage)
@@ -493,7 +689,9 @@ Singleton {
 
     //: One action across a chosen set. The server reports per-gid failures
     //: rather than giving up on the first one, and hands back a summary line.
-    function bulk(action, gids, deleteFiles, callback) {
+    //: `message` replaces the server's summary line when given. Pausing and
+    //: resuming a set can be undone with the opposite on the same set.
+    function bulk(action, gids, deleteFiles, callback, message) {
         if (!gids || !gids.length)
             return
         root.post("/api/downloads/bulk", {
@@ -504,8 +702,16 @@ Singleton {
                   }, "", data => {
                       // act() only calls back on success and toasts failures
                       // itself, so the server's summary is the whole story here.
-                      if (data && data.message)
-                          root.notice(data.message)
+                      const done = (data && data.done) || []
+                      const opposite = {
+                          "pause": "resume",
+                          "resume": "pause"
+                      }[action]
+                      const undo = opposite && done.length && message === undefined
+                                 ? () => root.bulk(opposite, done, false, null, "") : null
+                      const text = message !== undefined ? message : (data && data.message)
+                      if (text)
+                          root.notice(text, undo)
                       if (callback)
                           callback(data)
                   })
@@ -520,12 +726,48 @@ Singleton {
     }
 
     // ---- manager ---------------------------------------------------------
+    //: "manager" or "aria2c" while a restart is under way, "" otherwise. The
+    //: panel shows it in place — a restarting manager is not an offline one —
+    //: and it clears with the first snapshot that shows the restart done.
+    property string restarting: ""
+    property int _restartPid: 0
+
     //: Exit and let systemd bring the manager back, rereading config.yaml.
     function restartManager() {
-        post("/api/restart", null, "Restarting the manager", () => {
-                 root.connected = false
-                 restartSettle.restart()
-             })
+        root.restarting = "manager"
+        restartGiveUp.restart()
+        root.request("POST", "/api/restart", null, (data, error) => {
+            if (error) {
+                root.restarting = ""
+                root.showFailure(root._whatFailed("POST", "/api/restart"), error)
+                return
+            }
+            root.connected = false
+            restartSettle.restart()
+        })
+    }
+
+    function restartAria2() {
+        root.restarting = "aria2c"
+        root._restartPid = root.aria2.pid || 0
+        restartGiveUp.restart()
+        root.request("POST", "/api/aria2/restart", null, (data, error) => {
+            if (error) {
+                root.restarting = ""
+                root.showFailure(root._whatFailed("POST", "/api/aria2/restart"), error)
+                return
+            }
+            root.notice("aria2c restarted")
+        })
+    }
+
+
+    //: A restart that never visibly finishes stops claiming to be one.
+    Timer {
+        id: restartGiveUp
+
+        interval: 30000
+        onTriggered: root.restarting = ""
     }
 
     Timer {
@@ -603,10 +845,22 @@ Singleton {
         })
     }
 
-    function saveRouting(payload, okMessage) {
-        post("/api/routing", payload, okMessage || "Sorting saved", data => {
+    //: `done(error)` hears how it went: "" on success, the reason otherwise.
+    //: A caller that passes it shows the failure itself.
+    function saveRouting(payload, okMessage, done) {
+        root.request("POST", "/api/routing", payload, (data, error) => {
+            if (error) {
+                if (done)
+                    done(error)
+                else
+                    root.showFailure("Couldn't save", error)
+                return
+            }
             if (data)
                 root.routing = data
+            root.notice(okMessage || "Sorting saved")
+            if (done)
+                done("")
         })
     }
 
@@ -619,10 +873,22 @@ Singleton {
         })
     }
 
-    function saveOptions(options, okMessage) {
-        post("/api/global/options", {
-                 "options": options
-             }, okMessage || "Applied", () => root.loadOptions())
+    function saveOptions(options, okMessage, done) {
+        root.request("POST", "/api/global/options", {
+                         "options": options
+                     }, (data, error) => {
+            if (error) {
+                if (done)
+                    done(error)
+                else
+                    root.showFailure("Couldn't save", error)
+                return
+            }
+            root.notice(okMessage || "Applied")
+            root.loadOptions()
+            if (done)
+                done("")
+        })
     }
 
     function loadHistory() {
@@ -700,7 +966,7 @@ Singleton {
         }
 
         function pauseAll(): string {
-            root.post("/api/global/pause-all", null, "Paused everything")
+            root.pauseAllWithUndo("Paused everything")
             return "paused"
         }
 
@@ -708,6 +974,35 @@ Singleton {
             root.post("/api/global/resume-all", null, "Resumed everything")
             return "resumed"
         }
+    }
+
+    // ---- torrents held for a file choice ------------------------------------
+    //: gid -> true for torrents the Add panel added held, so the list can mark
+    //: them "waiting for you" and offer the file choice, even after the Add
+    //: panel is closed. Kept for the shell session; a held torrent left over
+    //: from before a restart is an ordinary paused one.
+    property var heldGids: ({})
+
+    function holdForChoice(gid) {
+        const next = Object.assign({}, root.heldGids)
+        next[gid] = true
+        root.heldGids = next
+    }
+
+    function releaseHold(gid) {
+        if (!root.heldGids[gid])
+            return
+        const next = Object.assign({}, root.heldGids)
+        delete next[gid]
+        root.heldGids = next
+    }
+
+    //: A held torrent, or the download aria2 made from a held magnet once its
+    //: file list arrived, still paused and waiting.
+    function isHeldForChoice(dl) {
+        if (!dl || dl.status !== "paused" || dl.isMetadata)
+            return false
+        return root.heldGids[dl.gid] === true || (!!dl.following && root.heldGids[dl.following] === true)
     }
 
     // ---- rule bookkeeping for a single download --------------------------
