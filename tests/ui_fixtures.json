@@ -74,5 +74,36 @@
         }
       }
     ]
+  },
+  "/api/download/*": {
+    "triggers": [
+      {
+        "ts": 1792265842,
+        "rule": "stall-recovery",
+        "gid": "x",
+        "name": "Machi",
+        "action": "pause_resume",
+        "speed": 2048,
+        "detail": ""
+      },
+      {
+        "ts": 1792265542,
+        "rule": "stall-recovery",
+        "gid": "x",
+        "name": "Machi",
+        "action": "pause_resume",
+        "speed": 1024,
+        "detail": ""
+      },
+      {
+        "ts": 1792264942,
+        "rule": "Slow ISOs",
+        "gid": "x",
+        "name": "Machi",
+        "action": "set_option",
+        "speed": 3145728,
+        "detail": "max-download-limit=2M"
+      }
+    ]
   }
 }

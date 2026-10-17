@@ -9,7 +9,6 @@ const S = {
   expanded: new Set(),
   rows: new Map(),        // gid -> row element
   events: [],
-  triggers: [],
   globalOptions: {},
   pendingOptions: {},     // key -> value saved to config.yaml but not live in aria2
   optInputs: new Map(),   // key -> {read, original, wrap}
@@ -919,7 +918,8 @@ function renderDetail(host, gid, data) {
       <details class="dsec dmore" data-role="d-more">
         <summary>Details</summary>
         <div data-role="d-info"></div>
-      </details>`;
+      </details>
+      <section class="dsec dactions" data-role="d-actions" hidden></section>`;
     draft.tree = null;
     draft.options = null;
     const more = host.querySelector('[data-role="d-more"]');
@@ -963,6 +963,16 @@ function renderDetail(host, gid, data) {
 
   // ---- the technical record, folded away
   if ($d('d-more').open) $d('d-info').innerHTML = detailInfo(gid, data);
+
+  // ---- what the automatic actions did to it; the full record is the log
+  const lines = actionLines(data.triggers);
+  const times = (data.triggers || []).length;
+  $d('d-actions').hidden = !lines.length;
+  $d('d-actions').innerHTML = lines.length ? `<div class="dsec-head">${icon('wand')}<h3>Actions on this download</h3>
+      <span class="spacer"></span><span class="hint">${lines.length === 1 ? '1 action' : `${lines.length} actions`} · ${
+        times === 1 ? 'once' : `${times} times`}</span></div>
+    <div class="dactions-grid">${lines.map((l) => `<span>${escapeHtml(l.rule)}</span><span class="what">${
+      escapeHtml(l.what)}</span><span class="when">${escapeHtml(l.when)}</span>`).join('')}</div>` : '';
 }
 
 // Priorities save half a second after the last change, so a burst of clicks
@@ -1932,7 +1942,7 @@ const ACTION_WORDS = {
 const ACTION_DONE = {
   pause_resume: 'paused and resumed',
   force_pause_resume: 'force-paused and resumed',
-  restart: 'restarted',
+  restart: 'removed and added again',
   set_option: 'options changed',
   stop: 'paused',
   log_only: 'logged',
@@ -2084,11 +2094,26 @@ function ruleSummary(rule) {
   return `${head || 'Always'} → ${action}`;
 }
 
-function triggerText(t) {
-  // A log line already says what was done: "[Stall kick] paused and resumed debian.iso".
-  if (t.logLine) return `${String(t.name).replace(/^\[[^\]]*\]\s*/, '')} · ${fmtSpeed(t.speed)}`;
-  const done = ACTION_DONE[t.action] || String(t.action || '').replace(/_/g, ' ');
-  return `${t.name} · ${fmtSpeed(t.speed)}${done ? ` → ${done}` : ''}${t.detail ? ` (${t.detail})` : ''}`;
+/* A download's "Actions on this download": one line per action, what it did,
+   how often and when last, newest first. Same wording as the DankBar's
+   Rules.actionLines(). */
+function actionLines(triggers) {
+  const groups = new Map();
+  for (const t of triggers || []) {
+    const key = `${t.rule}|${t.action}`;
+    if (!groups.has(key)) groups.set(key, { rule: t.rule, action: t.action, detail: t.detail, count: 0, last: t.ts });
+    groups.get(key).count += 1;
+  }
+  return [...groups.values()].map((g) => {
+    let what = ACTION_DONE[g.action] || String(g.action || '').replace(/_/g, ' ');
+    if (g.action === 'set_option' && g.detail) {
+      const limit = /max-download-limit=([^,]+)/.exec(g.detail);
+      what = limit ? `limited to ${fmtSpeed(parseSize(limit[1]) || 0)}` : `set ${g.detail}`;
+    }
+    if (g.count > 1 || g.action !== 'set_option') what += ` ${g.count}×`;
+    const time = new Date(g.last * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    return { rule: g.rule, what, when: `${g.count > 1 ? 'last ' : ''}${time}` };
+  });
 }
 
 /* -------------------------------------------------------- load and save */
@@ -2100,7 +2125,6 @@ async function loadRules() {
     S.ruleOrigins = S.rules.map((r) => r.name);
     S.rulesEnabled = !!data.enabled;
     S.speedSource = data.speed_source || 'hybrid';
-    S.triggers = data.triggers || S.triggers;
     $('#rules-master').checked = S.rulesEnabled;
     paintMeasure();
     renderRules();
@@ -2327,14 +2351,6 @@ function ruleCard(rule, index) {
   if (S.ruleJson) body.append(ruleJsonEditor(rule, index));
   else body.append(ruleForm(rule, index, card));
   paintRuleForm(card, rule, index);
-
-  const fired = S.triggers.filter((t) => t.rule === rule.name).slice(0, 5);
-  const log = document.createElement('div');
-  log.className = 'rule-log';
-  log.innerHTML = `<span class="label">This action's recent triggers</span>${fired.length
-    ? fired.map((t) => `<div class="trig"><time>${fmtTime(t.ts)}</time><span>${escapeHtml(triggerText(t))}</span></div>`).join('')
-    : '<span class="hint">Not fired yet.</span>'}`;
-  body.append(log);
   return card;
 }
 
@@ -2627,14 +2643,6 @@ function renderLog() {
       <span class="msg">${escapeHtml(e.message)}</span>
     </div>`).join('') || `<p class="hint">${show === 'all' ? 'Nothing logged yet.' : 'Nothing of this kind logged.'}</p>`;
   if ($('#tab-settings').classList.contains('active')) buildToc();
-  if (S.events.some((e) => e.level === 'rule')) {
-    S.triggers = S.events.filter((e) => e.level === 'rule').map((e) => ({
-      ts: e.ts, rule: e.rule || '?', action: e.action || '', name: e.message, speed: e.speed || 0, detail: '', logLine: true,
-    }));
-    // A fresh trigger shows under its action, unless that would pull the
-    // field being typed in out from under the cursor.
-    if ($('#tab-rules').classList.contains('active') && !$('#rules-list').contains(document.activeElement)) renderRules();
-  }
 }
 
 /* ------------------------------------------------------------- bulk mode */
@@ -2853,7 +2861,7 @@ function init() {
 
   api('/api/config').then((cfg) => { S.config = cfg; }).catch(() => {});
   api('/api/global/options').then((opts) => { S.globalOptions = opts; }).catch(() => {});
-  api('/api/log').then((data) => { S.triggers = data.triggers || []; pushEvents(data.events || [], true); }).catch(() => {});
+  api('/api/log').then((data) => pushEvents(data.events || [], true)).catch(() => {});
   loadRules().catch(() => {});
 
   // Opening the manager is looking: the toolbar icon's finished-download dot goes.

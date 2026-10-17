@@ -10,6 +10,7 @@ fixtures. The result opens offline in any browser, headless ones included.
 Options: --socket PATH (default: the manager's default socket), --tab
 downloads|settings|rules|log, --expand to open the first download's detail panel,
 --rule N to open the Nth action's editor, --fixtures FILE to lay JSON responses (path -> body) over the captured ones;
+a key ending in /* adds its fields to every captured response under it.
 tests/ui_fixtures.json holds states the live manager rarely has.
 """
 
@@ -139,7 +140,13 @@ def main() -> int:
     print(f"capturing from {args.socket}")
     fixtures = capture(args.socket)
     for extra in args.fixtures:
-        fixtures.update(json.loads(Path(extra).read_text(encoding="utf-8")))
+        for path, body in json.loads(Path(extra).read_text(encoding="utf-8")).items():
+            # "/api/download/*" adds its fields to every captured detail.
+            if path.endswith("/*"):
+                for key in [k for k in fixtures if k.startswith(path[:-1])]:
+                    fixtures[key] = {**(fixtures[key] or {}), **body}
+            else:
+                fixtures[path] = body
     if not fixtures.get("/api/state"):
         print("error: could not read /api/state — is the manager running?")
         return 1

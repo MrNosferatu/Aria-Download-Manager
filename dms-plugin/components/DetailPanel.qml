@@ -5,6 +5,7 @@ import qs.Services
 import qs.Widgets
 import "../lib/Fmt.js" as Fmt
 import "../lib/FileTree.js" as FileTree
+import "../lib/Rules.js" as Rules
 
 // A download's details as short tabs instead of one long scroll: Overview
 // (the numbers, the piece map, the paths), Files, Peers or Connections, and
@@ -1631,6 +1632,116 @@ Column {
                 kind: "text"
                 text: "Undo"
                 onClicked: detail.undoOptions()
+            }
+        }
+    }
+
+    // ---- what the automatic actions did to it (board 3) --------------------
+    //: One line per action, how often and when last. The full record stays
+    //: in Settings › Event log.
+    Rectangle {
+        id: actionsBlock
+
+        readonly property var lines: Rules.actionLines(detail.detailData ? detail.detailData.triggers : [])
+        readonly property int times: (detail.detailData && detail.detailData.triggers || []).length
+
+        width: parent.width
+        visible: !detail.reviewing && !detail.held && lines.length > 0
+        height: visible ? actionsColumn.implicitHeight + 24 : 0
+        radius: 14
+        color: detail.tileColor
+
+        Column {
+            id: actionsColumn
+
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.top: parent.top
+            anchors.margins: 12
+            anchors.leftMargin: 14
+            anchors.rightMargin: 14
+            spacing: 6
+
+            Item {
+                width: parent.width
+                height: 20
+
+                DankIcon {
+                    id: actionsIcon
+
+                    anchors.left: parent.left
+                    anchors.verticalCenter: parent.verticalCenter
+                    name: "auto_fix_high"
+                    size: 18
+                    color: Theme.tertiary
+                }
+
+                StyledText {
+                    anchors.left: actionsIcon.right
+                    anchors.leftMargin: 8
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: "Actions on this download"
+                    font.pixelSize: Theme.fontSizeSmall + 1
+                    font.weight: Font.Bold
+                    color: Theme.surfaceText
+                }
+
+                StyledText {
+                    anchors.right: parent.right
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: (actionsBlock.lines.length === 1 ? "1 action" : actionsBlock.lines.length + " actions")
+                          + " · " + (actionsBlock.times === 1 ? "once" : actionsBlock.times + " times")
+                    font.pixelSize: Theme.fontSizeSmall
+                    color: Theme.outline
+                }
+            }
+
+            Repeater {
+                model: actionsBlock.lines
+
+                Item {
+                    id: actionLine
+
+                    required property var modelData
+
+                    width: actionsColumn.width
+                    height: 18
+
+                    StyledText {
+                        id: actionRule
+
+                        width: Math.min(implicitWidth, parent.width * 0.35)
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: actionLine.modelData.rule
+                        font.pixelSize: Theme.fontSizeSmall
+                        color: Theme.surfaceText
+                        wrapMode: Text.NoWrap
+                        elide: Text.ElideRight
+                    }
+
+                    StyledText {
+                        anchors.left: actionRule.right
+                        anchors.leftMargin: 14
+                        anchors.right: actionWhen.left
+                        anchors.rightMargin: 14
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: actionLine.modelData.what
+                        font.pixelSize: Theme.fontSizeSmall
+                        color: Theme.surfaceVariantText
+                        wrapMode: Text.NoWrap
+                        elide: Text.ElideRight
+                    }
+
+                    StyledText {
+                        id: actionWhen
+
+                        anchors.right: parent.right
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: actionLine.modelData.when
+                        font.pixelSize: Theme.fontSizeSmall
+                        color: Theme.outline
+                    }
+                }
             }
         }
     }

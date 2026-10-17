@@ -1059,6 +1059,25 @@ def test_rule_download_type() -> None:
           and not engine._matches(only_plain, torrent, tracker, 1e6))
 
 
+def test_triggers_for() -> None:
+    """A download's detail lists what the actions did to it, through restarts."""
+    print("\nunit: triggers per download")
+    from aria_download_manager.rules import RuleEngine
+
+    engine = RuleEngine.__new__(RuleEngine)
+    engine.trigger_log = [
+        {"ts": 5, "rule": "Stall kick", "gid": "new", "action": "pause_resume", "detail": ""},
+        {"ts": 4, "rule": "Dead torrent", "gid": "old", "action": "restart", "detail": "re-added as new"},
+        {"ts": 3, "rule": "Stall kick", "gid": "old", "action": "pause_resume", "detail": ""},
+        {"ts": 2, "rule": "Stall kick", "gid": "other", "action": "pause_resume", "detail": ""},
+        {"ts": 1, "rule": "Dead torrent", "gid": "older", "action": "restart", "detail": "re-added as old"},
+    ]
+    check("its own triggers, and those before each restart that made it",
+          [t["ts"] for t in engine.triggers_for("new")] == [5, 4, 3, 1])
+    check("another download's are left out", [t["ts"] for t in engine.triggers_for("other")] == [2])
+    check("none for a download nothing touched", engine.triggers_for("quiet") == [])
+
+
 def test_routing(tmp_dir: Path) -> None:
     """Downloads land in a folder that matches what they are."""
     print("\nunit: sorting by file type")
@@ -1603,6 +1622,7 @@ def main() -> int:
         test_file_plan()
         test_metadata_rows()
         test_rule_download_type()
+        test_triggers_for()
         test_routing(tmp_dir / "c12")
         test_download_only_migration(tmp_dir / "c11")
         test_config(tmp_dir / "c1")

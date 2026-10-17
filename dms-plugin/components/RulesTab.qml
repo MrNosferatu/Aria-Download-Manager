@@ -2,7 +2,6 @@ import QtQuick
 import qs.Common
 import qs.Services
 import qs.Widgets
-import "../lib/Fmt.js" as Fmt
 import "../lib/Layout.js" as Layout
 import "../lib/Rules.js" as Rules
 
@@ -588,63 +587,6 @@ Item {
                     }
                 }
             }
-
-            StyledText {
-                leftPadding: 4
-                topPadding: 8
-                text: "Recent triggers"
-                font.pixelSize: Theme.fontSizeSmall
-                color: Theme.surfaceVariantText
-            }
-
-            StyledText {
-                width: parent.width
-                leftPadding: 4
-                visible: !tab.service || tab.service.triggers.length === 0
-                text: "No action has fired yet."
-                font.pixelSize: Theme.fontSizeSmall
-                color: Theme.surfaceVariantText
-            }
-
-            Repeater {
-                model: tab.service ? tab.service.triggers.slice(0, 40) : []
-
-                Row {
-                    id: trigger
-
-                    required property var modelData
-
-                    width: content.width
-                    height: 22
-                    leftPadding: 4
-                    spacing: 9
-
-                    StyledText {
-                        anchors.verticalCenter: parent.verticalCenter
-                        text: Fmt.time(trigger.modelData.ts)
-                        font.pixelSize: Theme.fontSizeSmall
-                        font.family: "monospace"
-                        color: Theme.surfaceVariantText
-                    }
-
-                    StyledText {
-                        anchors.verticalCenter: parent.verticalCenter
-                        text: trigger.modelData.rule
-                        font.pixelSize: Theme.fontSizeSmall - 1
-                        color: Theme.primary
-                    }
-
-                    StyledText {
-                        anchors.verticalCenter: parent.verticalCenter
-                        width: Math.max(0, trigger.width - x - 4)
-                        text: Rules.triggerLine(trigger.modelData)
-                        font.pixelSize: Theme.fontSizeSmall - 1
-                        color: Theme.surfaceText
-                        wrapMode: Text.NoWrap
-                        elide: Text.ElideRight
-                    }
-                }
-            }
         }
     }
 
@@ -726,72 +668,6 @@ Item {
                     onReplaced: rule => tab.replaceAt(tab.openIndex, rule, true)
                     onEnabledToggled: value => tab.setEnabled(tab.openIndex, value)
                     onRemoved: tab.removeAt(tab.openIndex)
-                }
-            }
-
-            //: This action's own history, in a card under the editor.
-            Rectangle {
-                width: parent.width
-                visible: tab.wide && !!editorColumn.rule
-                height: visible ? Math.max(140, ruleTriggers.implicitHeight + 24) : 0
-                radius: 14
-                color: Theme.surfaceContainer
-
-                Column {
-                    id: ruleTriggers
-
-                    anchors.left: parent.left
-                    anchors.right: parent.right
-                    anchors.top: parent.top
-                    anchors.margins: 12
-                    spacing: 2
-
-                    StyledText {
-                        bottomPadding: 6
-                        text: "Recent triggers of this action"
-                        font.pixelSize: Theme.fontSizeSmall
-                        color: Theme.surfaceVariantText
-                    }
-
-                    Repeater {
-                        model: editorColumn.rule && tab.service ? tab.service.triggers.filter(t => t.rule === editorColumn.rule.name).slice(0, 30) : []
-
-                        Row {
-                            id: ruleTrigger
-
-                            required property var modelData
-
-                            width: ruleTriggers.width
-                            height: 20
-                            spacing: 9
-
-                            StyledText {
-                                anchors.verticalCenter: parent.verticalCenter
-                                text: Fmt.time(ruleTrigger.modelData.ts)
-                                font.pixelSize: Theme.fontSizeSmall - 1
-                                font.family: "monospace"
-                                color: Theme.surfaceVariantText
-                            }
-
-                            StyledText {
-                                anchors.verticalCenter: parent.verticalCenter
-                                width: Math.max(0, ruleTrigger.width - x)
-                                text: Rules.triggerLine(ruleTrigger.modelData)
-                                font.pixelSize: Theme.fontSizeSmall - 1
-                                font.family: "monospace"
-                                color: Theme.surfaceText
-                                wrapMode: Text.NoWrap
-                                elide: Text.ElideRight
-                            }
-                        }
-                    }
-
-                    StyledText {
-                        visible: !!editorColumn.rule && !!tab.service && !tab.service.triggers.some(t => t.rule === editorColumn.rule.name)
-                        text: "It has not fired yet."
-                        font.pixelSize: Theme.fontSizeSmall
-                        color: Theme.surfaceVariantText
-                    }
                 }
             }
         }

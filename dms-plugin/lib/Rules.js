@@ -233,19 +233,39 @@ var TEMPLATES = [
 var ACTION_DONE = {
     "pause_resume": "paused and resumed",
     "force_pause_resume": "force-paused and resumed",
-    "restart": "restarted",
+    "restart": "removed and added again",
     "set_option": "options changed",
     "stop": "paused",
     "log_only": "logged"
 }
 
-// One fired action after its time and rule name (board 7):
-// "debian-13.1.0-amd64-netinst.iso · 12 KiB/s → paused and resumed".
-function triggerLine(t) {
-    if (t.logLine)
-        return String(t.name).replace(/^\[[^\]]*\]\s*/, "")
-    var done = ACTION_DONE[t.action] || String(t.action || "").replace(/_/g, " ")
-    return t.name + " · " + Fmt.speed(t.speed) + (done ? " → " + done : "") + (t.detail ? " (" + t.detail + ")" : "")
+// A download's "Actions on this download" (board 3): one line per action and
+// what it did, how many times and when last, newest first. `triggers` is the
+// detail's list (the manager's trigger log for that download).
+// -> [{rule, what, when}]: "Stall kick", "paused and resumed 4×", "last 14:02"
+function actionLines(triggers) {
+    var groups = []
+    var byKey = {}
+    for (var i = 0; i < (triggers || []).length; i++) {
+        var t = triggers[i]
+        var key = t.rule + "|" + t.action
+        if (!byKey[key]) {
+            byKey[key] = { "rule": t.rule, "action": t.action, "detail": t.detail, "count": 0, "last": t.ts }
+            groups.push(byKey[key])
+        }
+        byKey[key].count++
+    }
+    return groups.map(function (g) {
+        var what = ACTION_DONE[g.action] || String(g.action || "").replace(/_/g, " ")
+        // "max-download-limit=2M" reads as "limited to 2.0 MiB/s".
+        if (g.action === "set_option" && g.detail) {
+            var limit = /max-download-limit=([^,]+)/.exec(g.detail)
+            what = limit ? "limited to " + Fmt.speed(Fmt.parseSize(limit[1]) || 0) : "set " + g.detail
+        }
+        if (g.count > 1 || g.action !== "set_option")
+            what += " " + g.count + "×"
+        return { "rule": g.rule, "what": what, "when": (g.count > 1 ? "last " : "") + Fmt.shortWhen(g.last) }
+    })
 }
 
 // Where a JSON text stops parsing, as "Line N: what", or "" when it parses.

@@ -332,14 +332,6 @@ body.offline .topbar .rate b { color: var(--on-surface-var); }
   & .rule-body { display: flex; flex-direction: column; gap: 12px; }
   & .rule-desc { font-size: var(--fs-sm); }
   & .rule-json textarea { width: 100%; box-sizing: border-box; font-family: var(--mono); font-size: var(--fs-sm); }
-  & .rule-log {
-    display: flex; flex-direction: column; gap: 4px; padding-top: 10px; border-top: 1px solid var(--outline-var);
-    font-size: var(--fs-sm);
-    & .label { font-size: var(--fs-xs); font-weight: 600; text-transform: uppercase; letter-spacing: .05em; color: var(--on-surface-var); }
-    & .trig { display: flex; gap: 12px; min-width: 0; }
-    & .trig time { flex: none; color: var(--on-surface-var); font-variant-numeric: tabular-nums; }
-    & .trig span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  }
 }
 /* The sentence: plain words with the values as inline fields. */
 .rule-sentence {
@@ -636,4 +628,16 @@ input.fld {
   & .card { width: min(380px, calc(100vw - 32px)); padding: 20px; border-radius: var(--r-xl); display: flex; flex-direction: column; gap: 8px; background: var(--surface-high); box-shadow: var(--shadow-3); }
   & b { font-size: var(--fs-xl); }
   & .row { display: flex; justify-content: flex-end; gap: 4px; padding-top: 8px; }
+}
+
+/* A download's "Actions on this download", at the foot of its detail. */
+.dactions {
+  background: var(--surface-low); border-radius: var(--r-md); padding: 12px 14px;
+  & .dsec-head { display: flex; align-items: center; gap: 8px; }
+  & .dsec-head .ico { width: 18px; height: 18px; color: var(--tertiary); flex: none; }
+  & .dsec-head h3 { margin: 0; text-transform: none; letter-spacing: 0; font-size: var(--fs-md); font-weight: 700; color: var(--on-surface); white-space: nowrap; }
+  & .dsec-head .hint { white-space: nowrap; }
+  & .dactions-grid { display: grid; grid-template-columns: max-content minmax(0, 1fr) max-content; gap: 6px 14px; font-size: var(--fs-sm); margin-top: 6px; }
+  & .what { color: var(--on-surface-var); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  & .when { color: var(--outline); font-variant-numeric: tabular-nums; }
 }

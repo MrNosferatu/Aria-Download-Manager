@@ -394,6 +394,25 @@ class RuleEngine:
         return f"re-added as {new_gid}"
 
     # ---- exposure --------------------------------------------------------
+    def triggers_for(self, gid: str) -> list[dict]:
+        """What the actions did to one download, newest first.
+
+        A restart re-adds the download under a new gid and logs "re-added as
+        <new gid>", so the trail is followed back through every restart: the
+        download's detail shows the restart that made it, too.
+        """
+        gids = {gid}
+        while True:
+            earlier = {
+                t.get("gid", "")
+                for t in self.trigger_log
+                if t.get("action") == "restart" and str(t.get("detail", "")).removeprefix("re-added as ") in gids
+            } - gids
+            if not earlier:
+                break
+            gids |= earlier
+        return [t for t in self.trigger_log if t.get("gid") in gids]
+
     def public_state(self) -> dict:
         """Per-download rule progress, for the UI's countdown badges."""
         rules = {r["name"]: r for r in self.active_rules()}

@@ -775,8 +775,10 @@ def create_app(cfg: Config) -> FastAPI:
     # ---- per-download ----------------------------------------------------
     @app.get("/api/download/{gid}")
     async def download_detail(gid: str):
+        # What the automatic actions did to it, for the detail's foot.
+        triggers = engine.triggers_for(gid)
         if qbt.is_gid(gid):
-            return await qb.detail(gid)
+            return {**await qb.detail(gid), "triggers": triggers}
         status = await rpc.tell_status(gid, DETAIL_KEYS)
         results = await rpc.multicall(
             [
@@ -821,6 +823,7 @@ def create_app(cfg: Config) -> FastAPI:
             "pieceMap": piece_map(
                 status.get("bitfield", ""), int(status.get("numPieces") or 0)
             ),
+            "triggers": triggers,
         }
 
     @app.post("/api/download/{gid}/pause")
