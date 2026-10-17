@@ -227,6 +227,9 @@ Item {
             pickMode: true
             selectedGid: manager.selectedGid
             onSelectedGidChanged: manager.selectedGid = selectedGid
+            // The list changes its own filter too ("Show all downloads" on an
+            // empty one); the rail follows, so both say the same.
+            onFilterChanged: manager.filter = filter
         }
     }
 
