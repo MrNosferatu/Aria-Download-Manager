@@ -328,7 +328,6 @@ body.offline .topbar .rate b { color: var(--on-surface-var); }
   & .tag-off { flex: none; border-radius: var(--r-full); }
   & .rule-chev .ico { transition: transform var(--t-fast); }
   &.open .rule-chev .ico { transform: rotate(90deg); }
-  & .rname { flex: 1; font-weight: 600; font-size: var(--fs-lg); background: transparent; border-color: transparent; padding-left: 6px; &:hover, &:focus { background: var(--surface-highest); } }
   & .btn.on { background: var(--secondary-container); color: var(--on-secondary-container); }
   & .rule-body { display: flex; flex-direction: column; gap: 12px; }
   & .rule-desc { font-size: var(--fs-sm); }
@@ -542,4 +541,99 @@ body.offline .topbar .rate b { color: var(--on-surface-var); }
     &.danger, &.danger .ico { color: var(--error); }
   }
   & hr { border: 0; border-top: 1px solid var(--outline-var); margin: 4px 6px; }
+}
+
+/* ---- the action editor as a form (board 2) ---- */
+.rule {
+  & .rname-wrap { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+  & .rname { font-weight: 700; font-size: var(--fs-lg); height: 34px; }
+  & .rname-msg { font-size: var(--fs-xs); color: var(--error); &:empty { display: none; } }
+}
+.flabel-top { font-size: var(--fs-xs); color: var(--outline); }
+.rule-form { display: flex; flex-direction: column; gap: 14px; }
+.rule-group {
+  display: flex; flex-direction: column; gap: 8px;
+  &:not(:first-child) { padding-top: 14px; border-top: 1px solid var(--outline-var); }
+}
+.rule-gh { font-size: var(--fs-xs); font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--outline); }
+.frow {
+  display: grid; grid-template-columns: 120px minmax(0, 1fr); column-gap: 12px; align-items: center;
+  & .flabel { font-size: var(--fs-md); color: var(--on-surface-var); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  & .fctl { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; min-height: 36px; }
+  & .fdot { width: 8px; height: 8px; border-radius: 50%; background: var(--primary); display: none; margin-left: 2px; }
+  &.changed .fdot { display: inline-block; }
+  & .fmsg { grid-column: 2; font-size: var(--fs-xs); color: var(--error); margin-top: 3px; &:empty { display: none; } }
+  & .fremove { margin-left: auto; color: var(--outline); order: 10; }
+}
+.funit { font-size: var(--fs-md); color: var(--on-surface-var); }
+.fwarn { font-size: var(--fs-sm); color: var(--warning); }
+.fmono { font-family: var(--mono); }
+/* Every value in a bordered box that reads as editable before it is touched. */
+.fld {
+  box-sizing: border-box; height: 36px; border: 1px solid var(--outline-var); border-radius: 10px;
+  background: var(--surface); color: var(--on-surface); display: inline-flex; align-items: center;
+  transition: border-color var(--t-fast);
+  &:hover { border-color: var(--outline); }
+  &:focus-within, &:focus { outline: 2px solid var(--primary); outline-offset: -1px; border-color: transparent; }
+  &.changed { border-color: var(--primary); background: color-mix(in oklch, var(--primary) 10%, var(--surface)); }
+  &.invalid { border-color: var(--error); outline-color: var(--error); }
+  & input, & select { border: 0; background: none; color: inherit; font: inherit; height: 100%; padding: 0; box-shadow: none; outline: none; }
+}
+/* A bare input as a field: the shared input rule outranks .fld alone. */
+input.fld {
+  padding: 0 12px; font-size: var(--fs-md); height: 36px; border: 1px solid var(--outline-var); border-radius: 10px; background: var(--surface);
+  &:hover { border-color: var(--outline); }
+  &:focus { border-color: transparent; box-shadow: none; outline: 2px solid var(--primary); outline-offset: -1px; }
+  &.changed { border-color: var(--primary); background: color-mix(in oklch, var(--primary) 10%, var(--surface)); }
+  &.invalid { border-color: var(--error); outline-color: var(--error); }
+}
+/* Inputs inside a field box take the box's border, not their own. */
+.fld input:hover, .fld input:focus, .fld select:hover, .fld select:focus { border: 0; box-shadow: none; outline: none; }
+.ftext { width: 100%; }
+.frow .ftext { width: 180px; }
+.fstep {
+  width: 112px;
+  & input { width: 44px; text-align: center; font-weight: 600; font-size: var(--fs-lg); }
+  &.invalid input { color: var(--error); }
+  & .step { width: 34px; height: 34px; border: 0; background: none; color: var(--on-surface-var); display: grid; place-items: center; cursor: pointer; border-radius: 9px; }
+  & .step:hover { background: var(--surface-highest); }
+  & .step .ico { width: 18px; height: 18px; }
+}
+.fsel {
+  position: relative; padding: 0;
+  & select { appearance: none; padding: 0 30px 0 12px; font-size: var(--fs-md); cursor: pointer; }
+  & .farrow { position: absolute; right: 6px; pointer-events: none; display: grid; color: var(--on-surface-var); }
+  & .farrow .ico { width: 20px; height: 20px; }
+  &.fwide { width: 280px; max-width: 100%; & select { width: 100%; } }
+}
+.fspeed {
+  & > input { width: 64px; text-align: right; font-weight: 600; font-size: var(--fs-lg); padding: 0 6px 0 10px; }
+  & .fsep { width: 1px; height: 20px; background: var(--outline-var); }
+  & .fsel { border: 0; height: 34px; display: inline-flex; align-items: center; & select { padding-left: 8px; padding-right: 26px; color: var(--on-surface-var); background: none; } }
+  &.invalid > input { color: var(--error); }
+}
+.fchips { display: flex; gap: 6px; flex-wrap: wrap; }
+.fchip {
+  height: 32px; padding: 0 12px; border-radius: 10px; border: 1px solid var(--outline-var); background: none;
+  color: var(--on-surface-var); font: inherit; font-size: var(--fs-md); display: inline-flex; align-items: center; gap: 4px; cursor: pointer;
+  & .ico { width: 16px; height: 16px; }
+  &.on { border-color: transparent; background: var(--secondary-container); color: var(--on-secondary-container); font-weight: 600; }
+  &:not(.on):hover { background: color-mix(in oklch, var(--on-surface) 6%, transparent); }
+}
+.fadd {
+  height: 34px; padding: 0 14px 0 10px; border-radius: 17px; border: 1px dashed var(--outline); background: none;
+  color: var(--on-surface); font: inherit; font-size: var(--fs-md); display: inline-flex; align-items: center; gap: 6px; cursor: pointer;
+  max-width: 100%; overflow: hidden;
+  & .ico { width: 18px; height: 18px; flex: none; }
+  & .hint { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  &:hover { border-color: var(--on-surface); }
+}
+.rule-note-field { display: flex; flex-direction: column; gap: 4px; }
+/* Leaving with unsaved edits: Save, Discard or Keep editing. */
+.leave-prompt {
+  position: fixed; inset: 0; z-index: 60; display: grid; place-items: center;
+  background: color-mix(in oklch, var(--surface) 60%, transparent);
+  & .card { width: min(380px, calc(100vw - 32px)); padding: 20px; border-radius: var(--r-xl); display: flex; flex-direction: column; gap: 8px; background: var(--surface-high); box-shadow: var(--shadow-3); }
+  & b { font-size: var(--fs-xl); }
+  & .row { display: flex; justify-content: flex-end; gap: 4px; padding-top: 8px; }
 }

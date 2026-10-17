@@ -9,7 +9,7 @@ fixtures. The result opens offline in any browser, headless ones included.
 
 Options: --socket PATH (default: the manager's default socket), --tab
 downloads|settings|rules|log, --expand to open the first download's detail panel,
---fixtures FILE to lay JSON responses (path -> body) over the captured ones;
+--rule N to open the Nth action's editor, --fixtures FILE to lay JSON responses (path -> body) over the captured ones;
 tests/ui_fixtures.json holds states the live manager rarely has.
 """
 
@@ -64,7 +64,7 @@ def capture(sock_path: str) -> dict:
     return fixtures
 
 
-def build(fixtures: dict, tab: str, expand: bool) -> str:
+def build(fixtures: dict, tab: str, expand: bool, rule: int = -1) -> str:
     html = (STATIC / "index.html").read_text(encoding="utf-8")
     design = (STATIC.parent / "lib" / "design.css").read_text(encoding="utf-8")
     css = (STATIC / "style.css").read_text(encoding="utf-8")
@@ -102,6 +102,7 @@ document.addEventListener('DOMContentLoaded', () => {{
   const tab = {json.dumps(tab)};
   if (tab && tab !== 'downloads') switchTab(tab);
   if ({json.dumps(bool(expand and first_gid))}) toggleDetail({json.dumps(first_gid)});
+  if ({rule} >= 0) setTimeout(() => {{ S.openRule = {rule}; renderRules(); }}, 0);
 }});
 """
 
@@ -129,6 +130,8 @@ def main() -> int:
                         choices=["downloads", "settings", "rules", "log"])
     parser.add_argument("--expand", action="store_true",
                         help="open the first active download's detail panel")
+    parser.add_argument("--rule", type=int, default=-1,
+                        help="open the Nth action's editor (with --tab rules)")
     parser.add_argument("--fixtures", action="append", default=[],
                         help="a JSON file of {path: body} laid over the captured responses")
     args = parser.parse_args()
@@ -141,7 +144,7 @@ def main() -> int:
         print("error: could not read /api/state — is the manager running?")
         return 1
     out = Path(args.out)
-    out.write_text(build(fixtures, args.tab, args.expand), encoding="utf-8")
+    out.write_text(build(fixtures, args.tab, args.expand, args.rule), encoding="utf-8")
     downloads = len((fixtures["/api/state"] or {}).get("downloads", []))
     print(f"wrote {out} ({out.stat().st_size} bytes, {downloads} download(s), tab={args.tab})")
     return 0

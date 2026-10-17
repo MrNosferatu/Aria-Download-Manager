@@ -61,6 +61,112 @@ function summary(rule) {
     return head + " → " + action
 }
 
+// The editor's "Do" choices, in this order (board 2).
+var ACTION_VALUES = ["pause_resume", "force_pause_resume", "restart", "set_option", "stop", "log_only"]
+var ACTION_LABELS = ["Pause, then resume", "Force pause, then resume", "Remove and add again",
+                     "Change its options", "Pause and leave paused", "Only log it"]
+
+function resumes(action) {
+    return (action || "pause_resume") === "pause_resume" || action === "force_pause_resume"
+}
+
+// The optional limits, one row each once set (board 2):
+// [path, label, unit, value it starts at, "number" | "text", step]
+var LIMITS = [
+    ["when.min_age_seconds", "Ignore the first", "seconds after start", 8, "number", 1],
+    ["cooldown_seconds", "Cooldown", "seconds between runs", 25, "number", 1],
+    ["max_triggers", "At most", "times per download", 5, "number", 1],
+    ["when.min_progress", "Only after", "% done", 5, "number", 1],
+    ["when.max_progress", "Only before", "% done", 95, "number", 1],
+    ["when.connections_below", "Fewer than", "connections", 2, "number", 1],
+    ["when.name_matches", "Name matches", "pattern", "\\.iso$", "text", 0]
+]
+
+function blank(v) {
+    return v === undefined || v === null || v === ""
+}
+
+// Whether a limit is in force; "at most 0 times" is how config.yaml says none.
+function limitSet(rule, path) {
+    var v = Fmt.getPath(rule, path)
+    return !blank(v) && !(path === "max_triggers" && Number(v) === 0)
+}
+
+// What is wrong with a rule, field by field: {path: "Must be 0 or more"}.
+// The editor marks each field; Save waits until there are none. Mirrors what
+// the manager refuses (rules.py validate) plus what would read as nonsense.
+function problems(rule, otherNames) {
+    var out = {}
+    var when = (rule && rule.when) || {}
+    var name = String(rule.name || "").trim()
+    if (!name)
+        out["name"] = "Give it a name"
+    else if ((otherNames || []).indexOf(name) >= 0)
+        out["name"] = "Another action has this name"
+    if (!(when.statuses || ["active"]).length)
+        out["when.statuses"] = "Pick at least one"
+    var speed = blank(when.speed_below) ? when.speed_above : when.speed_below
+    if (!blank(speed) && !(Number(speed) > 0))
+        out["when.speed"] = "Must be more than 0"
+    if (blank(speed) && blank(when.connections_below))
+        out["when.speed"] = "Set a speed, or a connections limit below"
+    function count(path, label) {
+        var v = Fmt.getPath(rule, path)
+        if (!blank(v) && !(isFinite(Number(v)) && Number(v) >= 0))
+            out[path] = label || "Must be 0 or more"
+    }
+    count("when.for_seconds")
+    if (resumes(rule.action))
+        count("resume_after_seconds")
+    for (var i = 0; i < LIMITS.length; i++) {
+        if (LIMITS[i][4] === "number")
+            count(LIMITS[i][0])
+    }
+    if (!blank(when.min_progress) && Number(when.min_progress) > 100)
+        out["when.min_progress"] = "At most 100"
+    if (!blank(when.max_progress) && Number(when.max_progress) > 100)
+        out["when.max_progress"] = "At most 100"
+    if (!blank(when.name_matches)) {
+        try {
+            new RegExp(when.name_matches)
+        } catch (e) {
+            out["when.name_matches"] = "Not a valid pattern"
+        }
+    }
+    if (rule.action === "set_option" && !Object.keys(rule.options || {}).length)
+        out["options"] = "Add the option it changes"
+    return out
+}
+
+// How many values differ between two versions of a rule, for the save bar's
+// "3 unsaved changes to stall-recovery". A rule with no saved version counts
+// as one change.
+function changeCount(rule, saved) {
+    if (!saved)
+        return 1
+    var n = 0
+    function walk(a, b) {
+        var keys = {}
+        var k
+        for (k in (a || {}))
+            keys[k] = true
+        for (k in (b || {}))
+            keys[k] = true
+        for (k in keys) {
+            if (k === "enabled")
+                continue
+            var x = a ? a[k] : undefined
+            var y = b ? b[k] : undefined
+            if (x && y && typeof x === "object" && typeof y === "object" && !Array.isArray(x))
+                walk(x, y)
+            else if (JSON.stringify(x === undefined ? null : x) !== JSON.stringify(y === undefined ? null : y))
+                n++
+        }
+    }
+    walk(rule, saved)
+    return n
+}
+
 // The empty tab's starting points; each is added and opened in one click.
 var TEMPLATES = [
     {

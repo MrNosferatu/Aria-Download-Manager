@@ -34,6 +34,8 @@ Item {
             return Theme.withAlpha(Theme.error, 0.16)
         case "dangerFilled":
             return Theme.error
+        case "inverseFilled":
+            return Theme.inversePrimary
         default:
             return "transparent"
         }
@@ -50,6 +52,9 @@ Item {
             return Theme.error
         case "text":
             return Theme.primary
+        //: On an inverse surface (a snackbar-like save bar).
+        case "inverseText":
+            return Theme.inversePrimary
         default:
             return Theme.surfaceText
         }

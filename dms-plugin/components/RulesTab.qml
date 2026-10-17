@@ -11,15 +11,17 @@ Item {
 
     property var service: null
     property var rules: []
-    property bool dirty: false
+    //: The rules as last saved: what each field is compared against, and
+    //: what Discard goes back to.
+    property var saved: []
     //: One card open at a time; -1 for none.
     property int openIndex: -1
     //: The wide window: the list on the left, the open action's editor and
     //: its own trigger history on the right.
     property bool wide: false
-    //: Bumped on every edit, so a card showing the same rule elsewhere
-    //: refreshes its summary.
-    property int editRev: 0
+    //: Bumped by Discard and Apply JSON: the editor is built again from the
+    //: rule, so no field keeps a value it was typed.
+    property int resetRev: 0
 
     //: Each edited rule's name on the manager, "" for one not saved yet: the
     //: switch saves at once under that name even after an unsaved rename.
@@ -27,6 +29,57 @@ Item {
 
     readonly property int onCount: rules.filter(r => r.enabled !== false).length
     readonly property bool masterOn: !!service && service.rulesEnabled
+
+    function savedFor(index) {
+        const name = origins[index] || ""
+        return name ? (saved.find(r => r.name === name) || null) : null
+    }
+
+    function othersOf(index) {
+        return rules.filter((r, i) => i !== index).map(r => String(r.name || "").trim())
+    }
+
+    //: Values that differ from the saved rules, counting a removed or new
+    //: action as one.
+    readonly property int changeTotal: {
+        let n = saved.filter(r => origins.indexOf(r.name) < 0).length
+        for (let i = 0; i < rules.length; i++)
+            n += Rules.changeCount(rules[i], savedFor(i))
+        return n
+    }
+    readonly property bool dirty: changeTotal > 0
+    //: Which actions have a field Save must wait for.
+    readonly property bool blocked: rules.some((r, i) => Object.keys(Rules.problems(r, othersOf(i))).length > 0)
+    //: The popout shows the open action instead of the list (board 2).
+    readonly property bool editing: !wide && openIndex >= 0 && openIndex < rules.length
+
+    function replaceAt(index, rule, rebuild) {
+        const next = rules.slice()
+        next[index] = rule
+        rules = next
+        saving = false
+        if (rebuild)
+            resetRev++
+    }
+
+    //: Set while our own save is on its way, so its answer reloads the tab.
+    property bool saving: false
+
+    function save() {
+        saving = true
+        service.saveRules(rules, service.rulesEnabled, service.speedSource)
+    }
+
+    //: Leaving the editor with unsaved edits asks once: Save, Discard or Keep
+    //: editing. `then` is where it was going.
+    function leave(then) {
+        if (!dirty) {
+            then()
+            return
+        }
+        leavePrompt.then = then
+        leavePrompt.visible = true
+    }
 
     readonly property int scrollbarGutter: Layout.SCROLLBAR_GUTTER
 
@@ -37,9 +90,10 @@ Item {
         if (!service)
             return
         // Edit a copy: the service keeps the server's version until we save.
+        saved = JSON.parse(JSON.stringify(service.rules || []))
         rules = JSON.parse(JSON.stringify(service.rules || []))
         origins = rules.map(r => r.name)
-        dirty = false
+        resetRev++
         if (openIndex >= rules.length)
             openIndex = -1
         // Side by side, the editor is never left empty when there is a rule.
@@ -77,7 +131,6 @@ Item {
         rules = next
         origins = origins.concat([""])
         openIndex = next.length - 1
-        dirty = true
     }
 
     //: A copy under a free name, right after the original.
@@ -96,7 +149,6 @@ Item {
         origins = from
         if (openIndex > index)
             openIndex++
-        dirty = true
     }
 
     //: The switch on a row (or in the editor) saves straight away, like the
@@ -107,10 +159,11 @@ Item {
         next[index].enabled = value
         rules = next
         const name = origins[index] || ""
-        if (!name || !service) {
-            dirty = true
+        if (!name || !service)
             return
-        }
+        saved = saved.map(r => r.name === name ? Object.assign({}, r, {
+                                                                     "enabled": value
+                                                                 }) : r)
         service.post("/api/rules/" + encodeURIComponent(name) + "/toggle", {
                          "enabled": value
                      }, (value ? "On: " : "Off: ") + name, () => {
@@ -131,7 +184,6 @@ Item {
             openIndex = -1
         else if (openIndex > index)
             openIndex--
-        dirty = true
     }
 
     Component.onCompleted: {
@@ -144,8 +196,10 @@ Item {
     Connections {
         target: tab.service
         function onRulesLoaded() {
-            if (!tab.dirty)
+            // A reload from elsewhere never wipes edits; our own save's does.
+            if (!tab.dirty || tab.saving)
                 tab.reload()
+            tab.saving = false
         }
     }
 
@@ -160,7 +214,8 @@ Item {
         //: Side by side it heads the list column, leaving the editor the
         //: full height (board 20).
         width: tab.wide ? listFlick.width - tab.scrollbarGutter : parent.width - tab.scrollbarGutter
-        height: masterColumn.implicitHeight + 32
+        height: tab.editing ? 0 : masterColumn.implicitHeight + 32
+        visible: !tab.editing
         radius: 16
         color: Theme.surfaceContainerHigh
 
@@ -252,8 +307,8 @@ Item {
         anchors.top: masterCard.bottom
         anchors.topMargin: 12
         width: masterCard.width
-        height: tab.rules.length ? 20 : 0
-        visible: tab.rules.length > 0
+        height: tab.rules.length && !tab.editing ? 20 : 0
+        visible: tab.rules.length > 0 && !tab.editing
 
         StyledText {
             id: countText
@@ -289,6 +344,7 @@ Item {
         anchors.bottom: saveBar.visible ? saveBar.top : parent.bottom
         anchors.bottomMargin: saveBar.visible ? 12 : 0
         width: tab.wide ? Math.round(parent.width * 0.42) : parent.width
+        visible: !tab.editing
         clip: true
         contentHeight: content.implicitHeight
         contentWidth: width
@@ -312,24 +368,19 @@ Item {
 
                     width: content.width
                     rule: ruleCard.modelData
-                    ruleIndex: ruleCard.index
-                    open: !tab.wide && tab.openIndex === ruleCard.index
                     current: tab.wide && tab.openIndex === ruleCard.index
-                    externalRev: tab.editRev
                     //: Master off: the whole list dims, still editable.
-                    opacity: tab.masterOn || ruleCard.open ? 1 : 0.6
+                    opacity: tab.masterOn ? 1 : 0.6
                     onRemoved: tab.removeAt(ruleCard.index)
                     onDuplicated: tab.duplicateAt(ruleCard.index)
                     onEnabledToggled: value => tab.setEnabled(ruleCard.index, value)
-                    onEdited: {
-                        tab.dirty = true
-                        tab.editRev++
-                    }
                     onToggleOpen: {
+                        if (tab.openIndex === ruleCard.index)
+                            return
                         if (tab.wide)
-                            tab.openIndex = ruleCard.index
+                            tab.leave(() => tab.openIndex = ruleCard.index)
                         else
-                            tab.openIndex = (tab.openIndex === ruleCard.index ? -1 : ruleCard.index)
+                            tab.openIndex = ruleCard.index
                     }
                 }
             }
@@ -597,16 +648,17 @@ Item {
         }
     }
 
-    // ---- wide: the open action beside the list ------------------------------
+    // ---- the open action: beside the list, or in its place (board 2) -------
     DankFlickable {
+        id: editorFlick
+
         anchors.top: parent.top
-        anchors.topMargin: 0
         anchors.bottom: saveBar.visible ? saveBar.top : parent.bottom
         anchors.bottomMargin: saveBar.visible ? 12 : 0
-        anchors.left: listFlick.right
-        anchors.leftMargin: 16
+        anchors.left: tab.wide ? listFlick.right : parent.left
+        anchors.leftMargin: tab.wide ? 16 : 0
         anchors.right: parent.right
-        visible: tab.wide
+        visible: tab.wide || tab.editing
         clip: true
         contentHeight: editorColumn.implicitHeight
         contentWidth: width
@@ -614,14 +666,44 @@ Item {
         Column {
             id: editorColumn
 
-            readonly property var rule: tab.openIndex >= 0 ? tab.rules[tab.openIndex] : null
+            readonly property var rule: tab.openIndex >= 0 && tab.openIndex < tab.rules.length ? tab.rules[tab.openIndex] : null
 
             width: parent.width - tab.scrollbarGutter
-            spacing: 8
+            spacing: 10
+
+            //: In the popout the editor takes the list's place; this is the
+            //: way back to it.
+            Item {
+                width: parent.width
+                height: 36
+                visible: !tab.wide
+
+                Row {
+                    anchors.verticalCenter: parent.verticalCenter
+                    spacing: 4
+
+                    DankActionButton {
+                        anchors.verticalCenter: parent.verticalCenter
+                        buttonSize: 36
+                        iconSize: 22
+                        iconName: "arrow_back"
+                        iconColor: Theme.surfaceVariantText
+                        tooltipText: "Back to actions"
+                        onClicked: tab.leave(() => tab.openIndex = -1)
+                    }
+
+                    StyledText {
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: "Actions"
+                        font.pixelSize: Theme.fontSizeSmall + 1
+                        color: Theme.surfaceVariantText
+                    }
+                }
+            }
 
             StyledText {
                 width: parent.width
-                visible: !editorColumn.rule
+                visible: tab.wide && !editorColumn.rule
                 topPadding: Theme.spacingXL
                 horizontalAlignment: Text.AlignHCenter
                 wrapMode: Text.WordWrap
@@ -630,32 +712,27 @@ Item {
                 color: Theme.surfaceVariantText
             }
 
-            Loader {
-                width: parent.width
-                active: !!editorColumn.rule
+            //: Rebuilt from the rule on Discard (resetRev), so no field keeps
+            //: a value it was typed.
+            Repeater {
+                model: editorColumn.rule ? [tab.openIndex + ":" + tab.resetRev] : []
 
-                sourceComponent: RuleCard {
+                RuleEditor {
                     width: editorColumn.width
-                    //: The editor sits on the pane itself, unboxed (board 20).
-                    border.width: 0
                     rule: editorColumn.rule
-                    ruleIndex: tab.openIndex
-                    open: true
-                    externalRev: tab.editRev
-                    onRemoved: tab.removeAt(tab.openIndex)
+                    saved: tab.savedFor(tab.openIndex)
+                    otherNames: tab.othersOf(tab.openIndex)
+                    onEdited: rule => tab.replaceAt(tab.openIndex, rule, false)
+                    onReplaced: rule => tab.replaceAt(tab.openIndex, rule, true)
                     onEnabledToggled: value => tab.setEnabled(tab.openIndex, value)
-                    onEdited: {
-                        tab.dirty = true
-                        tab.editRev++
-                    }
-                    onToggleOpen: tab.openIndex = -1
+                    onRemoved: tab.removeAt(tab.openIndex)
                 }
             }
 
             //: This action's own history, in a card under the editor.
             Rectangle {
                 width: parent.width
-                visible: !!editorColumn.rule
+                visible: tab.wide && !!editorColumn.rule
                 height: visible ? Math.max(140, ruleTriggers.implicitHeight + 24) : 0
                 radius: 14
                 color: Theme.surfaceContainer
@@ -721,39 +798,43 @@ Item {
     }
 
     // ---- unsaved changes ---------------------------------------------------
-    //: Appears only when there is something to save.
+    //: Appears only when there is something to save; Save waits while a field
+    //: is marked as not valid.
     Rectangle {
         id: saveBar
 
-        anchors.bottom: parent.bottom
-        width: parent.width - tab.scrollbarGutter
-        height: 50
-        visible: tab.dirty
-        radius: 16
-        color: Theme.surfaceContainerHigh
-
-        Rectangle {
-            id: saveDot
-
-            anchors.left: parent.left
-            anchors.leftMargin: 16
-            anchors.verticalCenter: parent.verticalCenter
-            width: 6
-            height: 6
-            radius: 3
-            color: Theme.primary
+        readonly property var changedNames: {
+            const out = []
+            for (let i = 0; i < tab.rules.length; i++) {
+                if (Rules.changeCount(tab.rules[i], tab.savedFor(i)) > 0)
+                    out.push(tab.rules[i].name || "an action")
+            }
+            return out
         }
 
+        anchors.bottom: parent.bottom
+        width: parent.width - tab.scrollbarGutter
+        height: 52
+        visible: tab.dirty
+        radius: 16
+        color: Theme.inverseSurface
+
         StyledText {
-            anchors.left: saveDot.right
-            anchors.leftMargin: 10
+            anchors.left: parent.left
+            anchors.leftMargin: 16
             anchors.right: saveButtons.left
             anchors.rightMargin: 8
             anchors.verticalCenter: parent.verticalCenter
-            text: tab.openIndex >= 0 && tab.rules[tab.openIndex] && tab.rules[tab.openIndex].name
-                  ? "Unsaved changes in " + tab.rules[tab.openIndex].name : "Unsaved changes to actions"
+            text: {
+                if (tab.blocked)
+                    return "Fix the marked fields to save"
+                const n = tab.changeTotal
+                const what = n === 1 ? "1 unsaved change" : n + " unsaved changes"
+                return saveBar.changedNames.length === 1 ? what + " to " + saveBar.changedNames[0] : what
+            }
             font.pixelSize: Theme.fontSizeSmall + 1
-            color: Theme.surfaceText
+            font.weight: Font.Medium
+            color: Theme.inverseOnSurface
             wrapMode: Text.NoWrap
             elide: Text.ElideRight
         }
@@ -767,17 +848,108 @@ Item {
             spacing: 4
 
             PillButton {
-                kind: "text"
+                kind: "inverseText"
                 text: "Discard"
                 onClicked: tab.reload()
             }
 
             PillButton {
-                kind: "filled"
+                kind: "inverseFilled"
                 text: "Save"
-                onClicked: {
-                    tab.service.saveRules(tab.rules, tab.service.rulesEnabled, tab.service.speedSource)
-                    tab.dirty = false
+                enabled: !tab.blocked
+                onClicked: tab.save()
+            }
+        }
+    }
+
+    // ---- leaving with unsaved edits -----------------------------------------
+    //: Asked once, on the way out of the editor: Save, Discard or Keep editing.
+    Rectangle {
+        id: leavePrompt
+
+        property var then: null
+
+        anchors.fill: parent
+        visible: false
+        color: Theme.withAlpha(Theme.surface, 0.6)
+        z: 20
+
+        MouseArea {
+            anchors.fill: parent
+            onClicked: leavePrompt.visible = false
+        }
+
+        Rectangle {
+            anchors.centerIn: parent
+            width: Math.min(parent.width - 32, 380)
+            height: promptColumn.implicitHeight + 40
+            radius: 24
+            color: Theme.surfaceContainerHigh
+
+            MouseArea {
+                anchors.fill: parent
+            }
+
+            Column {
+                id: promptColumn
+
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.top: parent.top
+                anchors.margins: 20
+                spacing: 8
+
+                StyledText {
+                    width: parent.width
+                    text: saveBar.changedNames.length === 1 ? "Save changes to " + saveBar.changedNames[0] + "?" : "Save your changes?"
+                    font.pixelSize: Theme.fontSizeLarge
+                    font.weight: Font.Bold
+                    color: Theme.surfaceText
+                    wrapMode: Text.WordWrap
+                }
+
+                StyledText {
+                    width: parent.width
+                    text: tab.blocked ? "Some fields are not valid yet, so they can only be discarded or fixed."
+                                      : (tab.changeTotal === 1 ? "1 unsaved change." : tab.changeTotal + " unsaved changes.")
+                    font.pixelSize: Theme.fontSizeSmall + 1
+                    color: Theme.surfaceVariantText
+                    wrapMode: Text.WordWrap
+                }
+
+                Row {
+                    anchors.right: parent.right
+                    topPadding: 8
+                    spacing: 4
+
+                    PillButton {
+                        kind: "text"
+                        text: "Keep editing"
+                        onClicked: leavePrompt.visible = false
+                    }
+
+                    PillButton {
+                        kind: "text"
+                        text: "Discard"
+                        onClicked: {
+                            leavePrompt.visible = false
+                            tab.reload()
+                            if (leavePrompt.then)
+                                leavePrompt.then()
+                        }
+                    }
+
+                    PillButton {
+                        kind: "filled"
+                        text: "Save"
+                        enabled: !tab.blocked
+                        onClicked: {
+                            leavePrompt.visible = false
+                            tab.save()
+                            if (leavePrompt.then)
+                                leavePrompt.then()
+                        }
+                    }
                 }
             }
         }
