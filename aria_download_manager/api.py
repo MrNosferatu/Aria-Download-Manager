@@ -162,6 +162,14 @@ class OpenRequest(BaseModel):
     key: str | None = None
 
 
+class HistoryFetchRequest(BaseModel):
+    """Fetch files a finished torrent skipped (or lost from disk)."""
+
+    key: str
+    #: aria2's 1-based file indices to fetch.
+    indices: list[int]
+
+
 class FloatRequest(BaseModel):
     """One of our windows just opened: float it on a tiling compositor."""
 
@@ -438,6 +446,7 @@ def create_app(cfg: Config) -> FastAPI:
     timeline = Timeline(history.path.parent / "timeline.json")
     poller.observers.append(timeline.observe)
     poller.observers.append(history.observe)
+    poller.observers.append(lambda snapshot: _enrich_history_soon())
     media_jobs = MediaJobs(
         on_event=lambda level, message, **kw: store.add_event(level, message, **kw),
         max_parallel=int(cfg.get("media.max_parallel", 2) or 2),
@@ -1231,6 +1240,102 @@ def create_app(cfg: Config) -> FastAPI:
     @app.get("/api/history")
     async def history_list(limit: int = 200, status: str | None = None):
         return {"summary": history.summary(), "entries": history.list(limit, status)}
+
+    # A finished torrent's file list and magnet are not in the snapshot: they
+    # are fetched once, right after it finishes, while aria2 (or qBittorrent)
+    # still has it.
+    enrich_task: dict[str, asyncio.Task | None] = {"task": None}
+
+    def _enrich_history_soon() -> None:
+        if history.pending_files and not (enrich_task["task"] and not enrich_task["task"].done()):
+            enrich_task["task"] = asyncio.get_running_loop().create_task(_enrich_history())
+
+    async def _enrich_history() -> None:
+        for key in list(history.pending_files):
+            entry = history.entries.get(key)
+            gid = (entry or {}).get("gid", "")
+            try:
+                if not gid:
+                    raise ValueError("no gid")
+                if qbt.is_gid(gid):
+                    detail = await qb.detail(gid)
+                    files = detail.get("files") or []
+                    magnet = entry.get("url", "") if str(entry.get("url", "")).startswith("magnet:") else ""
+                    if not magnet and entry.get("infoHash"):
+                        magnet = _magnet(entry["infoHash"], entry.get("name", ""), [])
+                else:
+                    status = await rpc.tell_status(gid, ["bittorrent", "infoHash"])
+                    files = await rpc.get_files(gid)
+                    trackers = [t for tier in (status.get("bittorrent") or {}).get("announceList") or [] for t in tier]
+                    magnet = entry.get("url", "") if str(entry.get("url", "")).startswith("magnet:") else ""
+                    if status.get("infoHash"):
+                        magnet = magnet or _magnet(status["infoHash"], entry.get("name", ""), trackers)
+                history.set_files(key, gid, files, magnet)
+            except Exception:  # noqa: BLE001 — gone already, or not a torrent after all
+                history.pending_files.discard(key)
+
+    def _magnet(info_hash: str, name: str, trackers: list[str]) -> str:
+        from urllib.parse import quote
+
+        parts = [f"magnet:?xt=urn:btih:{info_hash}"]
+        if name:
+            parts.append(f"dn={quote(name)}")
+        parts += [f"tr={quote(t, safe='')}" for t in trackers]
+        return "&".join(parts)
+
+    @app.get("/api/history/{key:path}")
+    async def history_entry(key: str):
+        """One finished download, with its files checked against the disk."""
+        entry = history.detail(key)
+        if not entry:
+            raise HTTPException(404, "no such history entry")
+        return entry
+
+    @app.post("/api/history/fetch")
+    async def history_fetch(req: HistoryFetchRequest):
+        """Add a finished torrent again for the files it skipped or lost.
+
+        It goes back into the same folder choosing the picked files plus the
+        ones already on disk; aria2 verifies the pieces it finds there
+        (check-integrity), so nothing finished is downloaded twice. When it
+        finishes, it is recorded over the same entry (keyed by its path).
+        """
+        entry = history.detail(req.key)
+        if not entry:
+            raise HTTPException(404, "no such history entry")
+        magnet = entry.get("magnet") or (entry.get("url") if str(entry.get("url", "")).startswith("magnet:") else "")
+        if not magnet:
+            raise HTTPException(409, "this entry has no magnet link or info hash to add it again by")
+        have = {f["index"] for f in entry.get("files") or [] if f.get("selected") and f.get("exists")}
+        chosen = sorted(set(int(i) for i in req.indices) | have)
+        if not chosen:
+            raise HTTPException(400, "pick at least one file")
+        directory = entry.get("dir") or router.base_dir()
+        if qbt.is_gid(entry.get("gid", "")) and qb.ready:
+            gid = await qb.add_magnet(magnet, {"dir": directory, "pause-metadata": "true"})
+            asyncio.get_running_loop().create_task(_qb_select_when_ready(gid, chosen))
+        else:
+            gid = await rpc.add_uri([magnet], {
+                "dir": directory,
+                "select-file": ",".join(str(i) for i in chosen),
+                "check-integrity": "true",
+            })
+        store.add_event("info", f"Fetching {len(set(req.indices) - have)} more file(s) of {entry.get('name', '')}", gid=gid)
+        poller.poke()
+        return {"ok": True, "gid": gid, "select-file": chosen}
+
+    async def _qb_select_when_ready(gid: str, chosen: list[int]) -> None:
+        """qBittorrent knows a magnet's files only once its metadata is in."""
+        for _ in range(240):
+            try:
+                if (await qb.detail(gid)).get("files"):
+                    await qb.select(gid, chosen)
+                    await qb.client.simple("recheck", [qbt.hash_of(gid)])
+                    await qb.resume(gid)
+                    return
+            except Exception:  # noqa: BLE001 — not there yet
+                pass
+            await asyncio.sleep(1)
 
     @app.post("/api/history/readd")
     async def history_readd(req: HistoryKeyRequest):

@@ -105,5 +105,219 @@
         "detail": "max-download-limit=2M"
       }
     ]
+  },
+  "/api/history": {
+    "summary": {
+      "count": 3,
+      "completed": 2,
+      "bytes": 1293942784,
+      "file": "~/.local/share/aria-download-manager/history.json"
+    },
+    "entries": [
+      {
+        "key": "/home/demo/Downloads/Images/Machi - The Herta Swimsuit",
+        "gid": "t1",
+        "name": "Machi - The Herta Swimsuit",
+        "status": "complete",
+        "total": 150994944,
+        "completed": 150994944,
+        "dir": "/home/demo/Downloads/Images",
+        "path": "/home/demo/Downloads/Images/Machi - The Herta Swimsuit",
+        "url": "magnet:?xt=urn:btih:449bfdb1221becd9d498bcf8738591b9cc4d4bc7",
+        "isTorrent": true,
+        "infoHash": "449bfdb1221becd9d498bcf8738591b9cc4d4bc7",
+        "error": "",
+        "finished_at": 1792264142,
+        "added_at": 1792263842,
+        "file_exists": true
+      },
+      {
+        "key": "/home/demo/Downloads/ISO/debian-13.1.0-amd64-netinst.iso",
+        "gid": "h1",
+        "name": "debian-13.1.0-amd64-netinst.iso",
+        "status": "complete",
+        "total": 828375040,
+        "completed": 828375040,
+        "dir": "/home/demo/Downloads/ISO",
+        "path": "/home/demo/Downloads/ISO/debian-13.1.0-amd64-netinst.iso",
+        "url": "https://cdimage.debian.org/debian-cd/current/amd64/iso-cd/debian-13.1.0-amd64-netinst.iso",
+        "isTorrent": false,
+        "infoHash": "",
+        "error": "",
+        "finished_at": 1792260542,
+        "added_at": 1792260442,
+        "file_exists": true
+      },
+      {
+        "key": "/home/demo/Downloads/big.tar",
+        "gid": "h1",
+        "name": "big.tar",
+        "status": "removed",
+        "total": 1258291200,
+        "completed": 314572800,
+        "dir": "/home/demo/Downloads",
+        "path": "/home/demo/Downloads/big.tar",
+        "url": "https://example.org/big.tar",
+        "isTorrent": false,
+        "infoHash": "",
+        "error": "",
+        "finished_at": 1792258742,
+        "added_at": 1792260442,
+        "file_exists": true
+      }
+    ]
+  },
+  "/api/history/%2Fhome%2Fdemo%2FDownloads%2FImages%2FMachi%20-%20The%20Herta%20Swimsuit": {
+    "key": "/home/demo/Downloads/Images/Machi - The Herta Swimsuit",
+    "gid": "t1",
+    "name": "Machi - The Herta Swimsuit",
+    "status": "complete",
+    "total": 150994944,
+    "completed": 150994944,
+    "dir": "/home/demo/Downloads/Images",
+    "path": "/home/demo/Downloads/Images/Machi - The Herta Swimsuit",
+    "url": "magnet:?xt=urn:btih:449bfdb1221becd9d498bcf8738591b9cc4d4bc7",
+    "isTorrent": true,
+    "infoHash": "449bfdb1221becd9d498bcf8738591b9cc4d4bc7",
+    "error": "",
+    "finished_at": 1792264142,
+    "added_at": 1792263842,
+    "file_exists": true,
+    "files": [
+      {
+        "index": 1,
+        "path": "/home/demo/Downloads/Images/Machi - The Herta Swimsuit/01.jpg",
+        "length": 11534336,
+        "completed": 11534336,
+        "selected": true,
+        "exists": true
+      },
+      {
+        "index": 2,
+        "path": "/home/demo/Downloads/Images/Machi - The Herta Swimsuit/02.jpg",
+        "length": 12582912,
+        "completed": 12582912,
+        "selected": true,
+        "exists": true
+      },
+      {
+        "index": 3,
+        "path": "/home/demo/Downloads/Images/Machi - The Herta Swimsuit/03.jpg",
+        "length": 13631488,
+        "completed": 13631488,
+        "selected": true,
+        "exists": true
+      },
+      {
+        "index": 4,
+        "path": "/home/demo/Downloads/Images/Machi - The Herta Swimsuit/04.jpg",
+        "length": 14680064,
+        "completed": 14680064,
+        "selected": true,
+        "exists": true
+      },
+      {
+        "index": 5,
+        "path": "/home/demo/Downloads/Images/Machi - The Herta Swimsuit/05.jpg",
+        "length": 15728640,
+        "completed": 15728640,
+        "selected": true,
+        "exists": false
+      },
+      {
+        "index": 6,
+        "path": "/home/demo/Downloads/Images/Machi - The Herta Swimsuit/06.jpg",
+        "length": 16777216,
+        "completed": 16777216,
+        "selected": true,
+        "exists": true
+      },
+      {
+        "index": 7,
+        "path": "/home/demo/Downloads/Images/Machi - The Herta Swimsuit/07.jpg",
+        "length": 17825792,
+        "completed": 17825792,
+        "selected": true,
+        "exists": true
+      },
+      {
+        "index": 8,
+        "path": "/home/demo/Downloads/Images/Machi - The Herta Swimsuit/08.jpg",
+        "length": 18874368,
+        "completed": 18874368,
+        "selected": true,
+        "exists": true
+      },
+      {
+        "index": 9,
+        "path": "/home/demo/Downloads/Images/Machi - The Herta Swimsuit/09.jpg",
+        "length": 19922944,
+        "completed": 19922944,
+        "selected": true,
+        "exists": true
+      },
+      {
+        "index": 10,
+        "path": "/home/demo/Downloads/Images/Machi - The Herta Swimsuit/behind-the-scenes.mp4",
+        "length": 20971520,
+        "completed": 0,
+        "selected": false,
+        "exists": false
+      },
+      {
+        "index": 11,
+        "path": "/home/demo/Downloads/Images/Machi - The Herta Swimsuit/extras.zip",
+        "length": 22020096,
+        "completed": 0,
+        "selected": false,
+        "exists": false
+      },
+      {
+        "index": 12,
+        "path": "/home/demo/Downloads/Images/Machi - The Herta Swimsuit/raw/10.dng",
+        "length": 23068672,
+        "completed": 0,
+        "selected": false,
+        "exists": false
+      }
+    ],
+    "magnet": "magnet:?xt=urn:btih:449bfdb1221becd9d498bcf8738591b9cc4d4bc7",
+    "files_gid": "t1"
+  },
+  "/api/history/%2Fhome%2Fdemo%2FDownloads%2FISO%2Fdebian-13.1.0-amd64-netinst.iso": {
+    "key": "/home/demo/Downloads/ISO/debian-13.1.0-amd64-netinst.iso",
+    "gid": "h1",
+    "name": "debian-13.1.0-amd64-netinst.iso",
+    "status": "complete",
+    "total": 828375040,
+    "completed": 828375040,
+    "dir": "/home/demo/Downloads/ISO",
+    "path": "/home/demo/Downloads/ISO/debian-13.1.0-amd64-netinst.iso",
+    "url": "https://cdimage.debian.org/debian-cd/current/amd64/iso-cd/debian-13.1.0-amd64-netinst.iso",
+    "isTorrent": false,
+    "infoHash": "",
+    "error": "",
+    "finished_at": 1792260542,
+    "added_at": 1792260442,
+    "file_exists": true,
+    "files": []
+  },
+  "/api/history/%2Fhome%2Fdemo%2FDownloads%2Fbig.tar": {
+    "key": "/home/demo/Downloads/big.tar",
+    "gid": "h1",
+    "name": "big.tar",
+    "status": "removed",
+    "total": 1258291200,
+    "completed": 314572800,
+    "dir": "/home/demo/Downloads",
+    "path": "/home/demo/Downloads/big.tar",
+    "url": "https://example.org/big.tar",
+    "isTorrent": false,
+    "infoHash": "",
+    "error": "",
+    "finished_at": 1792258742,
+    "added_at": 1792260442,
+    "file_exists": true,
+    "files": []
   }
 }

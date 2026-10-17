@@ -7,7 +7,10 @@ next restart, and `aria2.purgeDownloadResult` erases them even sooner.
 So the manager keeps its own record: every download it observes reaching a final
 state is written to a JSON file that survives restarts, aria2 crashes and purges.
 Nothing here affects downloading; it is bookkeeping, plus enough detail (the URL)
-to queue something again.
+to queue something again. A finished torrent also keeps its file list (path,
+size, whether it was chosen) and a magnet link, fetched once by the manager
+(``set_files``), so its detail can show the files it skipped and fetch them
+later without downloading the finished ones twice.
 """
 
 from __future__ import annotations
@@ -22,6 +25,10 @@ from .config import Config, expand
 
 FINAL_STATES = ("complete", "error", "removed")
 
+#: Kept from the recorded entry when a poll rewrites it: the file list and how
+#: to add the torrent again are fetched once, not carried by the snapshot.
+DETAIL_KEYS = ("files", "magnet", "files_gid")
+
 
 class History:
     def __init__(self, cfg: Config):
@@ -33,6 +40,8 @@ class History:
         self.dismissed: dict[str, float] = {}
         self._dirty = False
         self._last_save = 0.0
+        #: Torrent entries whose file list is still to be fetched (see set_files).
+        self.pending_files: set[str] = set()
         self.load()
 
     # ---- config ----------------------------------------------------------
@@ -149,10 +158,59 @@ class History:
                 or (existing or {}).get("first_seen")
                 or time.time(),
             }
+            for extra in DETAIL_KEYS:
+                if existing and extra in existing:
+                    entry[extra] = existing[extra]
+            # A torrent's files, fetched once per finished run of it.
+            if entry["isTorrent"] and entry["status"] == "complete" and entry.get("files_gid") != entry["gid"]:
+                self.pending_files.add(key)
             if existing != entry:
                 self.entries[key] = entry
                 self._dirty = True
         self.save()
+
+    def set_files(self, key: str, gid: str, files: list[dict], magnet: str = "") -> None:
+        """Keep a finished torrent's files and how to add it again.
+
+        `files` are aria2's getFiles shape (index, path, length,
+        completedLength, selected); stored slimmer. A magnet already recorded
+        is kept when none is given.
+        """
+        entry = self.entries.get(key)
+        self.pending_files.discard(key)
+        if not entry:
+            return
+        entry["files"] = [
+            {
+                "index": int(f.get("index") or i + 1),
+                "path": f.get("path", ""),
+                "length": int(f.get("length") or 0),
+                "completed": int(f.get("completedLength") or 0),
+                "selected": str(f.get("selected", "true")).lower() == "true",
+            }
+            for i, f in enumerate(files)
+        ]
+        if magnet:
+            entry["magnet"] = magnet
+        entry["files_gid"] = gid
+        self._dirty = True
+        self.save()
+
+    def detail(self, key: str) -> dict | None:
+        """One entry with its files checked against the disk, for its detail."""
+        entry = self.get(key)
+        if not entry:
+            return None
+        out = dict(entry, file_exists=self._file_exists(entry))
+        out["files"] = [dict(f, exists=self._exists(f.get("path", ""))) for f in entry.get("files") or []]
+        return out
+
+    @staticmethod
+    def _exists(path: str) -> bool:
+        try:
+            return bool(path) and os.path.exists(path)
+        except OSError:
+            return False
 
     # ---- access ----------------------------------------------------------
     def list(self, limit: int = 200, status: str | None = None) -> list[dict]:

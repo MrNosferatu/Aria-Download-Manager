@@ -836,6 +836,32 @@ def test_history(tmp_dir: Path) -> None:
     check("tombstones persist across a restart",
           reloaded.summary()["dismissed"] >= 1, str(reloaded.summary()))
 
+    # A finished torrent keeps its files and a way to add it again.
+    on_disk = tmp_dir / "Pack"
+    on_disk.mkdir(exist_ok=True)
+    (on_disk / "a.mkv").write_bytes(b"x")
+    torrent = {"downloads": [
+        {"gid": "t1", "status": "complete", "name": "Pack", "path": str(on_disk), "dir": str(tmp_dir),
+         "total": 30, "completed": 10, "isTorrent": True, "infoHash": "abc"},
+    ]}
+    history.observe(torrent)
+    check("a finished torrent is queued for its file list", str(on_disk) in history.pending_files)
+    history.set_files(str(on_disk), "t1", [
+        {"index": "1", "path": str(on_disk / "a.mkv"), "length": "10", "completedLength": "10", "selected": "true"},
+        {"index": "2", "path": str(on_disk / "b.mkv"), "length": "20", "completedLength": "0", "selected": "false"},
+    ], "magnet:?xt=urn:btih:abc")
+    history.observe(torrent)
+    entry = history.detail(str(on_disk))
+    check("its files and magnet survive the next poll's rewrite",
+          len(entry["files"]) == 2 and entry["magnet"] == "magnet:?xt=urn:btih:abc", str(entry))
+    check("and are not fetched again for the same run", str(on_disk) not in history.pending_files)
+    check("the detail says which files are on disk",
+          [f["exists"] for f in entry["files"]] == [True, False], str(entry["files"]))
+    torrent["downloads"][0]["gid"] = "t2"
+    history.observe(torrent)
+    check("a later run of it (a fetch of skipped files) updates the same entry and refetches its list",
+          str(on_disk) in history.pending_files and len([e for e in history.list() if e["name"] == "Pack"]) == 1)
+
 
 def test_timeline(tmp_dir: Path) -> None:
     """Added / finished times are stamped on rows and survive a restart."""

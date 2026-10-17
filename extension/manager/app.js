@@ -26,6 +26,10 @@ const S = {
   speedSource: 'hybrid',
   // Which action card is open (-1: none), and whether as JSON.
   openRule: -1,
+  // The History entry opened under its row ('' for none), and the files
+  // ticked in each for fetching.
+  historyOpen: '',
+  historyPicks: new Map(),
   ruleJson: false,
   config: null,
   history: null,
@@ -1864,17 +1868,22 @@ function renderHistory() {
     const kind = fileKind(e.name || e.key);
     const missing = e.file_exists === false;
     const failed = e.status === 'error';
+    // Removed part-way: what is on disk is kept, so it resumes.
+    const partway = e.status === 'removed' && e.total && e.completed < e.total;
     const meta = [
+      e.isTorrent ? 'Torrent' : '',
       `${fmtBytes(e.completed)}${e.total && e.total !== e.completed ? ` of ${fmtBytes(e.total)}` : ''}`,
       e.finished_at ? new Date(e.finished_at * 1000).toLocaleString() : '',
       e.dir ? escapeHtml(e.dir.replace(/^\/home\/[^/]+/, '~')) : '',
     ].filter(Boolean).join(' · ');
     const key = escapeHtml(e.key);
-    const primary = failed || missing
-      ? (e.url ? `<button class="btn btn-sm" data-hist="readd" data-key="${key}">${icon('retry')}${failed ? 'Retry' : 'Again'}</button>` : '')
+    const open = S.historyOpen === e.key;
+    const primary = open ? '' : failed || missing || partway
+      ? (e.url ? `<button class="btn btn-sm" data-hist="readd" data-key="${key}">${icon(partway ? 'play' : 'retry')}${
+        failed ? 'Retry' : partway ? 'Resume' : 'Again'}</button>` : '')
       : `<button class="btn btn-sm" data-hist="open" data-key="${key}">${icon('open')}Open</button>`;
-    return `<article class="dl is-${failed ? 'error' : missing ? 'missing' : 'complete'}">
-      <div class="dl-main">
+    return `<article class="dl is-${failed ? 'error' : missing ? 'missing' : 'complete'}${open ? ' is-open' : ''}" data-entry="${key}">
+      <div class="dl-main" data-hist="toggle" data-key="${key}">
         <span class="dl-tile" aria-hidden="true"><svg class="ico" viewBox="0 0 24 24"><path d="${kind.path}"/></svg></span>
         <div class="dl-body">
           <div class="dl-title"><span class="dl-name" title="${escapeHtml(e.path || e.name || '')}">${escapeHtml(e.name || e.key)}</span>
@@ -1883,17 +1892,34 @@ function renderHistory() {
         </div>
         <div class="dl-actions">
           ${primary}
-          ${!missing && !failed ? `<button class="btn btn-icon btn-sm" data-hist="folder" data-key="${key}" title="Show in folder" aria-label="Show in folder">${icon('folder')}</button>` : ''}
-          <button class="btn btn-icon btn-sm btn-danger" data-hist="remove" data-key="${key}" title="Forget this entry" aria-label="Forget this entry">${icon('trash')}</button>
+          ${!missing && !failed && !open ? `<button class="btn btn-icon btn-sm" data-hist="folder" data-key="${key}" title="Show in folder" aria-label="Show in folder">${icon('folder')}</button>` : ''}
+          ${open ? `<button class="btn btn-icon btn-sm hist-fold" data-hist="toggle" data-key="${key}" title="Fold" aria-label="Fold">${icon('chevron')}</button>`
+            : `<button class="btn btn-icon btn-sm btn-danger" data-hist="remove" data-key="${key}" title="Forget this entry" aria-label="Forget this entry">${icon('trash')}</button>`}
         </div>
       </div>
+      ${open ? '<div class="hdetail"><p class="hint">Loading…</p></div>' : ''}
     </article>`;
   }).join('');
 
+  const opened = host.querySelector('.dl.is-open');
+  if (opened) {
+    const entry = rows.find((e) => e.key === S.historyOpen);
+    if (entry) fillHistoryDetail(opened.querySelector('.hdetail'), entry);
+  }
+
   for (const btn of $$('[data-hist]', host)) {
-    btn.addEventListener('click', async () => {
+    btn.addEventListener('click', async (ev) => {
       const key = btn.dataset.key;
       const what = btn.dataset.hist;
+      // A click on the row opens its detail; its own buttons do their own thing.
+      if (what === 'toggle') {
+        if (ev.target.closest('button') && ev.target.closest('button') !== btn) return;
+        ev.stopPropagation();
+        S.historyOpen = S.historyOpen === key ? '' : key;
+        renderHistory();
+        return;
+      }
+      ev.stopPropagation();
       try {
         if (what === 'readd') await act('/api/history/readd', { method: 'POST', body: { key } }, 'Added again');
         else if (what === 'open') await act('/api/history/open', { method: 'POST', body: { key, folder: false } });
@@ -1901,6 +1927,123 @@ function renderHistory() {
         else await act('/api/history/remove', { method: 'POST', body: { key } });
       } catch { return; }
       if (what === 'readd' || what === 'remove') loadHistory();
+    });
+  }
+}
+
+/* A finished download's detail, under its History row (board 4). A torrent
+   lists its files — done, skipped, or no longer on disk — and "Download N
+   more" adds it again for the ticked ones, keeping what is there. A one-file
+   download shows the file, its link and its folder. */
+async function fillHistoryDetail(host, entry) {
+  let record;
+  try {
+    record = await api(`/api/history/${encodeURIComponent(entry.key)}`);
+  } catch (err) {
+    host.innerHTML = `<p class="hint err">${escapeHtml(err.message)}</p>`;
+    return;
+  }
+  const picks = S.historyPicks.get(entry.key) || new Set();
+  S.historyPicks.set(entry.key, picks);
+  const files = record.files || [];
+  const torrent = Boolean(entry.isTorrent);
+  const stopped = entry.status === 'error' || entry.status === 'removed';
+  const magnet = record.magnet || (String(record.url || '').startsWith('magnet:') ? record.url : '');
+  const folder = entry.dir || String(entry.path || '').replace(/\/[^/]*$/, '');
+  const home = (p) => String(p || '').replace(/^\/home\/[^/]+/, '~');
+  const stateOf = (f) => (!f.selected ? 'skipped' : f.exists ? 'done' : 'missing');
+  const relative = (path) => {
+    for (const base of [`${entry.path}/`, `${entry.dir}/`]) if (path.startsWith(base)) return path.slice(base.length);
+    return path;
+  };
+  const counts = { done: 0, missing: 0, skipped: 0 };
+  for (const f of files) counts[stateOf(f)] += 1;
+
+  const buttons = [];
+  if (torrent) buttons.push(['folder', 'Open folder', 'folder', 'btn btn-sm btn-primary']);
+  else if (entry.file_exists !== false) buttons.push(['open', 'Open', 'open', 'btn btn-sm btn-primary']);
+  if (!torrent && folder) buttons.push(['folder', 'Show in folder', 'folder', 'btn btn-sm btn-outline']);
+  if (torrent && magnet) buttons.push(['copy', 'Copy magnet', 'link', 'btn btn-sm btn-outline']);
+  if ((torrent && magnet && files.length) || entry.url) {
+    buttons.push(['again', stopped ? 'Resume' : torrent ? 'Download all again' : 'Download again', stopped ? 'play' : 'retry', 'btn btn-sm btn-outline']);
+  }
+  buttons.push(['forget', 'Forget', 'trash', 'btn btn-sm btn-text btn-danger']);
+
+  let body = '';
+  if (!torrent) {
+    body += `<dl class="hfacts"><dt>File</dt><dd>${escapeHtml(String(entry.path || entry.name || '').replace(/^.*\//, ''))}</dd>
+      <dt>Link</dt><dd class="mono">${escapeHtml(entry.url || '—')}</dd><dt>Folder</dt><dd class="mono">${escapeHtml(home(folder) || '—')}</dd></dl>`;
+  }
+  if (stopped && entry.total) {
+    const pct = Math.floor((entry.completed || 0) / entry.total * 100);
+    body += `<div class="hpart"><span class="ft-bar-track"><span class="ft-bar-fill" style="width:${pct}%"></span></span>
+      <span class="hint">${pct}% · ${fmtBytes(entry.completed || 0)} of ${fmtBytes(entry.total)}</span></div>`;
+  }
+  if (torrent && !files.length) {
+    body += '<p class="hint">Its file list was not recorded: it finished before this version of the manager kept one.</p>';
+  }
+  if (torrent && files.length) {
+    body += `<div class="hsum"><span class="hint">${counts.done} of ${files.length} files here${
+      counts.missing ? ` · ${counts.missing} not on disk` : ''}${counts.skipped ? ` · ${counts.skipped} skipped` : ''}</span>
+      <span class="hlegend"><span class="done">${icon('check')}done</span><span class="skip">${icon('remove')}skipped</span><span class="miss">${icon('info')}not on disk</span></span></div>
+      <div class="hfiles">${files.map((f) => {
+        const st = stateOf(f);
+        const mark = st === 'done' ? `<span class="hmark done" aria-label="Done">${icon('check')}</span>`
+          : `<input type="checkbox" data-pick="${f.index}"${picks.has(f.index) ? ' checked' : ''}${magnet ? '' : ' disabled'} aria-label="Fetch ${escapeHtml(relative(f.path))}">`;
+        return `<label class="hfile is-${st}">${mark}<span class="name">${escapeHtml(relative(f.path))}</span>
+          <span class="note">${st === 'missing' ? 'not on disk' : st === 'skipped' ? 'skipped' : ''}</span><span class="size">${fmtBytes(f.length)}</span></label>`;
+      }).join('')}</div>`;
+    if (counts.done < files.length) body += '<div class="hfoot"><span class="hint" data-role="picked"></span><button class="btn btn-primary btn-sm" data-role="more"></button></div>';
+  }
+  host.innerHTML = `<div class="hactions">${buttons.map(([what, label, ico, cls]) =>
+    `<button class="${cls}" data-do="${what}">${icon(ico)}<span>${escapeHtml(label)}</span></button>`).join('')}</div>${body}`;
+
+  const paintPicks = () => {
+    const chosen = files.filter((f) => picks.has(f.index));
+    const bytes = chosen.reduce((sum, f) => sum + f.length, 0);
+    const note = host.querySelector('[data-role="picked"]');
+    const more = host.querySelector('[data-role="more"]');
+    if (!note) return;
+    note.textContent = magnet ? `${chosen.length} picked · ${fmtBytes(bytes)} · into ${home(entry.path || folder)}`
+      : 'No magnet link was recorded, so it cannot be added again.';
+    more.innerHTML = `${icon('download')}<span>Download ${chosen.length} more</span>`;
+    more.disabled = !chosen.length || !magnet;
+  };
+  paintPicks();
+  for (const box of host.querySelectorAll('[data-pick]')) {
+    box.addEventListener('change', () => {
+      const index = Number(box.dataset.pick);
+      if (box.checked) picks.add(index); else picks.delete(index);
+      paintPicks();
+    });
+  }
+  const fetchFiles = async (indices, ok) => {
+    try {
+      await act('/api/history/fetch', { method: 'POST', body: { key: entry.key, indices } }, ok);
+      picks.clear();
+      loadHistory();
+    } catch { /* the toast said why */ }
+  };
+  host.querySelector('[data-role="more"]')?.addEventListener('click', () => {
+    const chosen = [...picks];
+    fetchFiles(chosen, `Fetching ${chosen.length} more`);
+  });
+  for (const btn of host.querySelectorAll('[data-do]')) {
+    btn.addEventListener('click', async () => {
+      const what = btn.dataset.do;
+      try {
+        if (what === 'folder') await act('/api/history/open', { method: 'POST', body: { key: entry.key, folder: !torrent } });
+        else if (what === 'open') await act('/api/history/open', { method: 'POST', body: { key: entry.key, folder: false } });
+        else if (what === 'copy') { await navigator.clipboard.writeText(magnet); toast('Magnet copied', 'ok'); }
+        else if (what === 'again') {
+          if (torrent && magnet && files.length) await fetchFiles(files.map((f) => f.index), stopped ? 'Resumed' : 'Added again');
+          else { await act('/api/history/readd', { method: 'POST', body: { key: entry.key } }, 'Added again'); loadHistory(); }
+        } else if (what === 'forget') {
+          await act('/api/history/remove', { method: 'POST', body: { key: entry.key } }, 'Forgotten');
+          S.historyOpen = '';
+          loadHistory();
+        }
+      } catch { /* the toast said why */ }
     });
   }
 }

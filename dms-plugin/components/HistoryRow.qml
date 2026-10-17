@@ -7,11 +7,13 @@ import "../lib/Fmt.js" as Fmt
 
 //: One recorded download, laid out like a live row: the status tile, the name,
 //: one line of facts, the one action that fits, and the rest behind ⋮.
+//: Clicked, it opens its detail (HistoryDetail) like a live download's.
 Rectangle {
     id: row
 
     property var service: null
     property var entry: ({})
+    property bool expanded: false
 
     readonly property bool failed: entry.status === "error"
 
@@ -49,6 +51,13 @@ Rectangle {
             return {
                 "icon": "refresh",
                 "text": "Again",
+                "run": () => row.readd()
+            }
+        // Removed part-way: what is on disk is kept, so it resumes.
+        if (entry.status === "removed" && entry.total && entry.completed < entry.total && entry.url)
+            return {
+                "icon": "play_arrow",
+                "text": "Resume",
                 "run": () => row.readd()
             }
         if (canOpen)
@@ -118,7 +127,7 @@ Rectangle {
             const known = service ? service.explainError(entry.error) : null
             return "Failed · " + (known ? known.why : (entry.error || "no reason recorded"))
         }
-        const bits = [Fmt.bytes(entry.total || entry.completed)]
+        const bits = entry.isTorrent ? ["Torrent", Fmt.bytes(entry.total || entry.completed)] : [Fmt.bytes(entry.total || entry.completed)]
         if (fileMissing)
             bits.push("was in " + Fmt.homePath(entry.dir, home))
         else if (entry.dir)
@@ -129,23 +138,34 @@ Rectangle {
         return bits.join(" · ")
     }
 
-    height: 52
-    radius: 12
-    color: Theme.surfaceContainer
-    border.width: failed ? 1 : 0
-    border.color: Theme.withAlpha(Theme.error, 0.35)
+    height: expanded ? 52 + detailLoader.height + 14 : 52
+    radius: expanded ? 18 : 12
+    color: expanded ? Theme.surfaceContainerHigh : Theme.surfaceContainer
+    border.width: failed || expanded ? 1 : 0
+    border.color: failed ? Theme.withAlpha(Theme.error, 0.35) : Theme.outlineVariant
+
+    //: The one-line head; the detail opens under it.
+    Item {
+        id: head
+
+        width: parent.width
+        height: 52
+    }
 
     //: A double click opens the file; a right click brings up the menu at
     //: the pointer.
     MouseArea {
         id: rowArea
 
-        anchors.fill: parent
+        anchors.fill: head
         acceptedButtons: Qt.LeftButton | Qt.RightButton
+        cursorShape: Qt.PointingHandCursor
         onClicked: mouse => {
             if (mouse.button === Qt.RightButton) {
                 const at = rowArea.mapToItem(historyMenu.parent, mouse.x, mouse.y)
                 historyMenu.openAt(at.x, at.y)
+            } else {
+                row.expanded = !row.expanded
             }
         }
         onDoubleClicked: mouse => {
@@ -159,7 +179,7 @@ Rectangle {
 
         anchors.left: parent.left
         anchors.leftMargin: 10
-        anchors.verticalCenter: parent.verticalCenter
+        anchors.verticalCenter: head.verticalCenter
         width: 34
         height: 34
         radius: 10
@@ -167,7 +187,7 @@ Rectangle {
 
         DankIcon {
             anchors.centerIn: parent
-            name: Fmt.kindIcon(row.entry.name, false, false)
+            name: Fmt.kindIcon(row.entry.name, !!row.entry.isTorrent, false)
             size: 18
             color: row.fileMissing ? Theme.outline : row.statusColor
         }
@@ -178,12 +198,12 @@ Rectangle {
 
         anchors.right: parent.right
         anchors.rightMargin: 6
-        anchors.verticalCenter: parent.verticalCenter
+        anchors.verticalCenter: head.verticalCenter
         spacing: 4
 
         PillButton {
             anchors.verticalCenter: parent.verticalCenter
-            visible: row.primaryAction !== null
+            visible: row.primaryAction !== null && !row.expanded
             size: 30
             kind: "outlined"
             icon: row.primaryAction && row.primaryAction.text !== "Open" ? row.primaryAction.icon : ""
@@ -197,10 +217,10 @@ Rectangle {
             anchors.verticalCenter: parent.verticalCenter
             buttonSize: 30
             iconSize: 20
-            iconName: "more_vert"
+            iconName: row.expanded ? "expand_less" : "more_vert"
             iconColor: Theme.surfaceVariantText
-            tooltipText: "More"
-            onClicked: historyMenu.toggle()
+            tooltipText: row.expanded ? "Fold" : "More"
+            onClicked: row.expanded ? (row.expanded = false) : historyMenu.toggle()
         }
     }
 
@@ -242,7 +262,7 @@ Rectangle {
         anchors.leftMargin: 10
         anchors.right: actions.left
         anchors.rightMargin: 10
-        anchors.verticalCenter: parent.verticalCenter
+        anchors.verticalCenter: head.verticalCenter
         spacing: 3
 
         Row {
@@ -288,6 +308,24 @@ Rectangle {
             color: row.failed ? Theme.error : Theme.surfaceVariantText
             wrapMode: Text.NoWrap
             elide: Text.ElideRight
+        }
+    }
+
+    Loader {
+        id: detailLoader
+
+        anchors.top: head.bottom
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.leftMargin: 12
+        anchors.rightMargin: 12
+        active: row.expanded
+        height: active && item ? item.implicitHeight : 0
+
+        sourceComponent: HistoryDetail {
+            service: row.service
+            entry: row.entry
+            onForgotten: row.expanded = false
         }
     }
 }

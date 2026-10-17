@@ -641,3 +641,42 @@ input.fld {
   & .what { color: var(--on-surface-var); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   & .when { color: var(--outline); font-variant-numeric: tabular-nums; }
 }
+
+/* ---- a finished download's detail, under its History row (board 4) ---- */
+.dl.is-open { box-shadow: inset 0 0 0 1px var(--outline-var); }
+.dl .dl-main[data-hist="toggle"] { cursor: pointer; }
+.hist-fold .ico { transform: rotate(-90deg); }
+.hdetail { display: flex; flex-direction: column; gap: 10px; padding: 4px 14px 14px 14px; }
+.hactions { display: flex; flex-wrap: wrap; gap: 8px; }
+.hfacts {
+  display: grid; grid-template-columns: 56px minmax(0, 1fr); gap: 4px 10px; margin: 0; font-size: var(--fs-sm);
+  & dt { color: var(--outline); }
+  & dd { margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  & .mono { font-family: var(--mono); }
+}
+.hpart { display: flex; align-items: center; gap: 10px; & .ft-bar-track { flex: 1; height: 6px; border-radius: 3px; background: var(--surface-highest); overflow: hidden; } & .ft-bar-fill { display: block; height: 100%; background: var(--primary); } }
+.hsum { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.hsum > .hint { flex: 1; }
+.hlegend {
+  display: flex; gap: 10px; font-size: var(--fs-xs); color: var(--outline);
+  & span { display: inline-flex; align-items: center; gap: 3px; }
+  & .ico { width: 14px; height: 14px; }
+  & .done .ico { color: var(--success); } & .miss .ico { color: var(--warning); }
+}
+.hfiles { display: flex; flex-direction: column; gap: 2px; max-height: 420px; overflow: auto; }
+.hfile {
+  display: grid; grid-template-columns: 24px minmax(0, 1fr) auto 72px; align-items: center; gap: 10px;
+  min-height: 34px; padding: 0 8px; border-radius: 8px; font-size: var(--fs-md); cursor: pointer;
+  &:hover:not(.is-done) { background: var(--surface-mid); }
+  &.is-done { cursor: default; }
+  & input[type="checkbox"] { width: 18px; height: 18px; margin: 0; accent-color: var(--primary); }
+  &.is-missing input[type="checkbox"]:not(:checked) { outline: 2px solid var(--warning); outline-offset: -2px; border-radius: 4px; }
+  & .hmark { display: grid; place-items: center; width: 20px; height: 20px; border-radius: 50%; color: var(--success); box-shadow: inset 0 0 0 2px var(--success); }
+  & .hmark .ico { width: 14px; height: 14px; }
+  & .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  &.is-skipped .name { color: var(--on-surface-var); }
+  &.is-missing .name { color: var(--warning); }
+  & .note { font-size: var(--fs-sm); color: var(--outline); }
+  & .size { text-align: right; font-size: var(--fs-sm); color: var(--on-surface-var); font-variant-numeric: tabular-nums; }
+}
+.hfoot { display: flex; align-items: center; gap: 10px; padding-top: 10px; border-top: 1px solid var(--outline-var); & .hint { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; } }
