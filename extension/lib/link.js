@@ -143,6 +143,11 @@
   function errorText(reply) {
     const body = reply.body;
     const detail = body && typeof body === 'object' && (body.error || body.detail);
+    // The framework's own 404 means no such route: a manager still running
+    // older code than the extension, not a missing file or download.
+    if (reply.status === 404 && detail === 'Not Found') {
+      return 'The manager is older than the extension. Restart it (systemctl --user restart aria-download-manager)';
+    }
     if (typeof detail === 'string') return detail;
     return reply.status ? `HTTP ${reply.status}` : 'Aria Download Manager is not reachable';
   }
