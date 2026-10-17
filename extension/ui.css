@@ -104,7 +104,43 @@
 .options .field + .field { border-top: 1px solid var(--outline-var); }
 .options .setting + .field, .options .field + .setting { border-top: 1px solid var(--outline-var); }
 .options .conn { display: flex; align-items: center; gap: 12px; padding: 12px 0; flex-wrap: wrap; }
-.options .conn .status { flex: 1; min-width: 200px; }
+
+/* browser helper → manager → aria2c, one check per link */
+.chain {
+  list-style: none; margin: 0; padding: 0; flex: 1; min-width: 260px;
+  display: flex; align-items: center; flex-wrap: wrap; gap: 6px 10px; font-size: var(--fs-md);
+  & li { display: inline-flex; align-items: center; gap: 7px; color: var(--on-surface-var); }
+  & li + li::before { content: "→"; color: var(--outline); margin-right: 3px; }
+  & .dot { width: 10px; height: 10px; border-radius: 50%; border: 2px solid var(--outline); box-sizing: border-box; }
+  & li.ok { color: var(--on-surface); }
+  & li.ok .dot { background: var(--success); border-color: var(--success); }
+  & li.bad { color: var(--error); font-weight: 600; }
+  & li.bad .dot { background: var(--error); border-color: var(--error); }
+  & li.busy .dot { border-top-color: var(--primary); animation: spin .9s linear infinite; }
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+.options .fix {
+  display: flex; flex-direction: column; gap: 8px; padding: 0 0 14px;
+  & .cmdrow { display: flex; align-items: center; gap: 8px; }
+  & code {
+    flex: 1; min-width: 0; padding: 8px 10px; border-radius: var(--r-sm);
+    background: var(--surface); color: var(--on-surface); overflow-wrap: anywhere; user-select: all;
+  }
+}
+
+/* A list setting as chips, with the add box at its end. */
+.chiplist {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 6px;
+  padding: 6px; border-radius: var(--r-sm); background: var(--surface-mid);
+  & .chip.removable { height: 28px; padding: 0 4px 0 10px; cursor: default; color: var(--on-surface); background: var(--surface-highest); border-color: transparent; }
+  & .chip .x {
+    border: 0; background: none; color: var(--on-surface-var); cursor: pointer;
+    width: 22px; height: 22px; border-radius: 50%; font-size: 15px; line-height: 1;
+  }
+  & .chip .x:hover { background: color-mix(in oklch, var(--on-surface) 10%, transparent); color: var(--on-surface); }
+  & .chip-input { flex: 1; min-width: 160px; height: 28px; border: 0; background: transparent; padding: 0 6px; }
+  & .chip-input:focus { box-shadow: none; }
+}
 .options .lead { font-size: var(--fs-sm); color: var(--on-surface-var); padding: 2px 0 10px; }
 .options [data-level="advanced"] { display: none; }
 .options.advanced [data-level="advanced"] { display: revert; }
@@ -115,7 +151,12 @@
 .save-bar {
   position: sticky; bottom: 16px; z-index: 5;
   display: flex; align-items: center; gap: 10px;
-  padding: 10px 12px; border-radius: var(--r-full);
-  background: var(--surface-high); box-shadow: var(--shadow-2);
-  & .hint { flex: 1; text-align: right; }
+  padding: 8px 8px 8px 18px; border-radius: var(--r-full);
+  background: var(--surface-highest); box-shadow: var(--shadow-2);
+  & .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--primary); flex: none; }
+  & .hint { flex: 1; color: var(--on-surface); }
+}
+.page-foot {
+  display: flex; align-items: center; justify-content: flex-end; gap: 12px; margin-top: 8px;
+  & .btn { color: var(--on-surface-var); }
 }

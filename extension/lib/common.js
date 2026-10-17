@@ -27,7 +27,10 @@ const DEFAULTS = {
   // Open a dialog for each caught download (name, folder, connections; a
   // torrent's files and priorities) instead of queueing it straight away.
   askBeforeDownload: false,
+  // Say so when a download is sent to the manager…
   notify: true,
+  // …and, separately, when something fails (on unless turned off).
+  notifyErrors: true,
   // In-page toasts (as well as the OS notifications the browser shows).
   pageToasts: true,
   // Skip files smaller than this (MiB). 0 disables the check.

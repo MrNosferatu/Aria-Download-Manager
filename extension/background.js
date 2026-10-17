@@ -53,7 +53,7 @@ function notify(message, isError) {
 //: {label, kind: 'manager'} opens the manager, {label, kind: 'browser', url}
 //: hands the link back to the browser.
 async function report(settings, message, isError, tabId, action) {
-  if (!settings.notify) return;
+  if (isError ? settings.notifyErrors === false : !settings.notify) return;
   // Prefer an in-page toast when the action came from a tab: it is quieter and
   // lands where the user is looking.
   if (settings.pageToasts && tabId !== undefined && tabId !== null) {
@@ -399,7 +399,7 @@ api.downloads.onCreated.addListener(async (item) => {
   // manager is not answering, do nothing at all and let the browser get on
   // with it — a download that works is better than one that was ours.
   if (!(await managerReachable())) {
-    if (settings.notify) {
+    if (settings.notifyErrors !== false) {
       notify('The manager is not running, so the browser is downloading this itself.', false);
     }
     return;
@@ -434,7 +434,7 @@ api.downloads.onCreated.addListener(async (item) => {
   } else if (held && await managerGetsPage(item, name)) {
     await resumeInBrowser(item.id, item.url);
     handedOff.delete(item.id);
-    if (settings.notify) {
+    if (settings.notifyErrors !== false) {
       notify(`${name || 'This file'}: the site only gives it to the browser, so the browser is downloading it.`, false);
     }
     return;

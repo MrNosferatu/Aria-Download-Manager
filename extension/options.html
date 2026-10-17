@@ -30,14 +30,23 @@
      that setting's row. -->
 
 <section class="card">
-  <h2>Manager</h2>
+  <h2>Connection</h2>
+  <!-- The chain from the browser to aria2c, one check per link: a failure
+       says which link broke and gives the command that mends it. -->
   <div class="conn">
-    <span id="test-result" class="status">Not checked yet</span>
-    <button id="test" class="btn btn-sm">Test connection</button>
+    <ol id="chain" class="chain" aria-live="polite">
+      <li data-step="host"><span class="dot"></span>Browser helper</li>
+      <li data-step="manager"><span class="dot"></span><span id="manager-label">Manager</span></li>
+      <li data-step="aria2"><span class="dot"></span><span id="aria2-label">aria2c</span></li>
+    </ol>
+    <button id="test" class="btn btn-sm">Test again</button>
+  </div>
+  <div id="fix" class="fix" hidden>
+    <p id="fix-text" class="hint"></p>
+    <div class="cmdrow"><code id="fix-cmd"></code><button id="fix-copy" class="btn btn-sm">Copy</button></div>
   </div>
   <p class="lead" data-level="advanced">The extension talks to the manager through its native-messaging helper and a Unix socket.
-    Nothing crosses the network, so a VPN or proxy in the browser cannot get in the way. If the test fails,
-    start the manager and run <code>python3 -m aria_download_manager --install-native-host</code> once.</p>
+    Nothing crosses the network, so a VPN or proxy in the browser cannot get in the way.</p>
 </section>
 
 <section class="card">
@@ -117,38 +126,46 @@
       </select>
     </span>
   </label>
-  <label class="field">
-    <span>File types to catch <small>comma separated</small></span>
-    <textarea id="extensions" rows="3"></textarea>
-  </label>
-  <label class="field">
-    <span>Leave these sites alone <small>one per line</small></span>
-    <textarea id="blockedHosts" rows="3" placeholder="example.com"></textarea>
+  <div class="field">
+    <span>File types to catch <small>links ending in these</small></span>
+    <div id="extensions" class="chiplist" data-placeholder="Add a type, e.g. iso"></div>
+  </div>
+  <div class="field">
+    <span>Leave these sites alone</span>
+    <div id="blockedHosts" class="chiplist" data-placeholder="Add a site, e.g. example.com"></div>
     <span class="help">A site covers its subdomains, and matches both the page you are on and where the file comes from.
       The right-click menu still works there.</span>
-  </label>
+  </div>
 </section>
 
 <section class="card">
   <h2>Notifications</h2>
   <label class="setting" for="notify">
-    <span class="text"><span class="label">Tell me when a download is queued or fails</span></span>
+    <span class="text"><span class="label">When a download is sent to Aria</span></span>
     <span class="switch"><input type="checkbox" id="notify"><span class="track"><span class="knob"></span></span></span>
+  </label>
+  <label class="setting" for="notifyErrors">
+    <span class="text"><span class="label">When something fails</span>
+      <span class="hint">A link the manager refused, or a manager that is not running.</span></span>
+    <span class="switch"><input type="checkbox" id="notifyErrors"><span class="track"><span class="knob"></span></span></span>
   </label>
   <label class="setting" for="pageToasts" data-level="advanced">
     <span class="text">
-      <span class="label">Show it on the page instead of a system notification</span>
-      <span class="hint">Quieter, and it lands where you are looking.</span>
+      <span class="label">On the page rather than as a system notification</span>
+      <span class="hint">Quieter, and it lands where you are looking. Each one carries its button (Open, Let the browser).</span>
     </span>
     <span class="switch"><input type="checkbox" id="pageToasts"><span class="track"><span class="knob"></span></span></span>
   </label>
 </section>
 
-<div class="save-bar">
+<!-- Only there while something differs from what is saved. -->
+<div id="save-bar" class="save-bar" hidden>
+  <span class="dot" aria-hidden="true"></span>
+  <span id="dirty-text" class="hint">Unsaved changes</span>
+  <button id="discard" class="btn btn-text">Discard</button>
   <button id="save" class="btn btn-primary">Save</button>
-  <button id="reset" class="btn btn-text">Reset to defaults</button>
-  <span id="saved" class="hint"></span>
 </div>
+<p class="page-foot"><span id="saved" class="hint ok" role="status"></span><button id="reset" class="btn btn-text btn-sm">Reset everything to defaults…</button></p>
 
 <script src="lib/common.js"></script>
 <script src="options.js"></script>
