@@ -1034,6 +1034,17 @@ class QBEngine:
     async def remove(self, gid: str, delete_files: bool) -> None:
         await self.client.delete([hash_of(gid)], delete_files)
 
+    async def remove_finished(self) -> int:
+        """Finished (and no longer sharing) and failed torrents leave
+        qBittorrent, their files kept: "Clear finished" off the list."""
+        if not self.ready:
+            return 0
+        done = [str(t.get("hash", "")).lower() for t in await self.client.torrents()
+                if status_of(str(t.get("state", ""))) in ("complete", "error")]
+        if done:
+            await self.client.delete(done, False)
+        return len(done)
+
     async def pause_all(self) -> None:
         if self.ready:
             await self.client.stop([])

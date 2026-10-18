@@ -24,6 +24,7 @@
   <div class="rate small" id="left-cell" hidden><label>Left</label><b id="stat-left">–</b></div>
   <div class="spacer"></div>
   <button id="btn-flip" class="btn btn-tonal" data-mode="pause"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg><span>Pause all</span></button>
+  <button id="btn-after" class="btn btn-icon" title="When downloads finish…" aria-label="When downloads finish"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M13 3h-2v10h2V3zm4.83 2.17-1.42 1.42A6.92 6.92 0 0 1 19 12c0 3.87-3.13 7-7 7a6.995 6.995 0 0 1-4.42-12.42L6.17 5.17A8.932 8.932 0 0 0 3 12a9 9 0 0 0 18 0c0-2.74-1.23-5.18-3.17-6.83z"/></svg></button>
   <button id="btn-purge" class="btn btn-icon" title="Clear finished and failed from the list" aria-label="Clear finished and failed from the list"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M16 11h-1V3c0-1.1-.9-2-2-2h-2c-1.1 0-2 .9-2 2v8H8c-2.76 0-5 2.24-5 5v7h18v-7c0-2.76-2.24-5-5-5zm3 10h-2v-3c0-.55-.45-1-1-1s-1 .45-1 1v3h-2v-3c0-.55-.45-1-1-1s-1 .45-1 1v3H9v-3c0-.55-.45-1-1-1s-1 .45-1 1v3H5v-5c0-1.65 1.35-3 3-3h8c1.65 0 3 1.35 3 3v5z"/></svg></button>
   <button id="btn-add" class="btn btn-primary add-narrow"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>Add</button>
 </header>
@@ -62,6 +63,13 @@
     <span class="spacer"></span>
     <button id="banner-log" class="btn btn-text">Open log</button>
     <button id="banner-restart" class="btn btn-primary">Restart aria2c</button>
+  </div>
+  <!-- Shut down / suspend once the downloads are done (the manager's
+       afterall.py): its minute, with Cancel. -->
+  <div id="after-banner" class="banner warn" hidden>
+    <div><b id="after-title"></b><span class="hint">All downloads have finished.</span></div>
+    <span class="spacer"></span>
+    <button id="after-cancel" class="btn btn-primary">Cancel</button>
   </div>
   <!-- ---------------- downloads ---------------- -->
   <section id="tab-downloads" class="tabpane active">
@@ -123,7 +131,7 @@
     <div class="card mastercard">
       <label class="master-row" for="rules-master">
         <span class="text"><b>Automatic actions</b>
-          <span class="hint" id="master-hint">Watch running downloads and step in when one stalls.</span></span>
+          <span class="hint" id="master-hint">Act on downloads automatically when they stall or finish.</span></span>
         <span class="switch"><input type="checkbox" id="rules-master"><span class="track"><span class="knob"></span></span></span>
       </label>
       <div class="measure-row">
@@ -164,7 +172,7 @@
           <button type="button" data-mode="simple" aria-pressed="true"><svg class="ico" viewBox="0 0 24 24"><path d="M9 16.17 4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>Simple</button>
           <button type="button" data-mode="advanced" aria-pressed="false"><svg class="ico" viewBox="0 0 24 24"><path d="M9 16.17 4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>Advanced</button>
         </div>
-        <label class="search" data-level="advanced"><svg class="ico" viewBox="0 0 24 24"><path d="M15.5 14h-.79l-.28-.27A6.47 6.47 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg><input id="opt-search" placeholder="Find an option" aria-label="Find an option"></label>
+        <label class="search"><svg class="ico" viewBox="0 0 24 24"><path d="M15.5 14h-.79l-.28-.27A6.47 6.47 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg><input id="opt-search" placeholder="Search settings" aria-label="Search settings"></label>
         <button id="btn-opt-reload" class="btn btn-icon" title="Reload from aria2" aria-label="Reload from aria2"><svg class="ico" viewBox="0 0 24 24"><path d="M17.65 6.35A7.96 7.96 0 0 0 12 4a8 8 0 1 0 7.73 10h-2.08A6 6 0 1 1 12 6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/></svg></button>
       </div>
     </div>
@@ -174,6 +182,8 @@
     <div class="settings-grid">
       <nav id="settings-toc" class="settings-toc" aria-label="Settings sections"></nav>
       <div class="settings-body">
+        <!-- Searching in Simple: the matches only Advanced shows. -->
+        <p id="search-more" class="search-more" hidden><span></span><button type="button" class="btn btn-text btn-sm">Show</button></p>
         <!-- Simple: the handful of options that decide how downloads behave. -->
         <section id="set-basics" class="card setcard" data-toc="Basics">
           <div class="card-head"><h2>Basics</h2></div>
@@ -192,6 +202,21 @@
           <p class="hint">With sorting on, each download goes to the subfolder its type names. Blank means
             the download folder itself; an absolute path is used as it is.</p>
           <div id="route-folders" class="routes"></div>
+        </section>
+
+        <!-- A VPN for downloads only (the manager's vpn.py): the switch, whether
+             the tunnel answers, its server and the sites that use it. -->
+        <section id="set-vpn" class="card setcard" data-toc="VPN">
+          <div class="card-head">
+            <h2>VPN for downloads</h2>
+            <label class="setting"><span class="text"><span class="label">Enabled</span></span>
+              <span class="switch"><input type="checkbox" id="vpn-enabled"><span class="track"><span class="knob"></span></span></span></label>
+          </div>
+          <p id="vpn-status" class="vpn-status"></p>
+          <div id="vpn-body" class="vpn-body"></div>
+          <p class="hint">Only downloads set to use the VPN go through it; torrents and the rest of your
+            system are unaffected. If the tunnel goes down, those downloads stop instead of falling back
+            to your normal connection.</p>
         </section>
 
         <!-- Advanced: the curated groups, then every option aria2 reports. -->
@@ -300,6 +325,13 @@
         <div class="add-where-head"><b>Where each one goes</b><span class="hint" id="add-where-count"></span></div>
         <div id="add-where-list"></div>
       </section>
+      <!-- With the VPN on in Settings: each link by its site, or all of them
+           through it, or all direct. Torrents always go direct. -->
+      <div class="field add-saveto" id="add-vpn-field" hidden>
+        <span>VPN</span>
+        <div class="add-chips" id="add-vpn" role="group" aria-label="VPN"></div>
+        <span class="hint" id="add-vpn-hint"></span>
+      </div>
 
       <div class="grid2">
         <label class="field" data-level="advanced"><span>Save as <small>single file only</small></span><input id="add-out" placeholder="Name from the server"></label>
@@ -364,6 +396,7 @@
 <script src="../lib/link.js"></script>
 <script src="../lib/filetree-core.js"></script>
 <script src="../lib/filetree-view.js"></script>
+<script src="../lib/vpn-core.js"></script>
 <script src="option-help.js"></script>
 <script src="app.js"></script>
 </body>

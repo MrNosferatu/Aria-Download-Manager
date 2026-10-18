@@ -11,8 +11,12 @@ torrents), driven from a browser extension and, optionally, a
 - Torrents with real per-file priorities and file choice before downloading,
   through a qBittorrent the manager runs itself.
 - A **Download** button over a page's video player (HLS/DASH through ffmpeg).
-- Automatic actions on misbehaving downloads, e.g. *under 50 KiB/s for 3
-  seconds → pause and resume*.
+- A **VPN for downloads only** (WireGuard, e.g. Proton's configs, through
+  wireproxy): per site or per download, side by side with direct ones; nothing
+  else on the system changes, and torrents go direct.
+- Automatic actions: on misbehaving downloads (*under 50 KiB/s for 3 seconds →
+  pause and resume*), or when one finishes (**extract** the archive, run a
+  command); and a one-off **shut down or suspend** when everything is done.
 
 ```
 Extension ──native messaging──→ bridge ──┐
@@ -90,6 +94,8 @@ Everything is editable in the UI; it is stored in `config.yaml` (created from
 | `qbittorrent.managed` | `true` | `false` to use a qBittorrent you already run |
 | `aria2.stop_on_exit` | `true` | `false` keeps aria2c downloading after the manager stops |
 | `desktop.float_windows` | `true` | float the download dialog and window on niri / Hyprland |
+| `vpn.folder` | `~/.config/aria-download-manager/wireguard` | the WireGuard `.conf` files the VPN picks its server from |
+| `finish.countdown_seconds` | `60` | the minute shown before the one-off shut down / suspend |
 | `rules` | stall recovery | the automatic actions (also on the *Actions* tab) |
 
 `python3 -m aria_download_manager --print-config` shows the effective config.
@@ -103,6 +109,7 @@ Everything is editable in the UI; it is stored in `config.yaml` (created from
 | `aria2c exited during startup` | usually a bad option in `aria2.options`; see `~/.local/share/aria-download-manager/aria2.log` |
 | A download still lands in the browser | capture is off, the site is excluded in Settings, or it is a `blob:`/`data:` URL aria2 cannot fetch |
 | Torrents go to aria2c | qbittorrent-nox is missing or could not start; Settings says why |
+| VPN says "not answering" | the server in the `.conf` is unreachable or the config is wrong; pick another in Settings → VPN (downloads through it wait meanwhile) |
 
 ## Uninstall
 
@@ -122,6 +129,8 @@ python3 tests/test_ipc.py          # socket, live stream, native-messaging bridg
 python3 tests/test_qbittorrent.py  # torrents through a real qbittorrent-nox (skipped if absent)
 python3 tests/test_compositor.py   # window handling on niri / Hyprland (faked)
 python3 tests/test_filetree.py     # the torrent file tree, shared by both front-ends
+python3 tests/test_vpn.py          # the download-only VPN (fake wireproxy, fake aria2)
+python3 tests/test_finishing.py    # extracting and commands when a download finishes
 ```
 
 The extension is released automatically: a push to `main` with a new version in

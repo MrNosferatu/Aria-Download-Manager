@@ -109,7 +109,7 @@ Item {
                         anchors.centerIn: parent
                         text: filterChip.modelData[1] + " " + filterChip.modelData[2]
                         font.pixelSize: Theme.fontSizeSmall - 1
-                        font.weight: filterChip.selected ? Font.Bold : Font.Medium
+                        font.weight: filterChip.selected ? Font.DemiBold : Font.Medium
                         color: filterChip.selected ? Theme.onPrimaryContainer
                                                    : (filterChip.modelData[0] === "errors" && filterChip.modelData[2] > 0 ? Theme.error : Theme.surfaceText)
                     }

@@ -159,6 +159,18 @@ Item {
         }
     }
 
+    // ---- the last minute before shutting down or suspending ----------------------
+    AfterAllBanner {
+        id: afterBanner
+
+        service: manager.service
+        anchors.left: rail.right
+        anchors.leftMargin: Theme.spacingM
+        anchors.right: parent.right
+        anchors.top: banner.bottom
+        anchors.topMargin: banner.shown && shown ? Theme.spacingS : 0
+    }
+
     // ---- aria2c is down ------------------------------------------------------
     Rectangle {
         id: banner
@@ -223,8 +235,8 @@ Item {
         anchors.leftMargin: Theme.spacingM
         anchors.right: manager.section === "downloads" ? pane.left : parent.right
         anchors.rightMargin: manager.section === "downloads" ? Theme.spacingM : 0
-        anchors.top: banner.bottom
-        anchors.topMargin: banner.shown ? Theme.spacingS : 0
+        anchors.top: afterBanner.bottom
+        anchors.topMargin: banner.shown || afterBanner.shown ? Theme.spacingS : 0
         anchors.bottom: statusBar.top
         anchors.bottomMargin: Theme.spacingS
         visible: manager.online
@@ -333,8 +345,8 @@ Item {
         property bool confirmingRemove: false
 
         anchors.right: parent.right
-        anchors.top: banner.bottom
-        anchors.topMargin: banner.shown ? Theme.spacingS : 0
+        anchors.top: afterBanner.bottom
+        anchors.topMargin: banner.shown || afterBanner.shown ? Theme.spacingS : 0
         anchors.bottom: statusBar.top
         anchors.bottomMargin: Theme.spacingS
         width: manager.paneWidth
@@ -402,7 +414,7 @@ Item {
                         width: parent.width
                         text: paneHead.d.name || paneHead.d.gid || ""
                         font.pixelSize: Theme.fontSizeMedium
-                        font.weight: Font.Bold
+                        font.weight: Font.DemiBold
                         color: Theme.surfaceText
                         wrapMode: Text.NoWrap
                         elide: Text.ElideMiddle
@@ -626,7 +638,7 @@ Item {
                         width: parent.width
                         text: pastHead.e.name || ""
                         font.pixelSize: Theme.fontSizeMedium
-                        font.weight: Font.Bold
+                        font.weight: Font.DemiBold
                         color: Theme.surfaceText
                         wrapMode: Text.NoWrap
                         elide: Text.ElideMiddle
@@ -701,7 +713,7 @@ Item {
             horizontalAlignment: Text.AlignHCenter
             text: manager.service && manager.service.restarting === "manager" ? "Restarting the manager…" : "The manager isn't running"
             font.pixelSize: Theme.fontSizeLarge
-            font.weight: Font.Bold
+            font.weight: Font.DemiBold
             color: Theme.surfaceText
         }
 

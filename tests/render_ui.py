@@ -55,6 +55,7 @@ def capture(sock_path: str) -> dict:
         "/api/global/options": fetch(sock_path, "/api/global/options"),
         "/api/rules": fetch(sock_path, "/api/rules"),
         "/api/routing": fetch(sock_path, "/api/routing"),
+        "/api/vpn": fetch(sock_path, "/api/vpn"),
         "/api/folders": fetch(sock_path, "/api/folders"),
     }
     state = fixtures.get("/api/state") or {}

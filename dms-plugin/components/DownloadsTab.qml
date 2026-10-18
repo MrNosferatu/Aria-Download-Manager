@@ -643,7 +643,7 @@ Item {
                 anchors.verticalCenter: parent.verticalCenter
                 text: tab.selectedCount > 0 ? tab.selectedCount + " selected" : "Pick downloads · Shift-click for a range"
                 font.pixelSize: Theme.fontSizeSmall + 1
-                font.weight: Font.Bold
+                font.weight: Font.DemiBold
                 color: Theme.onPrimaryContainer
             }
         }
@@ -678,7 +678,7 @@ Item {
                 iconSize: Theme.iconSizeSmall
                 iconName: "delete"
                 iconColor: Theme.error
-                tooltipText: tab.selectedPast.length && !tab.selectedLive.length ? "Forget the selected (files stay)" : "Remove the selected downloads"
+                tooltipText: tab.selectedPast.length && !tab.selectedLive.length ? "Forget the selected entries (files are kept)" : "Remove the selected downloads"
                 enabled: tab.selectedCount > 0
                 opacity: enabled ? 1 : 0.4
                 onClicked: tab.askBulkRemove()
@@ -733,7 +733,7 @@ Item {
             StyledText {
                 text: "Remove " + tab.selectedCount + (tab.selectedCount === 1 ? " download?" : " downloads?")
                 font.pixelSize: Theme.fontSizeMedium + 1
-                font.weight: Font.Bold
+                font.weight: Font.DemiBold
                 color: Theme.surfaceText
             }
 
@@ -810,7 +810,7 @@ Item {
             StyledText {
                 text: "Clear all history?"
                 font.pixelSize: Theme.fontSizeMedium
-                font.weight: Font.Bold
+                font.weight: Font.DemiBold
                 color: Theme.surfaceText
             }
 
@@ -978,7 +978,7 @@ Item {
             wrapMode: Text.WordWrap
             text: emptyState.lines[1]
             font.pixelSize: Theme.fontSizeLarge
-            font.weight: Font.Bold
+            font.weight: Font.DemiBold
             color: Theme.surfaceText
         }
 

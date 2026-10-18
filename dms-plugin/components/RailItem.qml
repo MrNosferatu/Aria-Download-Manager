@@ -40,7 +40,7 @@ Rectangle {
         anchors.verticalCenter: parent.verticalCenter
         text: item.label
         font.pixelSize: Theme.fontSizeSmall + 1
-        font.weight: item.selected ? Font.Bold : Font.Medium
+        font.weight: item.selected ? Font.DemiBold : Font.Medium
         color: item.selected ? Theme.onPrimaryContainer : Theme.surfaceText
         wrapMode: Text.NoWrap
         elide: Text.ElideRight

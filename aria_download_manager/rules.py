@@ -19,6 +19,17 @@ stays under 50 KiB/s for 3 seconds.
       resume_after_seconds: 1.5
       cooldown_seconds: 25
       max_triggers: 20
+
+A rule can instead fire once, the moment a download finishes
+(``when: {event: finished}``), to extract it or run a command (finishing.py):
+
+    - name: extract-archives
+      enabled: true
+      when:
+        event: finished
+        kinds: [archive]        # by the file-type lists of sorting
+      action: extract
+      delete_archive: false
 """
 
 from __future__ import annotations
@@ -27,7 +38,7 @@ import asyncio
 import re
 import time
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Callable
 
 from .config import Config, stringify
 from .rpc import Aria2Error, Aria2RPC
@@ -40,7 +51,11 @@ ACTIONS = (
     "set_option",
     "stop",
     "log_only",
+    "extract",
+    "run",
 )
+#: What a rule that fires when a download finishes can do.
+FINISH_ACTIONS = ("extract", "run", "log_only")
 
 #: How each action reads in the event log. The keys stay as-is: they are the
 #: literal values used in config.yaml.
@@ -54,7 +69,18 @@ ACTION_PHRASES = {
     "set_option": "changed options on",
     "stop": "paused",
     "log_only": "noted",
+    "extract": "extracted",
+    "run": "ran its command for",
 }
+
+
+def is_finish_rule(rule: dict) -> bool:
+    return str((rule.get("when") or {}).get("event") or "") == "finished"
+
+
+def finished(dl: dict) -> bool:
+    """A download is done: aria2 calls it complete, or a torrent is seeding."""
+    return not dl.get("isMetadata") and (dl.get("status") == "complete" or bool(dl.get("seeder")))
 
 
 @dataclass
@@ -85,6 +111,14 @@ class RuleEngine:
         self.store = store
         self.tracked: dict[str, Tracker] = {}
         self.trigger_log: list[dict] = []
+        #: Extracts and runs commands for the finish rules (set by the API).
+        self.finisher = None
+        #: A file name's type by the sorting lists ("archive", "video"…).
+        self.category_of: Callable[[str], str] = lambda name: "other"
+        #: Downloads already seen finished. The first snapshot fills it, so
+        #: what was done before the manager started never fires a finish rule.
+        self._finished: set[str] = set()
+        self._primed = False
 
     # ---- config ----------------------------------------------------------
     @property
@@ -105,6 +139,19 @@ class RuleEngine:
         if not isinstance(when, dict):
             problems.append("'when' must be a mapping")
             return problems
+        if is_finish_rule(rule):
+            if action not in FINISH_ACTIONS:
+                problems.append(f"a rule for finished downloads can only {', '.join(FINISH_ACTIONS)}")
+            if action == "run" and not str(rule.get("command") or "").strip():
+                problems.append("action run needs a command")
+            if name_re := when.get("name_matches"):
+                try:
+                    re.compile(str(name_re))
+                except re.error as exc:
+                    problems.append(f"name_matches is not a valid regex: {exc}")
+            return problems
+        if action in ("extract", "run"):
+            problems.append(f"{action} is for finished downloads (when: event: finished)")
         if not any(
             k in when
             for k in ("speed_below", "speed_above", "connections_below", "progress_stuck")
@@ -187,10 +234,52 @@ class RuleEngine:
                 return False
         return True
 
+    def _finish_matches(self, when: dict, dl: dict) -> bool:
+        if when.get("torrent_only") and not dl.get("isTorrent"):
+            return False
+        if when.get("http_only") and dl.get("isTorrent"):
+            return False
+        if "min_size" in when and int(dl.get("total") or 0) < int(when["min_size"]):
+            return False
+        if kinds := when.get("kinds"):
+            if self.category_of(str(dl.get("name") or "")) not in kinds:
+                return False
+        if pattern := when.get("name_matches"):
+            try:
+                if not re.search(str(pattern), str(dl.get("name") or "")):
+                    return False
+            except re.error:
+                return False
+        return True
+
+    def _check_finished(self, snapshot: dict, rules: list[dict]) -> None:
+        """Fire the finish rules for every download that just finished."""
+        done = [dl for dl in snapshot["downloads"] if finished(dl)]
+        live = {dl["gid"] for dl in snapshot["downloads"]}
+        # Made here too, for an engine built without __init__ (as tests do).
+        seen = self.__dict__.setdefault("_finished", set())
+        seen &= live
+        if not self.__dict__.get("_primed"):
+            seen |= {dl["gid"] for dl in done}
+            self._primed = True
+            return
+        pending = [str(dl.get("name") or "") for dl in snapshot["downloads"]
+                   if not finished(dl) and not dl.get("isMetadata")]
+        for dl in done:
+            if dl["gid"] in seen:
+                continue
+            seen.add(dl["gid"])
+            for rule in rules:
+                if is_finish_rule(rule) and self._finish_matches(rule.get("when") or {}, dl):
+                    st = TrackState(triggers=1, last_trigger=time.time(), acting=True)
+                    asyncio.create_task(self._run_action(rule, {**dl, "pending": pending}, st))
+
     async def evaluate(self, snapshot: dict, dt: float) -> None:
         now = snapshot.get("ts") or time.time()
         seen: set[str] = set()
         rules = self.active_rules() if self.enabled else []
+        self._check_finished(snapshot, rules)
+        rules = [r for r in rules if not is_finish_rule(r)]
 
         for dl in snapshot["downloads"]:
             gid = dl["gid"]
@@ -304,6 +393,14 @@ class RuleEngine:
 
         if action == "restart":
             return await self._restart(gid)
+
+        if action in ("extract", "run"):
+            if self.finisher is None:
+                raise RuntimeError("finish actions are not available")
+            if action == "extract":
+                return await self.finisher.extract(dl, bool(rule.get("delete_archive", False)),
+                                                   dl.get("pending") or [])
+            return await self.finisher.run(dl, str(rule.get("command") or ""))
 
         raise ValueError(f"unknown action {action!r}")
 

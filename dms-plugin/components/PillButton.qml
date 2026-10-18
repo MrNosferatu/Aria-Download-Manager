@@ -115,7 +115,7 @@ Item {
             visible: button.text !== ""
             text: button.text
             font.pixelSize: button.compact ? Theme.fontSizeSmall : Theme.fontSizeSmall + 1
-            font.weight: button.kind === "filled" || button.kind === "dangerFilled" ? Font.Bold : Font.DemiBold
+            font.weight: Font.DemiBold
             color: button.ink
         }
 

@@ -101,6 +101,11 @@ Column {
     readonly property bool isTorrent: !!statusInfo.bittorrent || !!dl.isTorrent
     //: A torrent run by qBittorrent rather than aria2c.
     readonly property bool isQb: !!(detailData && detailData.engine === "qbittorrent")
+    //: The download-only VPN, and whether this download goes through it (its
+    //: aria2 all-proxy is the VPN's proxy).
+    readonly property var vpnInfo: service ? service.vpn : ({})
+    readonly property bool throughVpn: !!detailData && !!vpnInfo.proxy
+                                       && String((detailData.options || ({}))["all-proxy"] || "").replace(/\/$/, "") === vpnInfo.proxy
     //: The global setting covers every torrent; the panel then just says so.
     readonly property bool downloadOnlyEverywhere: service ? service.downloadOnly : false
 
@@ -474,7 +479,7 @@ Column {
                 anchors.verticalCenter: parent.verticalCenter
                 text: "Pick files, then start"
                 font.pixelSize: Theme.fontSizeMedium
-                font.weight: Font.Bold
+                font.weight: Font.DemiBold
                 color: Theme.surfaceText
             }
         }
@@ -1222,6 +1227,26 @@ Column {
             }
         }
 
+        //: Its route, whatever its site says: shown while the VPN is on, or
+        //: while this one still uses it. aria2 reconnects the new way and
+        //: keeps what it has.
+        OptionRow {
+            // A stopped download keeps its route: aria2 will not change it any more.
+            visible: !detail.reviewing && !detail.isTorrent && ["active", "waiting", "paused"].indexOf(detail.dl.status) >= 0
+                     && (detail.vpnInfo.enabled === true || detail.throughVpn)
+            label: "Use the VPN"
+            hint: detail.vpnInfo.connected ? "Via " + String(detail.vpnInfo.server || "").replace(/\.conf$/i, "") + ". Overrides the site list."
+                                           : "Overrides the site list. The tunnel isn’t responding."
+
+            BoolSwitch {
+                checked: detail.throughVpn
+                onToggled: value => {
+                    detail.service.setDownloadVpn(detail.gid, value)
+                    detail.refresh()
+                }
+            }
+        }
+
         OptionRow {
             visible: !detail.reviewing && !detail.isQb
             label: "Connections per server"
@@ -1410,7 +1435,7 @@ Column {
                     anchors.verticalCenter: parent.verticalCenter
                     text: "Actions on this download"
                     font.pixelSize: Theme.fontSizeSmall + 1
-                    font.weight: Font.Bold
+                    font.weight: Font.DemiBold
                     color: Theme.surfaceText
                 }
 

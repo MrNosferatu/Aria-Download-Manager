@@ -141,7 +141,7 @@ PopoutComponent {
                 width: parent.width
                 text: "Aria Download Manager"
                 font.pixelSize: Theme.fontSizeLarge
-                font.weight: Font.Bold
+                font.weight: Font.DemiBold
                 color: Theme.surfaceText
                 wrapMode: Text.NoWrap
                 elide: Text.ElideRight
@@ -232,7 +232,7 @@ PopoutComponent {
 
                     text: popout.service ? Fmt.speed(popout.service.downloadSpeed) : "–"
                     font.pixelSize: Theme.fontSizeLarge + 8
-                    font.weight: Font.Bold
+                    font.weight: Font.DemiBold
                     color: Theme.primary
                 }
             }
@@ -377,7 +377,7 @@ PopoutComponent {
                     anchors.verticalCenter: parent.verticalCenter
                     text: "aria2c exited"
                     font.pixelSize: Theme.fontSizeMedium
-                    font.weight: Font.Bold
+                    font.weight: Font.DemiBold
                     color: Theme.surfaceText
                 }
             }
@@ -432,6 +432,18 @@ PopoutComponent {
     Item {
         width: parent.width
         height: aria2Banner.shown ? 12 : 0
+    }
+
+    // ---- the last minute before shutting down or suspending ------------------
+    AfterAllBanner {
+        x: popout.inset
+        width: parent.width - popout.inset * 2
+        service: popout.service
+    }
+
+    Item {
+        width: parent.width
+        height: !!popout.service && !!popout.service.afterAll.deadline ? 12 : 0
     }
 
     //: The three tabs as one compact segmented strip: what DankTabBar drew in
@@ -675,7 +687,7 @@ PopoutComponent {
                 horizontalAlignment: Text.AlignHCenter
                 text: "Restarting the manager…"
                 font.pixelSize: Theme.fontSizeLarge
-                font.weight: Font.Bold
+                font.weight: Font.DemiBold
                 color: Theme.surfaceText
             }
 
@@ -715,7 +727,7 @@ PopoutComponent {
                 horizontalAlignment: Text.AlignHCenter
                 text: "The manager isn't running"
                 font.pixelSize: Theme.fontSizeLarge
-                font.weight: Font.Bold
+                font.weight: Font.DemiBold
                 color: Theme.surfaceText
             }
 

@@ -78,6 +78,30 @@ function join(text, unit, kind, raw) {
 
 // config.yaml keeps sizes as written and aria2 reports bytes, so "32M" and
 // "33554432" are the same setting spelled two ways.
+// Two maps of settings hold the same values: key order aside, a list compared
+// as a set ("zip 7z" is "7z zip"), a missing key as an empty value.
+function sameMap(a, b) {
+    a = a || {}
+    b = b || {}
+    var keys = {}
+    var k
+    for (k in a)
+        keys[k] = true
+    for (k in b)
+        keys[k] = true
+    for (k in keys) {
+        var x = a[k]
+        var y = b[k]
+        if (Array.isArray(x) || Array.isArray(y)) {
+            if ((x || []).slice().sort().join("\n") !== (y || []).slice().sort().join("\n"))
+                return false
+        } else if (String(x === undefined || x === null ? "" : x) !== String(y === undefined || y === null ? "" : y)) {
+            return false
+        }
+    }
+    return true
+}
+
 function same(a, b) {
     a = String(a === undefined || a === null ? "" : a).trim()
     b = String(b === undefined || b === null ? "" : b).trim()

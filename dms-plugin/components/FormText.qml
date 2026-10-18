@@ -35,7 +35,7 @@ FormBox {
         selectByMouse: true
         clip: true
         font.pixelSize: field.bold ? Theme.fontSizeMedium + 1 : Theme.fontSizeSmall + 1
-        font.weight: field.bold ? Font.Bold : Font.Normal
+        font.weight: field.bold ? Font.DemiBold : Font.Normal
         font.family: field.mono ? "monospace" : Theme.fontFamily
         onTextEdited: field.edited(text)
         onEditingFinished: field.editingFinished()

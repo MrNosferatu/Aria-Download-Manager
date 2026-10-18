@@ -438,6 +438,36 @@ body.offline .topbar .rate b { color: var(--on-surface-var); }
   .optfield.dirty .optctl .undo { display: inline-flex; }
 }
 
+.tag-vpn { background: var(--secondary-container); color: var(--on-secondary-container); }
+/* When downloads finish: the countdown (the button wears .is-active while set). */
+.banner.warn { background: var(--warning-container); }
+/* Searching in Simple: the matches only Advanced shows, and the way there. */
+.search-more { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 0 0 12px; padding: 6px 6px 6px 16px; border-radius: var(--r-md); background: var(--surface-high); font-size: var(--fs-sm); color: var(--on-surface-var); }
+.search-more[hidden] { display: none; }
+.popmenu-head { padding: 6px 12px 4px; font-size: var(--fs-xs); font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--on-surface-var); }
+
+/* VPN for downloads: a line saying what the tunnel does, then its server,
+   configs folder and sites; the sites wear the sorting card's chips. */
+.vpn-status {
+  display: flex; align-items: center; gap: 8px; margin: 2px 0 6px; font-size: var(--fs-sm); color: var(--on-surface-var);
+  &::before { content: ''; width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--outline); }
+  &.ok { color: var(--on-surface); } &.ok::before { background: var(--success); }
+  &.busy::before { background: var(--warning); }
+  &.err { color: var(--error); } &.err::before { background: var(--error); }
+}
+/* A path and a list of sites need more room than a number does. */
+.vpn-body { --optval: 400px; transition: opacity var(--t-fast); }
+.vpn-body.off { opacity: .55; }
+.vpn-body .row { display: flex; gap: 8px; align-items: center; }
+.vpn-body .row input { flex: 1; min-width: 0; font-family: var(--mono); font-size: var(--fs-sm); }
+.vpn-sites {
+  align-items: center;
+  & .chip.removable { height: 26px; padding: 0 2px 0 10px; cursor: default; color: var(--on-surface); background: var(--surface-highest); border-color: transparent; font-family: var(--mono); font-size: var(--fs-xs); }
+  & .chip .x { border: 0; background: none; color: var(--on-surface-var); cursor: pointer; width: 20px; height: 20px; border-radius: 50%; font-size: 14px; line-height: 1; }
+  & .chip .x:hover { background: color-mix(in oklch, var(--on-surface) 10%, transparent); color: var(--on-surface); }
+  & .chip-input { width: 11ch; height: 26px; padding: 0 8px; font-size: var(--fs-xs); background: none; border: 1px dashed var(--outline-var); border-radius: var(--r-sm); }
+}
+
 /* Folders & sorting: a row per type, its folder and its extensions. */
 #route-default .optfield { border-bottom: 1px solid var(--outline-var); margin-bottom: 8px; }
 .routes { display: flex; flex-direction: column; gap: 6px; margin-top: 10px; padding-bottom: 8px; transition: opacity var(--t-fast); }
@@ -612,6 +642,8 @@ input.fld {
   &.on { border-color: transparent; background: var(--secondary-container); color: var(--on-secondary-container); font-weight: 600; }
   &:not(.on):hover { background: color-mix(in oklch, var(--on-surface) 6%, transparent); }
 }
+/* Straight in a group (no limit rows above it): its own width, from the left. */
+.rule-group > .fadd { align-self: flex-start; }
 .fadd {
   height: 34px; padding: 0 14px 0 10px; border-radius: 17px; border: 1px dashed var(--outline); background: none;
   color: var(--on-surface); font: inherit; font-size: var(--fs-md); display: inline-flex; align-items: center; gap: 6px; cursor: pointer;

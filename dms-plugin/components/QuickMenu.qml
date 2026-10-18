@@ -140,7 +140,7 @@ DankPopout {
         const counts = {
             "pauseAll": usable ? svc.activeCount : 0,
             "resumeAll": usable ? svc.waitingCount : 0,
-            "purge": usable ? svc.stoppedCount : 0
+            "purge": usable ? svc.clearableCount : 0
         }
         const shortLabel = {
             "pauseAll": "Pause all",
@@ -149,9 +149,12 @@ DankPopout {
         }
         return Actions.GLOBAL.map(action => ({
                                                  "icon": action.icon,
-                                                 "text": shortLabel[action.id] + (counts[action.id] > 0 ? " · " + counts[action.id] : ""),
+                                                 "text": action.id === "purge" && menu.clearArmed ? "Sure? · " + counts.purge
+                                                         : shortLabel[action.id] + (counts[action.id] > 0 ? " · " + counts[action.id] : ""),
                                                  "enabled": usable && (action.id === "resumeAll" || counts[action.id] > 0),
-                                                 "action": () => action.id === "pauseAll" ? svc.pauseAllWithUndo(action.ok) : svc.post(action.path, null, action.ok)
+                                                 "confirm": action.id === "purge",
+                                                 "action": () => action.id === "pauseAll" ? svc.pauseAllWithUndo(action.ok)
+                                                                 : action.id === "purge" ? svc.clearFinished() : svc.post(action.path, null, action.ok)
                                              }))
     }
 
@@ -206,6 +209,20 @@ DankPopout {
                                    "toggle": svc.rulesEnabled,
                                    "action": () => svc.setRulesEnabled(!svc.rulesEnabled)
                                },
+                               //: The one-off for when everything is done; each
+                               //: switch turns the other off.
+                               {
+                                   "icon": "bedtime",
+                                   "text": "Suspend when done",
+                                   "toggle": svc.afterAll.action === "suspend",
+                                   "action": () => svc.setAfterAll(svc.afterAll.action === "suspend" ? "" : "suspend")
+                               },
+                               {
+                                   "icon": "power_settings_new",
+                                   "text": "Shut down when done",
+                                   "toggle": svc.afterAll.action === "shutdown",
+                                   "action": () => svc.setAfterAll(svc.afterAll.action === "shutdown" ? "" : "shutdown")
+                               },
                                {
                                    "separator": true
                                },
@@ -219,6 +236,18 @@ DankPopout {
                                }
                            ])
     }
+
+    //: Clear asks for a second press: one stray click would empty the list.
+    property bool clearArmed: false
+
+    Timer {
+        id: clearArmTimer
+
+        interval: 4000
+        onTriggered: menu.clearArmed = false
+    }
+
+    onPopoutClosed: clearArmed = false
 
     function trigger(action) {
         menu.close()
@@ -301,7 +330,7 @@ DankPopout {
                         anchors.verticalCenter: parent.verticalCenter
                         text: "Manager not running"
                         font.pixelSize: Theme.fontSizeMedium + 1
-                        font.weight: Font.Bold
+                        font.weight: Font.DemiBold
                         color: Theme.surfaceText
                     }
                 }
@@ -371,7 +400,7 @@ DankPopout {
                                 anchors.verticalCenter: parent.verticalCenter
                                 text: menu.headline
                                 font.pixelSize: Theme.fontSizeLarge + 1
-                                font.weight: Font.Bold
+                                font.weight: Font.DemiBold
                                 color: Theme.surfaceText
                                 wrapMode: Text.NoWrap
                                 elide: Text.ElideRight
@@ -448,7 +477,7 @@ DankPopout {
                                     anchors.verticalCenter: parent.verticalCenter
                                     text: "aria2c stopped"
                                     font.pixelSize: Theme.fontSizeMedium + 1
-                                    font.weight: Font.Bold
+                                    font.weight: Font.DemiBold
                                     color: Theme.surfaceText
                                 }
                             }
@@ -680,7 +709,14 @@ DankPopout {
                                     hoverEnabled: true
                                     enabled: bulkButton.modelData.enabled
                                     cursorShape: Qt.PointingHandCursor
-                                    onClicked: menu.trigger(bulkButton.modelData.action)
+                                    onClicked: {
+                                        if (bulkButton.modelData.confirm && !menu.clearArmed) {
+                                            menu.clearArmed = true
+                                            clearArmTimer.restart()
+                                            return
+                                        }
+                                        menu.trigger(bulkButton.modelData.action)
+                                    }
                                 }
                             }
                         }

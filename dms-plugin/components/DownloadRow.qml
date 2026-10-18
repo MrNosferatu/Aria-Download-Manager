@@ -112,6 +112,9 @@ Rectangle {
         }
     }
 
+    //: It downloads through the VPN (the manager lists which do).
+    readonly property bool throughVpn: !!service && (service.vpn.routed || []).indexOf(gid) >= 0
+
     readonly property var badges: {
         const out = []
         if (heldForChoice)
@@ -139,6 +142,19 @@ Rectangle {
             out.push({
                          "text": "Torrent",
                          "color": Theme.surfaceVariantText
+                     })
+        //: A finish action at work on it.
+        const job = service ? (service.finishing || []).find(j => j.gid === gid && j.status === "running") : null
+        if (job)
+            out.push({
+                         "text": job.action === "extract" ? "Extracting" : "Running command",
+                         "color": Theme.primary
+                     })
+        //: Downloads through the VPN, beside ones that go direct.
+        if (throughVpn)
+            out.push({
+                         "text": "VPN",
+                         "color": Theme.primary
                      })
         //: A rule about to fire counts down, so a pause that is coming is
         //: never a surprise; one already acting says so.
@@ -688,7 +704,8 @@ Rectangle {
 
                     anchors.left: parent.left
                     anchors.verticalCenter: parent.verticalCenter
-                    width: Math.max(0, Math.min(implicitWidth, parent.width - badgeRow.width - pct.implicitWidth - 16))
+                    width: Math.max(0, Math.min(implicitWidth, parent.width - (badgeRow.visible ? badgeRow.width : 0)
+                                                - (vpnMark.visible ? vpnMark.width + 6 : 0) - pct.implicitWidth - 16))
                     text: row.dl.name || row.gid
                     font.pixelSize: row.compact ? Theme.fontSizeSmall + 1 : Theme.fontSizeMedium
                     font.weight: Font.DemiBold
@@ -706,6 +723,20 @@ Rectangle {
                                 row.toggleExpand()
                         }
                     }
+                }
+
+                //: The compact list has no room for badges; through the VPN
+                //: still shows, as a small shield after the name.
+                DankIcon {
+                    id: vpnMark
+
+                    visible: row.compact && row.throughVpn
+                    anchors.left: nameText.right
+                    anchors.leftMargin: 6
+                    anchors.verticalCenter: parent.verticalCenter
+                    name: "shield"
+                    size: 14
+                    color: Theme.primary
                 }
 
                 Row {

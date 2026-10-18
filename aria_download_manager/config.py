@@ -112,6 +112,25 @@ DEFAULTS: dict[str, Any] = {
         "stop_on_exit": True,
         "startup_timeout": 30.0,
     },
+    # When downloads finish (finishing.py, afterall.py): the one-off shut down
+    # or suspend waits countdown_seconds, showing it, before running these.
+    "finish": {
+        "countdown_seconds": 60,
+        "shutdown_command": ["systemctl", "poweroff"],
+        "suspend_command": ["systemctl", "suspend"],
+    },
+    # A VPN for downloads only (see vpn.py): wireproxy runs WireGuard in user
+    # space as a local proxy, and only downloads that choose it (or whose site
+    # is listed) use it. Torrents never do. folder holds the WireGuard .conf
+    # files (Proton's, say); server is the one in use (blank: the first).
+    "vpn": {
+        "enabled": False,
+        "folder": "~/.config/aria-download-manager/wireguard",
+        "server": "",
+        "sites": [],
+        "port": 25345,
+        "binary": "wireproxy",
+    },
     # Sort finished-and-in-progress downloads into subfolders by file type.
     # Manager-side (see routing.py): aria2 has one download folder.
     "routing": {

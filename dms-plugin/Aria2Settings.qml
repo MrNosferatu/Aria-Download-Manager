@@ -36,7 +36,7 @@ PluginSettings {
             leftPadding: 4
             text: parent.title
             font.pixelSize: Theme.fontSizeSmall - 1
-            font.weight: Font.Bold
+            font.weight: Font.DemiBold
             font.letterSpacing: 1
             color: Theme.primary
         }
@@ -496,7 +496,7 @@ PluginSettings {
         Row_ {
             divider: false
             label: "Opens as"
-            description: "Tiled lets niri or Hyprland place it like any other window"
+            description: "Tiled lets niri or Hyprland place the window like any other"
 
             Segmented {
                 color: Theme.surfaceContainer
@@ -506,9 +506,23 @@ PluginSettings {
             }
         }
 
+        //: Tiled, how wide its column opens: niri's own default, or a set width.
+        Row_ {
+            visible: settings.get("windowMode", "floating") === "tiled"
+            label: "Column width"
+            description: "How wide its column opens in niri. On Hyprland, only Full applies (the window is maximized)."
+
+            Segmented {
+                color: Theme.surfaceContainer
+                model: ["Default", "Half", "Two thirds", "Full"]
+                currentIndex: Math.max(0, ["default", "half", "two-thirds", "full"].indexOf(settings.get("windowColumn", "default")))
+                onPicked: index => settings.saveValue("windowColumn", ["default", "half", "two-thirds", "full"][index])
+            }
+        }
+
         Row_ {
             label: "Floating size"
-            description: settings.get("windowMode", "floating") === "tiled" ? "Used when it opens floating" : ""
+            description: settings.get("windowMode", "floating") === "tiled" ? "Used when the window opens floating" : ""
 
             Row {
                 spacing: 12
@@ -550,7 +564,7 @@ PluginSettings {
 
         Row_ {
             label: "Details column"
-            description: "Width of the details beside the list; dragging its edge sets it too"
+            description: "Width of the details panel next to the list. You can also drag its edge."
 
             Row {
                 spacing: 8

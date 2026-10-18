@@ -11,7 +11,24 @@ var ACTION_WORDS = {
     "restart": "remove and add again",
     "set_option": "change its options",
     "stop": "pause and leave paused",
-    "log_only": "only log it"
+    "log_only": "only log it",
+    "extract": "extract it",
+    "run": "run a command"
+}
+
+// A rule that fires once, when a download finishes (rules.py: event finished).
+function isFinish(rule) {
+    return !!(rule && rule.when && rule.when.event === "finished")
+}
+
+// The file types a finish rule can be limited to, by the sorting lists.
+var KIND_VALUES = ["", "archive", "video", "music", "image"]
+var KIND_LABELS = ["Any", "Archives", "Video", "Music", "Images"]
+var KIND_NOUNS = {
+    "archive": "an archive",
+    "video": "a video",
+    "music": "a music file",
+    "image": "an image"
 }
 
 // What a set_option rule sets, in words where the option is a common one.
@@ -34,6 +51,21 @@ function optionWords(options) {
 // "Under 50 KiB/s for 3 s → pause, then resume"
 function summary(rule) {
     var when = (rule && rule.when) || {}
+    if (isFinish(rule)) {
+        // "When an archive finishes → extract it, then delete the archive"
+        var kind = (when.kinds || [])[0]
+        var what = KIND_NOUNS[kind] || (when.torrent_only ? "a torrent" : (when.http_only ? "a normal download" : "a download"))
+        if (kind && when.torrent_only)
+            what += " from a torrent"
+        if (when.name_matches)
+            what += " named /" + when.name_matches + "/"
+        var did = ACTION_WORDS[rule.action] || String(rule.action || "")
+        if (rule.action === "extract" && rule.delete_archive)
+            did += ", then delete the archive"
+        if (rule.action === "run" && rule.command)
+            did = "run " + rule.command
+        return "When " + what + " finishes → " + did
+    }
     var lead = []
     if (when.torrent_only)
         lead.push("Torrents")
@@ -65,6 +97,9 @@ function summary(rule) {
 var ACTION_VALUES = ["pause_resume", "force_pause_resume", "restart", "set_option", "stop", "log_only"]
 var ACTION_LABELS = ["Pause, then resume", "Force pause, then resume", "Remove and add again",
                      "Change its options", "Pause and leave paused", "Only log it"]
+// …and a finish rule's.
+var FINISH_VALUES = ["extract", "run", "log_only"]
+var FINISH_LABELS = ["Extract it", "Run a command", "Only log it"]
 
 function resumes(action) {
     return (action || "pause_resume") === "pause_resume" || action === "force_pause_resume"
@@ -103,6 +138,18 @@ function problems(rule, otherNames) {
         out["name"] = "Give it a name"
     else if ((otherNames || []).indexOf(name) >= 0)
         out["name"] = "Another action has this name"
+    if (isFinish(rule)) {
+        if (rule.action === "run" && !String(rule.command || "").trim())
+            out["command"] = "Enter a command"
+        if (!blank(when.name_matches)) {
+            try {
+                new RegExp(when.name_matches)
+            } catch (e) {
+                out["when.name_matches"] = "Not a valid pattern"
+            }
+        }
+        return out
+    }
     if (!(when.statuses || ["active"]).length)
         out["when.statuses"] = "Pick at least one"
     var speed = blank(when.speed_below) ? when.speed_above : when.speed_below
@@ -208,6 +255,21 @@ var TEMPLATES = [
         }
     },
     {
+        "icon": "folder_zip",
+        "title": "Extract archives when done",
+        "rule": {
+            "name": "Extract archives",
+            "enabled": true,
+            "description": "Extract archives as soon as they finish downloading",
+            "when": {
+                "event": "finished",
+                "kinds": ["archive"]
+            },
+            "action": "extract",
+            "delete_archive": false
+        }
+    },
+    {
         "icon": "bedtime",
         "title": "Slow down big files",
         "rule": {
@@ -236,7 +298,9 @@ var ACTION_DONE = {
     "restart": "removed and added again",
     "set_option": "options changed",
     "stop": "paused",
-    "log_only": "logged"
+    "log_only": "logged",
+    "extract": "extracted",
+    "run": "command run"
 }
 
 // A download's "Actions on this download" (board 3): one line per action and

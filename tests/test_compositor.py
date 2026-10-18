@@ -105,6 +105,19 @@ async def run(tmp: Path) -> None:
     done = await compositor.toggle_maximize("Aria Download Manager")
     check("a browser page of that name is never touched", not calls(), str(calls()))
 
+    print("\nniri: the column width it opens tiled at")
+    for width, value in (("half", "50%"), ("two-thirds", "66.667%"), ("full", "100%")):
+        if log.exists():
+            log.unlink()
+        windows.write_text(json.dumps([{"id": 9, "title": "Aria Download Manager", "is_floating": False}]))
+        done = await compositor.size_column("Aria Download Manager", width)
+        check(f"{width} sizes its column to {value}, by id",
+              done == {"by": "niri", "maximized": False} and calls() == [f"msg action set-window-width --id 9 {value}"],
+              f"{done} {calls()}")
+    log.unlink()
+    done = await compositor.size_column("Aria Download Manager", "default")
+    check("default leaves niri's own width alone", done["by"] == "" and not calls(), f"{done} {calls()}")
+
     print("\nniri: open the window that is already open")
     if log.exists():
         log.unlink()
@@ -144,6 +157,18 @@ async def run(tmp: Path) -> None:
     check("Hyprland maximizes it", done == {"by": "hyprland", "maximized": True} and calls() == [
         "dispatch focuswindow address:0x66", "dispatch fullscreen 1"], f"{done} {calls()}")
     log.unlink()
+    windows.write_text(json.dumps([{"address": "0x77", "title": "Aria Download Manager", "focusHistoryID": 3}]))
+    done = await compositor.focus_window("Aria Download Manager")
+    log.unlink()
+    windows.write_text(json.dumps([{"address": "0x88", "title": "Aria Download Manager", "floating": False}]))
+    done = await compositor.size_column("Aria Download Manager", "full")
+    check("on Hyprland, full maximizes it", done == {"by": "hyprland", "maximized": True}
+          and calls() == ["dispatch focuswindow address:0x88", "dispatch fullscreen 1"], f"{done} {calls()}")
+    log.unlink()
+    done = await compositor.size_column("Aria Download Manager", "half")
+    check("and other widths follow the layout (no columns there)", done["by"] == "" and not calls(), f"{done} {calls()}")
+    if log.exists():
+        log.unlink()
     windows.write_text(json.dumps([{"address": "0x77", "title": "Aria Download Manager", "focusHistoryID": 3}]))
     done = await compositor.focus_window("Aria Download Manager")
     check("Hyprland focuses one open elsewhere", done["wasFocused"] is False

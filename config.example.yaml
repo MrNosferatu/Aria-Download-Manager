@@ -171,6 +171,26 @@ qbittorrent:
   startup_timeout: 30.0
 
 # ---------------------------------------------------------------------------
+# A VPN for downloads only. wireproxy (sudo pacman -S wireproxy) runs WireGuard
+# in user space as a local proxy, so nothing else on the system changes: only a
+# download that uses it goes through it, side by side with ones that go direct.
+# Which do: none while enabled is false; otherwise each download's own choice
+# in the add dialog or its details, or for "auto" whether its site is listed.
+# Torrents never use it. A download set to use it fails while the tunnel is
+# down rather than going out over the normal connection.
+vpn:
+  enabled: false
+  # WireGuard .conf files, one per server (Proton: Downloads → WireGuard).
+  folder: ~/.config/aria-download-manager/wireguard
+  # The file in use; blank picks the first.
+  server: ""
+  # Sites whose downloads use it (subdomains included), e.g. mediafire.com.
+  sites: []
+  # The local proxy port (and port + 1 for its health check).
+  port: 25345
+  binary: wireproxy
+
+# ---------------------------------------------------------------------------
 # Sort downloads into subfolders of the download folder by what they are.
 # Manager-side (see routing.py): aria2 itself has one folder. The folder is
 # picked before the download starts, from the URL's filename, or a .torrent's

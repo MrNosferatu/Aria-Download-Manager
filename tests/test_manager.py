@@ -438,7 +438,7 @@ async def test_e2e(tmp_dir: Path) -> None:
         async with http.delete(base + f"/api/download/{victim.gid}?force=true&purge=true") as res:
             removed_ok = res.status == 200
         check("DELETE removes a download", removed_ok and victim.gid not in fake.downloads)
-        status, _ = await post("/api/global/purge")
+        status, _ = await post("/api/global/purge?history=false")
         check("purge clears finished results", status == 200
               and not any(d.status in ("complete", "error", "removed") for d in fake.downloads.values()))
 
@@ -491,7 +491,7 @@ async def test_e2e(tmp_dir: Path) -> None:
 
         # Purging aria2's own results must not erase our record.
         before = len(hist["entries"])
-        await post("/api/global/purge")
+        await post("/api/global/purge?history=false")
         await asyncio.sleep(1.5)
         status, after_purge = await get("/api/history?limit=50")
         check("history survives aria2's purgeDownloadResult",
@@ -504,8 +504,16 @@ async def test_e2e(tmp_dir: Path) -> None:
             check("a past download can be queued again from history",
                   status == 200 and readded.get("gid"), f"{status} {json.dumps(readded)[:120]}")
 
+        # "Clear finished" (the default) takes the history rows off the list too.
+        status, cleared = await post("/api/global/purge")
+        _, after_clear = await get("/api/history?limit=50")
+        check("Clear finished forgets the history rows as well",
+              status == 200 and cleared.get("forgotten", 0) >= 1
+              and len(after_clear["entries"]) < len(after_purge["entries"]),
+              f"{cleared} {len(after_purge['entries'])} -> {len(after_clear['entries'])}")
+
         status, gone = await post("/api/history-clear")
-        check("history can be cleared", status == 200 and gone["removed"] >= 1, str(gone))
+        check("history can be cleared", status == 200 and "removed" in gone, str(gone))
 
         # --- error propagation from aria2
         print("\ne2e: error handling")

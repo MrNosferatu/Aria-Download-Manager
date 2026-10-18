@@ -25,6 +25,8 @@ Column {
     //: The folder chosen on the form: "auto" for by type, a path, or "" until
     //: a chip is picked — then it follows the links (see defaultDir).
     property string formDir: ""
+    //: The VPN for these links: "auto" (by site), "on" or "off".
+    property string vpnChoice: "auto"
     //: The links as checked: {url, mirrors, name, size, contentType,
     //: resumable, state: "ok" | "page" | "fail", error, suggested}.
     property var entries: []
@@ -193,6 +195,9 @@ Column {
         put("user-agent", uaField.text)
         put("all-proxy", proxyField.text)
         put("checksum", checksumField.text)
+        // The manager takes "vpn" out; by site is what it does anyway.
+        if (vpnChoice !== "auto")
+            options["vpn"] = vpnChoice
 
         const headers = headersField.text.split("\n").map(line => line.trim()).filter(line => line.length > 0)
         if (cookieField.text.trim())
@@ -760,7 +765,7 @@ Column {
                 anchors.verticalCenter: parent.verticalCenter
                 text: "Add downloads"
                 font.pixelSize: Theme.fontSizeMedium + 1
-                font.weight: Font.Bold
+                font.weight: Font.DemiBold
                 color: Theme.surfaceText
             }
 
@@ -819,6 +824,28 @@ Column {
                 autoOffered: panel.mixed(panel.plainNames)
                 path: panel.formChoice
                 onChosen: chosenPath => panel.formDir = chosenPath
+            }
+        }
+
+        // ---- the VPN, while it is on: by site, or all through it, or direct ----
+        Column {
+            readonly property var plainLinks: panel.parsedLinks.filter(u => !panel.isTorrentLink(u))
+
+            width: parent.width
+            visible: !!panel.service && panel.service.vpn.enabled === true && plainLinks.length > 0
+            spacing: 6
+
+            FieldLabel {
+                text: "VPN"
+            }
+
+            VpnChips {
+                width: parent.width
+                links: parent.plainLinks
+                torrentsToo: panel.parsedLinks.length > parent.plainLinks.length
+                sites: panel.service ? (panel.service.vpn.sites || []) : []
+                choice: panel.vpnChoice
+                onChosen: value => panel.vpnChoice = value
             }
         }
 
@@ -1080,7 +1107,7 @@ Column {
         StyledText {
             text: "Checking " + panel.checks.length + (panel.checks.length === 1 ? " link…" : " links…")
             font.pixelSize: Theme.fontSizeMedium + 1
-            font.weight: Font.Bold
+            font.weight: Font.DemiBold
             color: Theme.surfaceText
         }
 
@@ -1196,7 +1223,7 @@ Column {
         StyledText {
             text: panel.okEntries.length === 1 || panel.okEntries.length === 0 ? "Ready to download" : panel.okEntries.length + " ready to download"
             font.pixelSize: Theme.fontSizeMedium + 1
-            font.weight: Font.Bold
+            font.weight: Font.DemiBold
             color: Theme.surfaceText
         }
 
@@ -1289,7 +1316,7 @@ Column {
                             anchors.verticalCenter: parent.verticalCenter
                             text: "Where each one goes"
                             font.pixelSize: Theme.fontSizeSmall + 1
-                            font.weight: Font.Bold
+                            font.weight: Font.DemiBold
                             color: Theme.surfaceText
                         }
 
@@ -1759,7 +1786,7 @@ Column {
                     anchors.verticalCenter: parent.verticalCenter
                     text: "None of these can be downloaded"
                     font.pixelSize: Theme.fontSizeMedium + 1
-                    font.weight: Font.Bold
+                    font.weight: Font.DemiBold
                     color: Theme.surfaceText
                 }
             }
@@ -1842,7 +1869,7 @@ Column {
             wrapMode: Text.NoWrap
             elide: Text.ElideRight
             font.pixelSize: Theme.fontSizeMedium + 1
-            font.weight: Font.Bold
+            font.weight: Font.DemiBold
             color: Theme.surfaceText
         }
 

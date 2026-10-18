@@ -108,7 +108,7 @@ Item {
             text: field.marked(field.label)
             textFormat: field.highlight ? Text.RichText : Text.PlainText
             font.pixelSize: field.monoLabel ? Theme.fontSizeSmall + 1 : Theme.fontSizeMedium
-            font.weight: field.monoLabel ? Font.Bold : Font.DemiBold
+            font.weight: Font.DemiBold
             font.family: field.monoLabel ? "monospace" : Theme.fontFamily
             color: Theme.surfaceText
             wrapMode: Text.NoWrap

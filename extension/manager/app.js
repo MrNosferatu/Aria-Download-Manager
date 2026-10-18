@@ -41,7 +41,13 @@ const S = {
   // The "sort into folders" card: what the manager holds, and the edits made
   // here that the page's Save changes will send.
   routing: null,
+  // What the manager has, to tell a real change from one put back.
+  routingSaved: null,
   routingDirty: false,
+  // Settings → VPN: what the manager has, and the card's unsaved copy.
+  vpn: null,
+  vpnDraft: null,
+  vpnDirty: false,
   // gid -> true, for the bulk selection mode.
   selection: new Set(),
   selecting: false,
@@ -317,7 +323,9 @@ function applyState(state) {
   flip.dataset.mode = busy ? 'pause' : 'resume';
   flip.innerHTML = `${icon(busy ? 'pause' : 'play')}<span>${busy ? 'Pause all' : 'Resume all'}</span>`;
   flip.disabled = !aria2.running || (!busy && !waiting);
-  $('#btn-purge').disabled = !(counts.stopped > 0);
+  $('#btn-purge').disabled = !((counts.stopped || 0) + pastEntries().length > 0);
+  renderVpnStatus();
+  renderAfterAll();
 
   // Finished downloads aria2 forgot are listed with the live ones.
   const past = pastEntries();
@@ -346,7 +354,7 @@ function applyState(state) {
   $('#rail-actions').textContent = rules.enabled ? (actionsOn ? String(actionsOn) : '') : 'off';
   $('#sb-actions').textContent = `Automatic actions ${rules.enabled ? 'on' : 'off'}`;
   $('#master-hint').textContent = rules.enabled
-    ? 'Watch running downloads and step in when one stalls.'
+    ? 'Act on downloads automatically when they stall or finish.'
     : 'Off — nothing below runs. You can still edit and switch them.';
 
   renderDownloads();
@@ -414,6 +422,9 @@ const ICONS = {
   chevron: 'M10 6 8.59 7.41 13.17 12l-4.58 4.59L10 18l6-6z',
   // An empty icon: keeps a menu's labels in line beside a ticked one.
   none: '',
+  power: 'M13 3h-2v10h2V3zm4.83 2.17-1.42 1.42A6.92 6.92 0 0 1 19 12c0 3.87-3.13 7-7 7a6.995 6.995 0 0 1-4.42-12.42L6.17 5.17A8.932 8.932 0 0 0 3 12a9 9 0 0 0 18 0c0-2.74-1.23-5.18-3.17-6.83z',
+  bedtime: 'M12.34 2.02C6.59 1.82 2 6.42 2 12c0 5.52 4.48 10 10 10 3.71 0 6.93-2.02 8.66-5.02-7.51-.25-12.09-8.43-8.32-14.96z',
+  shield: 'M12 1 3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4z',
   check: 'M9 16.17 4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z',
   folder: 'M20 6h-8l-2-2H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2zm0 12H4V8h16v10z',
   home: 'M10 20v-6h4v6h5v-8h3L12 3 2 12h3v8z',
@@ -609,6 +620,7 @@ function badgesFor(dl) {
       tags.push(`<span class="tag tag-rule">${escapeHtml(name)} in ${left} s</span>`);
     }
   }
+  if ((S.state?.vpn?.routed || []).includes(dl.gid)) tags.push('<span class="tag tag-vpn" title="Uses the VPN">VPN</span>');
   if (dl.seeder) tags.push('<span class="tag tag-complete">Seeding</span>');
   else if (dl.isTorrent && !dl.isMetadata) tags.push(`<span class="tag">${dl.engine === 'qbittorrent' ? 'qBittorrent' : 'Torrent'}</span>`);
   return tags.length > 2 ? [...tags.slice(0, 1), `<span class="tag">+${tags.length - 1}</span>`] : tags.slice(0, 2);
@@ -618,6 +630,9 @@ function badgesFor(dl) {
 //: matters: why it failed, that it is connecting, that peers are being asked.
 function metaFor(dl) {
   if (dl.status === 'error') return `<span class="err">${escapeHtml(dl.errorMessage || 'Failed')}</span>`;
+  // A finish action at work on it (the manager's finishing.py).
+  const job = (S.state?.finishing || []).find((j) => j.gid === dl.gid && j.status === 'running');
+  if (job) return `${job.action === 'extract' ? 'Extracting' : 'Running command'} · ${escapeHtml(job.what)}`;
   if (dl.isMetadata) return `Asking peers for the file list · ${dl.connections || 0} connected`;
   if (dl.status === 'active' && !(dl.completed > 0) && !(dl.downloadSpeed > 0)) return 'Connecting…';
   if (dl.verifyPending || (dl.verifiedLength > 0 && dl.status === 'active' && dl.completed >= dl.total)) {
@@ -812,6 +827,11 @@ function popMenu(x, y, items) {
   for (const item of items) {
     if (!item) {
       menu.append(Object.assign(document.createElement('hr'), {}));
+      continue;
+    }
+    // A string is a small heading over the items after it.
+    if (typeof item === 'string') {
+      menu.append(Object.assign(document.createElement('div'), { className: 'popmenu-head', textContent: item }));
       continue;
     }
     const [ico, label, run, danger] = item;
@@ -1174,6 +1194,27 @@ function buildDownloadOptions(gid, opts, isTorrent, qb, status) {
   };
 
   limit(block, 'max-download-limit', 'Download speed limit');
+  // Its route, whatever its site says: shown while the VPN is on, or while
+  // this one still uses it. aria2 reconnects the new way and keeps what it has.
+  const vpn = S.state?.vpn || {};
+  const carried = String(opts['all-proxy'] || '').replace(/\/$/, '') === vpn.proxy;
+  // A stopped download keeps its route: aria2 will not change it any more.
+  const live = ['active', 'waiting', 'paused'].includes((S.state?.downloads || []).find((d) => d.gid === gid)?.status);
+  if (!isTorrent && live && (vpn.enabled || carried)) {
+    const { box, input } = boolSwitch(carried, false);
+    input.addEventListener('change', async () => {
+      status.textContent = 'Saving…';
+      try {
+        await api(`/api/download/${gid}/vpn`, { method: 'POST', body: { on: input.checked } });
+        status.textContent = input.checked ? 'Now using the VPN' : 'Now connecting directly';
+      } catch (err) {
+        input.checked = !input.checked;
+        status.textContent = '';
+        toast(err.message, 'error');
+      }
+    });
+    row(block, 'Use the VPN', vpn.connected ? `Via ${vpnServerName(vpn.server)}. Overrides the site list.` : 'Overrides the site list. The tunnel isn’t responding.', box);
+  }
   if (isTorrent) {
     const upload = limit(block, 'max-upload-limit', 'Upload speed limit');
     if (S.state?.torrent?.downloadOnly) {
@@ -1239,6 +1280,7 @@ function openAdd() {
   $('#add-download-only').checked = Boolean(S.state?.torrent?.downloadOnly);
   S.addChoice = '';
   S.addOverrides = {};
+  S.addVpn = 'auto';
   $('#add-dialog').showModal();
   $('#add-uris').focus();
   api('/api/folders').then((info) => { S.addFolders = info; renderAddFolders(); }).catch(() => {});
@@ -1340,6 +1382,42 @@ function renderAddFolders() {
   $('#add-submit').textContent = links.length > 1 ? `Add ${links.length} downloads` : 'Add';
   $('#add-out').placeholder = links.length > 1 ? 'Save as — only with one link' : 'Name from the server';
   renderAddWhere();
+  renderAddVpn();
+}
+
+// Whether this link would go through the VPN with the dialog's choice.
+function addThroughVpn(url) {
+  const vpn = S.state?.vpn || {};
+  if (!vpn.enabled || isTorrentUri(url)) return false;
+  const choice = S.addVpn || 'auto';
+  return choice === 'on' || (choice === 'auto' && vpnOnList(url, vpn.sites || []));
+}
+
+// The VPN for these links: By site (each by its own), all through it, or all
+// direct. Shown while it is on in Settings and there are links it could carry.
+function renderAddVpn() {
+  const vpn = S.state?.vpn || {};
+  const links = addPlain();
+  const field = $('#add-vpn-field');
+  field.hidden = !vpn.enabled || !links.length;
+  if (field.hidden) return;
+  const choice = S.addVpn || 'auto';
+  const host = $('#add-vpn');
+  host.innerHTML = [['auto', 'auto', 'By site'], ['on', 'shield', 'VPN'], ['off', 'link', 'Direct']]
+    .map(([value, ico, label]) => `<button type="button" class="chip add-chip${value === choice ? ' on' : ''}" data-vpn="${value}" aria-pressed="${value === choice}">${icon(ico)}<span>${label}</span></button>`)
+    .join('');
+  for (const btn of host.querySelectorAll('[data-vpn]')) {
+    btn.addEventListener('click', () => { S.addVpn = btn.dataset.vpn; renderAddVpn(); renderAddWhere(); });
+  }
+  const caught = vpnCountOnList(links, vpn.sites || []);
+  const one = links.length === 1;
+  const torrents = addLinks().length > links.length ? ' Torrents always connect directly.' : '';
+  let hint;
+  if (choice === 'on') hint = one ? 'Uses the VPN, regardless of the site list.' : `All ${links.length} use the VPN, regardless of the site list.`;
+  else if (choice === 'off') hint = one ? 'Connects directly, regardless of the site list.' : `All ${links.length} connect directly, regardless of the site list.`;
+  else if (one) hint = caught ? `${vpnHostOf(links[0])} is on the VPN site list, so it will use the VPN.` : `${vpnHostOf(links[0])} isn’t on the VPN site list, so it will connect directly.`;
+  else hint = `${caught} of ${links.length} will use the VPN, based on the site list.`;
+  $('#add-vpn-hint').textContent = hint + torrents;
 }
 
 function renderAddWhere() {
@@ -1359,7 +1437,8 @@ function renderAddWhere() {
     const name = probe.name || addNameOf(url);
     const category = addCategoryOf(probe.name && addCategoryOf(addNameOf(url)) === 'unknown' ? probe.name : addNameOf(url));
     const unknown = category === 'unknown';
-    const kind = unknown ? 'Unknown · decided on start' : `${ADD_KINDS[category] || 'File'}${probe.size ? ` · ${fmtBytes(probe.size)}` : ''}`;
+    const kind = (unknown ? 'Unknown · decided on start' : `${ADD_KINDS[category] || 'File'}${probe.size ? ` · ${fmtBytes(probe.size)}` : ''}`)
+      + (addThroughVpn(url) ? ' · VPN' : '');
     const dest = addDestOf(url);
     const own = Boolean(S.addOverrides[url]);
     return `<div class="add-where-row">${icon(ADD_ICONS[category] || 'download')}
@@ -1416,6 +1495,8 @@ function collectAddOptions() {
   put('referer', $('#add-referer').value);
   put('user-agent', $('#add-ua').value);
   put('all-proxy', $('#add-proxy').value);
+  // The manager takes "vpn" out; By site is what it does anyway.
+  if (S.addVpn && S.addVpn !== 'auto') options.vpn = S.addVpn;
   put('checksum', $('#add-checksum').value);
 
   const headers = $('#add-headers').value.split('\n').map((l) => l.trim()).filter(Boolean);
@@ -1739,6 +1820,7 @@ async function loadGlobalOptions() {
     }
     renderRouting();  // its "dir" field registers with the rest
     settingsChanged();
+    applyOptionFilter();
     return;
   }
 
@@ -1800,6 +1882,7 @@ function settingsChanged() {
     if (!sameOptionValue(now, original)) changes.push(`${label} ${optionWordsFor(key, original)} → ${optionWordsFor(key, now)}`);
   }
   if (S.routingDirty) changes.push('Folders & sorting');
+  if (S.vpnDirty) changes.push('VPN');
   const n = changes.length;
   $('#settings-savebar').hidden = n === 0;
   $('#settings-dirty').textContent = n === 1
@@ -1810,7 +1893,9 @@ function settingsChanged() {
 
 async function discardSettings() {
   S.routingDirty = false;
+  S.vpnDirty = false;
   await loadRouting();
+  await loadVpn();
   await loadGlobalOptions();
 }
 
@@ -1821,7 +1906,8 @@ function buildToc() {
   if (!toc) return;
   const sections = $$('#tab-settings [data-toc]');
   const errors = S.events.filter((e) => e.level === 'error').length;
-  toc.replaceChildren(...sections.filter(visibleInMode).map((el) => {
+  // While searching, only the sections that hold a match.
+  toc.replaceChildren(...sections.filter((el) => visibleInMode(el) && el.style.display !== 'none').map((el) => {
     const btn = document.createElement('button');
     btn.type = 'button';
     btn.className = 'nav';
@@ -1866,6 +1952,12 @@ function spyToc() {
   for (const btn of buttons) btn.classList.toggle('active', btn === current);
 }
 
+/* One search for every setting: aria2's options and the manager's own cards
+   (folders, sorting, VPN, the process, the log) alike, in both modes. A card
+   shows when its own words match (titles, labels, hints, chips, typed values)
+   or an option in it does. Simple searches what Simple shows and offers "N
+   more matches in Advanced"; switching is the user's choice, since it
+   rebuilds the fields. */
 function applyOptionFilter() {
   const needle = $('#opt-search').value.trim().toLowerCase();
   for (const [key, { wrap }] of S.optInputs) {
@@ -1877,6 +1969,26 @@ function applyOptionFilter() {
     const anyVisible = $$('.optfield', group).some((f) => f.style.display !== 'none');
     group.style.display = anyVisible ? '' : 'none';
   }
+  const said = (el) => `${el.textContent} ${$$('input, select', el).map((f) => f.value).join(' ')}`.toLowerCase();
+  for (const card of $$('#set-basics, #set-folders, #set-vpn, #set-proc, #set-log')) {
+    const optionShown = $$('.optfield', card).some((f) => f.style.display !== 'none' && f.offsetParent !== null);
+    const ownWords = said(card.querySelector('.card-head') || card) + ' ' + $$('.hint, .chip, .route-head', card).map(said).join(' ');
+    card.style.display = !needle || optionShown || ownWords.includes(needle) ? '' : 'none';
+  }
+  // Simple: what only Advanced would show.
+  const more = $('#search-more');
+  let extra = 0;
+  if (needle && S.settingsMode !== 'advanced') {
+    const simpleKeys = new Set(SIMPLE_OPTIONS.map(([key]) => key));
+    const labels = new Map(OPTION_GROUPS.flatMap(([, opts]) => opts.map(([key, label]) => [key, label])));
+    for (const key of new Set([...labels.keys(), ...Object.keys(S.globalOptions || {})])) {
+      if (!simpleKeys.has(key) && (key.includes(needle) || String(labels.get(key) || '').toLowerCase().includes(needle))) extra += 1;
+    }
+    for (const card of $$('#set-proc, #set-log')) if (said(card).includes(needle)) extra += 1;
+  }
+  more.hidden = extra === 0;
+  more.firstElementChild.textContent = extra === 1 ? '1 more match in Advanced' : `${extra} more matches in Advanced`;
+  buildToc();
 }
 
 async function saveGlobalOptions() {
@@ -1885,21 +1997,23 @@ async function saveGlobalOptions() {
     const value = read();
     if (!sameOptionValue(value, original)) options[key] = value;
   }
-  // One Save button for the page, so the folder card goes with it.
-  const routingChanged = S.routingDirty;
+  // One Save button for the page, so the folder and VPN cards go with it.
+  const cardsChanged = S.routingDirty || S.vpnDirty;
   if (!Object.keys(options).length) {
-    if (!routingChanged) { toast('Nothing changed'); return; }
+    if (!cardsChanged) { toast('Nothing changed'); return; }
     try {
       await saveRouting();
-      toast('Sorting saved', 'ok');
+      await saveVpn();
+      toast('Saved', 'ok');
     } catch (err) {
       toast(err.message, 'error');
     }
     return;
   }
-  if (routingChanged) {
+  if (cardsChanged) {
     try {
       await saveRouting();
+      await saveVpn();
     } catch (err) {
       toast(err.message, 'error');
     }
@@ -2000,6 +2114,7 @@ async function loadRouting() {
   } catch (err) {
     return;  // the card stays as it was; the options above still work
   }
+  S.routingSaved = structuredClone(S.routing);
   S.routingDirty = false;
   renderRouting();
 }
@@ -2017,11 +2132,19 @@ function renderRouting() {
   defaultHost.innerHTML = '';
   defaultHost.append(optionField('dir', 'Download folder', 'text', S.globalOptions.dir,
     'Where downloads go unless a type below sends them elsewhere.'));
+  // Dirty only while it differs from what the manager has, so putting a
+  // change back clears the save bar.
+  const dirty = () => {
+    const saved = S.routingSaved || {};
+    S.routingDirty = Boolean(data.enabled) !== Boolean(saved.enabled)
+      || !sameMap(data.folders, saved.folders) || !sameMap(data.extensions, saved.extensions);
+    settingsChanged();
+  };
   $('#route-enabled').checked = Boolean(data.enabled);
   $('#route-enabled').onchange = (e) => {
     data.enabled = e.target.checked;
-    S.routingDirty = true;
     $('#route-folders').classList.toggle('off', !data.enabled);
+    dirty();
   };
 
   /* One row per type: its folder, then the extensions that count as it, as
@@ -2029,7 +2152,6 @@ function renderRouting() {
   const host = $('#route-folders');
   host.classList.toggle('off', !data.enabled);
   host.innerHTML = '';
-  const dirty = () => { S.routingDirty = true; settingsChanged(); };
   for (const category of data.categories || Object.keys(data.folders || {})) {
     const row = document.createElement('div');
     row.className = 'route';
@@ -2093,6 +2215,19 @@ function renderRouting() {
   }
 }
 
+// Two maps of settings hold the same values: key order aside, a list compared
+// as a set, a missing key as an empty value. (DankBar: Units.sameMap.)
+function sameMap(a, b) {
+  a = a || {};
+  b = b || {};
+  return [...new Set([...Object.keys(a), ...Object.keys(b)])].every((k) => {
+    const x = a[k];
+    const y = b[k];
+    if (Array.isArray(x) || Array.isArray(y)) return [...(x || [])].sort().join('\n') === [...(y || [])].sort().join('\n');
+    return String(x ?? '') === String(y ?? '');
+  });
+}
+
 /* The same two-column row the option lists use, without an aria2 key behind it. */
 function optionFieldShell(label, desc) {
   const wrap = document.createElement('div');
@@ -2108,8 +2243,184 @@ async function saveRouting() {
   const { enabled, folders, extensions } = S.routing;
   const saved = await api('/api/routing', { method: 'POST', body: { enabled, folders, extensions } });
   S.routing = saved;
+  S.routingSaved = structuredClone(saved);
   S.routingDirty = false;
   renderRouting();
+  settingsChanged();
+  return saved;
+}
+
+/* ------------------------------------------------- when downloads finish */
+// Shut down or suspend once the downloads are done: a one-off the manager
+// keeps (afterall.py). The button wears it while it is set; the banner counts
+// its last minute down, second by second between the state's frames.
+const AFTER_WORDS = { shutdown: ['Shut down', 'Shutting down'], suspend: ['Suspend', 'Suspending'] };
+let afterTick = 0;
+
+function renderAfterAll() {
+  const after = S.state?.afterAll || {};
+  const btn = $('#btn-after');
+  btn.classList.toggle('is-active', Boolean(after.action));
+  btn.title = after.action ? `When downloads finish: ${AFTER_WORDS[after.action][0].toLowerCase()}` : 'When downloads finish…';
+  const banner = $('#after-banner');
+  banner.hidden = !after.deadline;
+  clearTimeout(afterTick);
+  if (!after.deadline) return;
+  const left = Math.max(0, Math.round(after.deadline - Date.now() / 1000));
+  $('#after-title').textContent = `${AFTER_WORDS[after.action]?.[1] || 'Shutting down'} in ${left} s`;
+  if (left > 0) afterTick = setTimeout(renderAfterAll, 1000);
+}
+
+function setAfterAll(action) {
+  const words = { '': 'Cancelled: nothing happens when downloads finish', shutdown: 'Will shut down when downloads finish',
+    suspend: 'Will suspend when downloads finish' };
+  act('/api/after-all', { method: 'POST', body: { action } }, words[action]).catch(() => {});
+}
+
+/* ------------------------------------------------------------------ vpn */
+async function loadVpn() {
+  try {
+    S.vpn = await api('/api/vpn');
+  } catch (err) {
+    return;
+  }
+  S.vpnDraft = { enabled: S.vpn.enabled, folder: S.vpn.folder, server: S.vpn.server, sites: [...S.vpn.sites] };
+  S.vpnDirty = false;
+  renderVpn();
+}
+
+// A config's name as the server menu shows it.
+const vpnServerName = (file) => String(file || '').replace(/\.conf$/i, '');
+
+// What the tunnel is doing, in words, and a tone for the dot before it.
+function vpnStatus(v) {
+  if (!v || !v.enabled) return ['Off. All downloads use your normal connection.', 'off'];
+  if (!v.installed) return ['wireproxy isn’t installed. Install it with: sudo pacman -S wireproxy', 'err'];
+  if (!v.servers?.length) return [`No WireGuard configs found in ${v.folder}. Add your Proton .conf files there.`, 'err'];
+  if (v.connected) return [`Connected via ${vpnServerName(v.server)}`, 'ok'];
+  if (v.running) return [`Connecting via ${vpnServerName(v.server)}…`, 'busy'];
+  return [`Not running${v.lastError ? `: ${v.lastError}` : ''}`, 'err'];
+}
+
+// Live with every state frame: the card's line, while the saved state is shown.
+function renderVpnStatus() {
+  const line = $('#vpn-status');
+  if (!line) return;
+  const live = S.state?.vpn || S.vpn;
+  const [text, tone] = S.vpnDirty
+    ? ['Unsaved changes. Save to apply them.', 'off']
+    : vpnStatus(live);
+  line.className = `vpn-status ${tone}`;
+  line.textContent = text;
+}
+
+function renderVpn() {
+  const d = S.vpnDraft;
+  if (!d) return;
+  // Dirty only while it differs from what the manager has, so putting a
+  // change back clears the save bar.
+  const dirty = () => {
+    const v = S.vpn || {};
+    S.vpnDirty = Boolean(d.enabled) !== Boolean(v.enabled) || (d.folder || '') !== (v.folder || '')
+      || (d.server || '') !== (v.server || '') || JSON.stringify(d.sites) !== JSON.stringify(v.sites || []);
+    settingsChanged();
+    renderVpnStatus();
+  };
+  $('#vpn-enabled').checked = Boolean(d.enabled);
+  $('#vpn-enabled').onchange = (e) => {
+    d.enabled = e.target.checked;
+    body.classList.toggle('off', !d.enabled);
+    dirty();
+  };
+  const body = $('#vpn-body');
+  body.classList.toggle('off', !d.enabled);
+  body.innerHTML = '';
+
+  // The server: one of the folder's .conf files.
+  const serverField = optionFieldShell('Server', 'Choose a WireGuard config from the folder below.');
+  const select = document.createElement('select');
+  const servers = S.vpn?.servers || [];
+  select.innerHTML = servers.length
+    ? servers.map((s) => `<option value="${escapeHtml(s)}"${s === d.server ? ' selected' : ''}>${escapeHtml(vpnServerName(s))}</option>`).join('')
+    : '<option value="">No configs found</option>';
+  select.disabled = !servers.length;
+  select.addEventListener('change', () => { d.server = select.value; dirty(); });
+  serverField.append(select);
+
+  // The folder of configs; a change lists its files once saved.
+  const folderField = optionFieldShell('Config folder', 'One .conf file per server. In Proton, get them from Downloads → WireGuard configuration.');
+  const folderRow = document.createElement('div');
+  folderRow.className = 'row';
+  const folder = document.createElement('input');
+  folder.value = d.folder || '';
+  folder.spellcheck = false;
+  folder.addEventListener('input', () => { d.folder = folder.value.trim(); dirty(); });
+  const choose = document.createElement('button');
+  choose.type = 'button';
+  choose.className = 'btn btn-sm';
+  choose.innerHTML = `${icon('folder')}Choose…`;
+  choose.addEventListener('click', async () => {
+    try {
+      const out = await api('/api/pick-folder', { method: 'POST', body: { start: d.folder } });
+      if (out.path) { d.folder = out.path; folder.value = out.path; dirty(); }
+    } catch (err) {
+      toast(err.message, 'error');
+    }
+  });
+  folderRow.append(folder, choose);
+  folderField.append(folderRow);
+
+  // The sites whose downloads use it, as chips: × takes one off, typing and
+  // Enter puts one on (a link pasted in becomes its site).
+  const sitesField = optionFieldShell('Sites that use the VPN', 'Downloads from these sites, including their subdomains, use the VPN unless set to Direct.');
+  const chips = document.createElement('div');
+  chips.className = 'chiprow vpn-sites';
+  const paint = () => {
+    const nodes = d.sites.map((site) => {
+      const chip = document.createElement('span');
+      chip.className = 'chip removable';
+      chip.textContent = site;
+      const x = document.createElement('button');
+      x.type = 'button';
+      x.className = 'x';
+      x.textContent = '×';
+      x.setAttribute('aria-label', `Remove ${site}`);
+      x.addEventListener('click', () => { d.sites = d.sites.filter((s) => s !== site); paint(); dirty(); });
+      chip.append(x);
+      return chip;
+    });
+    const add = document.createElement('input');
+    add.className = 'chip-input';
+    add.placeholder = '+ add site';
+    add.setAttribute('aria-label', 'Add a site');
+    const take = () => {
+      const items = add.value.split(/[\s,]+/).map(vpnSiteOf).filter(Boolean);
+      if (!items.length) return;
+      d.sites = [...new Set([...d.sites, ...items])];
+      paint();
+      dirty();
+      chips.querySelector('.chip-input')?.focus();
+    };
+    add.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ',') { e.preventDefault(); take(); }
+    });
+    add.addEventListener('blur', take);
+    chips.replaceChildren(...nodes, add);
+  };
+  paint();
+  sitesField.append(chips);
+
+  body.append(serverField, folderField, sitesField);
+  renderVpnStatus();
+}
+
+async function saveVpn() {
+  if (!S.vpnDirty || !S.vpnDraft) return null;
+  const saved = await api('/api/vpn', { method: 'POST', body: S.vpnDraft });
+  S.vpn = saved;
+  S.vpnDraft = { enabled: saved.enabled, folder: saved.folder, server: saved.server, sites: [...saved.sites] };
+  S.vpnDirty = false;
+  renderVpn();
   settingsChanged();
   return saved;
 }
@@ -2343,6 +2654,8 @@ const ACTION_LABEL = {
   set_option: 'Change its options',
   stop: 'Pause and leave paused',
   log_only: 'Only log it',
+  extract: 'Extract it',
+  run: 'Run a command',
 };
 const ACTIONS = Object.keys(ACTION_LABEL);
 const actionLabel = (value) => ACTION_LABEL[value] || String(value || '').replace(/_/g, ' ');
@@ -2368,6 +2681,8 @@ const ACTION_WORDS = {
   set_option: 'change its options',
   stop: 'pause it and leave it paused',
   log_only: 'only log it',
+  extract: 'extract it',
+  run: 'run a command',
 };
 const ACTION_DONE = {
   pause_resume: 'paused and resumed',
@@ -2376,12 +2691,20 @@ const ACTION_DONE = {
   set_option: 'options changed',
   stop: 'paused',
   log_only: 'logged',
+  extract: 'extracted',
+  run: 'command run',
 };
 const RESUMES = new Set(['pause_resume', 'force_pause_resume']);
 
 // The editor's choices (board 2), worded as the DankBar's (dms-plugin/lib/Rules.js).
 const RULE_STATUSES = [['active', 'Active'], ['waiting', 'Queued'], ['paused', 'Paused']];
 const RULE_ACTIONS = ['pause_resume', 'force_pause_resume', 'restart', 'set_option', 'stop', 'log_only'];
+// An action that fires when a download finishes (the manager's finishing.py).
+const FINISH_ACTIONS = ['extract', 'run', 'log_only'];
+const isFinishRule = (rule) => rule?.when?.event === 'finished';
+// The file types a finish rule can be limited to, by the sorting lists.
+const RULE_KINDS = [['', 'Any'], ['archive', 'Archives'], ['video', 'Video'], ['music', 'Music'], ['image', 'Images']];
+const KIND_NOUNS = { archive: 'an archive', video: 'a video', music: 'a music file', image: 'an image' };
 
 // The optional limits, one row each once set:
 // [path, label, unit, value it starts at, 'number' | 'text', step]
@@ -2417,6 +2740,13 @@ function ruleProblems(rule, otherNames) {
   const name = String(rule.name || '').trim();
   if (!name) out.name = 'Give it a name';
   else if (otherNames.includes(name)) out.name = 'Another action has this name';
+  if (isFinishRule(rule)) {
+    if (rule.action === 'run' && !String(rule.command || '').trim()) out.command = 'Enter a command';
+    if (!blank(when.name_matches)) {
+      try { new RegExp(when.name_matches); } catch { out['when.name_matches'] = 'Not a valid pattern'; }
+    }
+    return out;
+  }
   if (!(when.statuses || ['active']).length) out['when.statuses'] = 'Pick at least one';
   const speed = blank(when.speed_below) ? when.speed_above : when.speed_below;
   if (!blank(speed) && !(Number(speed) > 0)) out['when.speed'] = 'Must be more than 0';
@@ -2485,6 +2815,9 @@ const RULE_TEMPLATES = [
     name: 'Dead torrent', enabled: true, description: 'Start a torrent over when it stops getting data',
     when: { statuses: ['active'], torrent_only: true, speed_below: 1024, for_seconds: 120, min_progress: 5 },
     action: 'restart', cooldown_seconds: 600, max_triggers: 3 } },
+  { icon: 'zip', title: 'Extract archives when done', rule: {
+    name: 'Extract archives', enabled: true, description: 'Extract archives as soon as they finish downloading',
+    when: { event: 'finished', kinds: ['archive'] }, action: 'extract', delete_archive: false } },
   { icon: 'down', title: 'Slow down big files', rule: {
     name: 'Slow ISOs', enabled: true, description: 'Keep disk images from taking the whole line',
     when: { statuses: ['active'], name_matches: '\\.iso$', speed_above: 2097152, for_seconds: 5 },
@@ -2506,6 +2839,17 @@ function optionWords(options) {
 // "Under 50 KiB/s for 3 s → pause, then resume it after 1.5 s"
 function ruleSummary(rule) {
   const when = rule.when || {};
+  if (isFinishRule(rule)) {
+    // "When an archive finishes → extract it, then delete the archive"
+    const kind = (when.kinds || [])[0];
+    let what = KIND_NOUNS[kind] || (when.torrent_only ? 'a torrent' : when.http_only ? 'a normal download' : 'a download');
+    if (kind && when.torrent_only) what += ' from a torrent';
+    if (when.name_matches) what += ` named /${when.name_matches}/`;
+    let action = ACTION_WORDS[rule.action] || actionLabel(rule.action);
+    if (rule.action === 'extract' && rule.delete_archive) action += ', then delete the archive';
+    if (rule.action === 'run' && rule.command) action = `run ${rule.command}`;
+    return `When ${what} finishes → ${action}`;
+  }
   const lead = [];
   if (when.torrent_only) lead.push('Torrents');
   else if (when.http_only) lead.push('Normal downloads');
@@ -2883,9 +3227,11 @@ function ruleForm(rule, index, card) {
     return box;
   };
 
+  const finishing = isFinishRule(rule);
   // ---- applies to
   const applies = group('Applies to');
   const statuses = rule.when.statuses || ['active'];
+  if (!finishing) {
   const chips = el('div', 'fchips');
   for (const [value, label] of RULE_STATUSES) {
     const on = statuses.includes(value);
@@ -2899,6 +3245,25 @@ function ruleForm(rule, index, card) {
     chips.append(chip);
   }
   row(applies, 'Downloads that are', ['when.statuses'], ['when.statuses'], chips);
+  } else {
+    // A finished download has no status to pick; its file type instead.
+    const current = (rule.when.kinds || [])[0] || '';
+    const types = el('div', 'seg seg-sm');
+    types.setAttribute('role', 'group');
+    types.setAttribute('aria-label', 'File type');
+    for (const [value, label] of RULE_KINDS) {
+      const btn = el('button', '', label);
+      btn.type = 'button';
+      btn.setAttribute('aria-pressed', String(value === current));
+      btn.addEventListener('click', () => {
+        if (value) rule.when.kinds = [value];
+        else delete rule.when.kinds;
+        touch(true);
+      });
+      types.append(btn);
+    }
+    row(applies, 'File type', ['when.kinds'], [], types);
+  }
   const kind = rule.when.torrent_only ? 1 : rule.when.http_only ? 2 : 0;
   const seg = el('div', 'seg seg-sm');
   seg.setAttribute('role', 'group');
@@ -2918,8 +3283,38 @@ function ruleForm(rule, index, card) {
   });
   row(applies, 'Kind', ['when.torrent_only', 'when.http_only'], [], seg);
 
-  // ---- trigger
+  // ---- trigger: a speed (or connections) held for a while, or finishing.
   const trigger = group('Trigger');
+  const fires = el('div', 'seg seg-sm');
+  fires.setAttribute('role', 'group');
+  fires.setAttribute('aria-label', 'Trigger type');
+  ['Speed', 'On finish'].forEach((label, i) => {
+    const btn = el('button', '', label);
+    btn.type = 'button';
+    btn.setAttribute('aria-pressed', String((i === 1) === finishing));
+    btn.addEventListener('click', () => {
+      if ((i === 1) === finishing) return;
+      // Keep what both kinds share (torrents or not, the name); the rest
+      // starts over as the other kind's sensible default.
+      const keep = {};
+      for (const k of ['torrent_only', 'http_only', 'name_matches']) if (k in rule.when) keep[k] = rule.when[k];
+      for (const k of ['resume_after_seconds', 'cooldown_seconds', 'max_triggers', 'options', 'delete_archive', 'command']) delete rule[k];
+      if (i === 1) {
+        rule.when = { event: 'finished', kinds: ['archive'], ...keep };
+        rule.action = 'extract';
+      } else {
+        rule.when = { statuses: ['active'], speed_below: 51200, for_seconds: 3, ...keep };
+        rule.action = 'pause_resume';
+        rule.resume_after_seconds = 1.5;
+      }
+      touch(true);
+    });
+    fires.append(btn);
+  });
+  row(trigger, 'Type', ['when.event'], [], fires);
+  if (finishing) {
+    trigger.append(words('Runs once for each download, as soon as it finishes: when aria2 completes it, or when a torrent starts seeding.', 'hint'));
+  }
   const above = blank(rule.when.speed_below) && !blank(rule.when.speed_above);
   const speedKey = above ? 'speed_above' : 'speed_below';
   const cmp = select(['below', 'above'], above ? 1 : 0, (i) => {
@@ -2935,15 +3330,28 @@ function ruleForm(rule, index, card) {
     if (v !== '') rule.when[speedKey] = v;
     touch(false);
   });
-  row(trigger, 'Speed stays', ['when.speed_below', 'when.speed_above'], ['when.speed'], cmp, speed);
-  row(trigger, 'For at least', ['when.for_seconds'], ['when.for_seconds'],
-    stepper('when.for_seconds', { fallback: '0' }), words('seconds'));
+  if (!finishing) {
+    row(trigger, 'Speed stays', ['when.speed_below', 'when.speed_above'], ['when.speed'], cmp, speed);
+    row(trigger, 'For at least', ['when.for_seconds'], ['when.for_seconds'],
+      stepper('when.for_seconds', { fallback: '0' }), words('seconds'));
+  }
 
   // ---- then
   const then = group('Then');
   const action = rule.action || 'pause_resume';
+  const choices = finishing ? FINISH_ACTIONS : RULE_ACTIONS;
   row(then, 'Do', ['action'], [],
-    select(RULE_ACTIONS.map(actionLabel), RULE_ACTIONS.indexOf(action), (i) => set('action', RULE_ACTIONS[i], true), 'action', 'fwide'));
+    select(choices.map(actionLabel), Math.max(0, choices.indexOf(action)), (i) => set('action', choices[i], true), 'action', 'fwide'));
+  if (finishing && action === 'extract') {
+    const { box, input } = boolSwitch(Boolean(rule.delete_archive), false);
+    input.addEventListener('change', () => set('delete_archive', input.checked || ''));
+    row(then, 'Archive', ['delete_archive'], [], box, words('Delete after extracting'));
+    then.append(words('An archive with a single top-level folder is extracted as that folder; otherwise its files go into a new folder named after it. Password-protected archives are skipped.', 'hint'));
+  }
+  if (finishing && action === 'run') {
+    row(then, 'Command', ['command'], ['command'], textField('command', 'notify-send "Downloaded" {name}', 'fmono fwide'));
+    then.append(words('{path}, {dir} and {name} are replaced with the download’s path, folder and name (quoted). They’re also available as ARIA_PATH, ARIA_DIR and ARIA_NAME.', 'hint'));
+  }
   if (RESUMES.has(action)) {
     const zero = Number(rule.resume_after_seconds || 0) === 0;
     row(then, 'Resume after', ['resume_after_seconds'], ['resume_after_seconds'],
@@ -2988,11 +3396,12 @@ function ruleForm(rule, index, card) {
     row(then, '', [], ['options'], add);
   }
 
-  // ---- limits
+  // ---- limits (a finish rule fires once anyway: only the name is left)
   const limits = group('Limits');
-  const set_ = RULE_LIMITS.filter(([path]) => limitSet(rule, path));
-  const unset = RULE_LIMITS.filter(([path]) => !limitSet(rule, path));
-  if (!set_.length) limits.append(words('None: it may run on any download, any number of times.', 'hint'));
+  const available = finishing ? RULE_LIMITS.filter(([path]) => path === 'when.name_matches') : RULE_LIMITS;
+  const set_ = available.filter(([path]) => limitSet(rule, path));
+  const unset = available.filter(([path]) => !limitSet(rule, path));
+  if (!set_.length) limits.append(words(finishing ? 'None. Applies to every matching download.' : 'None. It can run on any download, any number of times.', 'hint'));
   for (const [path, label, unit, , kindOf, step] of set_) {
     const control = kindOf === 'text' ? textField(path, '', 'fmono')
       : stepper(path, { step, max: path.includes('progress') ? 100 : 0 });
@@ -3007,7 +3416,10 @@ function ruleForm(rule, index, card) {
       const r = add.getBoundingClientRect();
       popMenu(r.left, r.bottom + 4, unset.map(([path, label, unit, start]) => ['add', `${label} · ${unit}`, () => set(path, start, true)]));
     });
-    row(limits, '', [], [], add);
+    // Under the limit rows it lines up with their controls; with none set it
+    // starts at the left, under "None.", with the whole width for its list.
+    if (set_.length) row(limits, '', [], [], add);
+    else limits.append(add);
   }
 
   // ---- note
@@ -3113,7 +3525,7 @@ function renderBulkBar() {
   $('#bulk-pause').disabled = !live;
   $('#bulk-resume').disabled = !live;
   $('#bulk-remove').disabled = !n;
-  $('#bulk-remove').title = live ? 'Remove the selected downloads' : 'Forget the selected (files stay)';
+  $('#bulk-remove').title = live ? 'Remove the selected downloads' : 'Forget the selected entries (files are kept)';
   const visible = visibleDownloads().length + visiblePast().length;
   $('#bulk-all').textContent = n && n >= visible ? 'None' : 'All';
 }
@@ -3177,7 +3589,7 @@ function switchTab(name) {
   $$('.rail [data-filter]').forEach((t) => t.classList.toggle('active', name === 'downloads' && t.dataset.filter === S.filter));
   document.body.dataset.tab = name;
   $$('.tabpane').forEach((p) => p.classList.toggle('active', p.id === `tab-${name}`));
-  if (name === 'settings') { loadGlobalOptions(); loadRouting(); }
+  if (name === 'settings') { loadGlobalOptions(); loadRouting(); loadVpn(); }
   if (name === 'rules') loadRules();
 }
 
@@ -3300,11 +3712,30 @@ function init() {
     post(pause ? '/api/global/pause-all' : '/api/global/resume-all', null,
       pause ? 'Paused everything' : 'Resumed everything');
   });
-  $('#btn-purge').addEventListener('click', () => act('/api/global/purge', { method: 'POST' }, 'Cleared finished and failed'));
+  $('#btn-after').addEventListener('click', () => {
+    const r = $('#btn-after').getBoundingClientRect();
+    const now = S.state?.afterAll?.action || '';
+    const mark = (value) => (value === now ? 'check' : 'none');
+    popMenu(r.left, r.bottom + 4, [
+      'When downloads finish',
+      [mark(''), 'Do nothing', () => setAfterAll('')],
+      [mark('suspend'), 'Suspend', () => setAfterAll('suspend')],
+      [mark('shutdown'), 'Shut down', () => setAfterAll('shutdown')],
+    ]);
+  });
+  $('#after-cancel').addEventListener('click', () => setAfterAll(''));
+  // Clearing asks first: one stray click would empty the list.
+  $('#btn-purge').addEventListener('click', async () => {
+    const count = (S.state?.counts?.stopped || 0) + pastEntries().length;
+    if (!confirm(`Clear ${count} finished and failed ${count === 1 ? 'download' : 'downloads'} from the list? Their files stay on disk.`)) return;
+    await act('/api/global/purge', { method: 'POST' }, 'Cleared finished and failed');
+    loadHistory();
+  });
 
   $('#btn-opt-reload').addEventListener('click', loadGlobalOptions);
   $('#btn-opt-save').addEventListener('click', saveGlobalOptions);
   $('#opt-search').addEventListener('input', applyOptionFilter);
+  $('#search-more button').addEventListener('click', () => setSettingsMode('advanced'));
   $('#btn-restart-aria2').addEventListener('click', async () => {
     if (!confirm('Restart aria2c? Active downloads pause and pick up again from the session file.')) return;
     await act('/api/aria2/restart', { method: 'POST' }, 'aria2c restarted');

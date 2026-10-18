@@ -127,6 +127,42 @@ async def float_window(title_part: str, width: int = 0, height: int = 0,
     return ""
 
 
+#: The widths the DankBar window's column can open at, tiled.
+COLUMN_WIDTHS = {"half": "50%", "two-thirds": "66.667%", "full": "100%"}
+
+
+async def size_column(title_part: str, width: str, exact: bool = True) -> dict:
+    """Give a newly tiled window's column a width: half, two thirds or full.
+
+    For the DankBar window set to open tiled. niri sizes the window's column
+    (set-window-width works on a tiled window by its id, nothing focused).
+    Hyprland has no columns: there only "full" does anything, and the window
+    is maximized. Returns which compositor did it ("" for none) and whether
+    the window ended up maximized.
+    """
+    value = COLUMN_WIDTHS.get(str(width or ""))
+    if not value or not title_part.strip():
+        return {"by": "", "maximized": False}
+    escaped = re.escape(title_part.strip())
+    title = re.compile(f"^{escaped}$" if exact else escaped)
+
+    env = niri_env()
+    if env:
+        window = await _find(["niri", "msg", "-j", "windows"], env, title, "title")
+        if window and window.get("id") is not None:
+            await _run(["niri", "msg", "action", "set-window-width", "--id", str(window["id"]), value], env)
+            return {"by": "niri", "maximized": False}
+
+    env = hyprland_env()
+    if env and width == "full":
+        window = await _find(["hyprctl", "-j", "clients"], env, title, "title")
+        if window and window.get("address"):
+            await _run(["hyprctl", "dispatch", "focuswindow", f"address:{window['address']}"], env)
+            await _run(["hyprctl", "dispatch", "fullscreen", "1"], env)
+            return {"by": "hyprland", "maximized": True}
+    return {"by": "", "maximized": False}
+
+
 #: niri window id -> (width, height, position in the workspace view or None)
 #: it had before we filled the screen with it.
 _unfilled: dict[int, tuple[int, int, list | None]] = {}

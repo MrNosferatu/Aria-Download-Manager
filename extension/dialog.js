@@ -22,6 +22,8 @@ const D = {
   payload: null,
   kind: 'file',
   probe: null,
+  // The VPN switch, once flipped: 'on' or 'off' for this download.
+  vpnChoice: '',
   defaultDir: '',
   // Torrent state
   gid: '',
@@ -243,6 +245,21 @@ async function showFile() {
   $('subtitle').textContent = facts.join(' · ');
   $('subtitle').title = [p.url, mime, probe.error].filter(Boolean).join('\n');
 
+  // The VPN: shown while it is on, starting where the site list puts it.
+  if (probe.vpnEnabled) {
+    $('f-vpn-row').hidden = false;
+    $('f-vpn').checked = Boolean(probe.vpn);
+    const host = hostOf(p.url) || 'This site';
+    const say = () => {
+      const listed = Boolean(probe.vpn);
+      $('f-vpn-hint').textContent = $('f-vpn').checked === listed
+        ? (listed ? `${host} is on the VPN site list.` : `${host} isn’t on the VPN site list.`)
+        : ($('f-vpn').checked ? 'Just this download uses the VPN; its site isn’t on the list.' : 'Just this download connects directly.');
+    };
+    $('f-vpn').addEventListener('change', () => { D.vpnChoice = $('f-vpn').checked ? 'on' : 'off'; say(); });
+    say();
+  }
+
   if (pageInsteadOfFile(nameInput.value, p.mime, probe)) {
     // The manager would only save that page: steer to the browser.
     $('f-page').hidden = false;
@@ -274,6 +291,8 @@ async function submitFile(later) {
   if ($('f-conn').value.trim()) options['max-connection-per-server'] = $('f-conn').value.trim();
   if ($('f-split').value.trim()) options.split = $('f-split').value.trim();
   if ($('f-limit').value.trim()) options['max-download-limit'] = `${$('f-limit').value.trim()}${$('f-limit-unit').value}`;
+  // Only once flipped: untouched, the manager goes by the site list anyway.
+  if (D.vpnChoice) options.vpn = D.vpnChoice;
   const dir = folderOf('f').trim();
   const name = $('f-name').value.trim();
   await call('POST', '/api/intake/add', {

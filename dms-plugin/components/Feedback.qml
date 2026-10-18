@@ -117,7 +117,7 @@ Rectangle {
                 anchors.centerIn: parent
                 text: "Undo"
                 font.pixelSize: Theme.fontSizeSmall
-                font.weight: Font.Bold
+                font.weight: Font.DemiBold
                 color: Theme.inversePrimary
             }
 

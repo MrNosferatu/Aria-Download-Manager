@@ -102,9 +102,16 @@ fi
 optional=()
 have qbittorrent-nox && note "qbittorrent-nox found" || optional+=(qbittorrent-nox)
 have ffmpeg && note "ffmpeg         found" || optional+=(ffmpeg)
+# The download-only VPN's WireGuard client; packaged on Arch.
+if have wireproxy; then
+  note "wireproxy      found"
+elif [[ "$pm" == pacman ]]; then
+  optional+=(wireproxy)
+fi
 if ((${#optional[@]})); then
   note "Optional: qbittorrent-nox gives torrents real per-file priorities;"
-  note "ffmpeg saves streamed video (HLS/DASH) from the page's Download button."
+  note "ffmpeg saves streamed video (HLS/DASH) from the page's Download button;"
+  note "wireproxy runs the VPN for downloads only (Settings → VPN)."
   if [[ -n "$pm" ]] && ask "Install ${optional[*]} too?"; then
     install_pkgs "${optional[@]}"
   fi

@@ -30,7 +30,7 @@ var GLOBAL = [
         "id": "purge",
         "icon": "cleaning_services",
         "label": "Clear finished",
-        "tooltip": "Clear finished and failed from the list",
+        "tooltip": "Clear finished and failed downloads from the list (files are kept)",
         "path": "/api/global/purge",
         "ok": "Cleared finished and failed"
     }

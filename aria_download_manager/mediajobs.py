@@ -51,6 +51,8 @@ class MediaJob:
         self.out_time = 0.0
         self.speed = ""
         self.error = ""
+        #: The VPN's HTTP proxy when it fetches through the VPN (vpn.py).
+        self.proxy: str | None = None
         self.started_at = time.time()
         self.finished_at: float | None = None
         self.proc: asyncio.subprocess.Process | None = None
@@ -109,7 +111,8 @@ class MediaJobs:
         return shutil.which("ffprobe")
 
     # ---- probing --------------------------------------------------------
-    async def duration_of(self, url: str, headers: dict[str, str]) -> float | None:
+    async def duration_of(self, url: str, headers: dict[str, str],
+                          proxy: str | None = None) -> float | None:
         """How long the stream is, so progress can be a percentage.
 
         Without this a job can only report elapsed output time, which tells the
@@ -123,6 +126,8 @@ class MediaJobs:
             argv += ["-headers", blob]
         if ua := headers.get("User-Agent"):
             argv += ["-user_agent", ua]
+        if proxy:
+            argv += ["-http_proxy", proxy]
         argv += [url]
         try:
             proc = await asyncio.create_subprocess_exec(
@@ -138,10 +143,11 @@ class MediaJobs:
 
     # ---- running --------------------------------------------------------
     def start(self, variant: dict, name: str, directory: str,
-              headers: dict[str, str] | None = None) -> MediaJob:
+              headers: dict[str, str] | None = None, proxy: str | None = None) -> MediaJob:
         job_id = uuid.uuid4().hex[:12]
         path = Path(directory).expanduser() / name
         job = MediaJob(job_id, name, path, variant)
+        job.proxy = proxy
         self.jobs[job_id] = job
         asyncio.create_task(self._run(job, headers or {}))
         self._trim()
@@ -160,6 +166,8 @@ class MediaJobs:
                 part += ["-headers", blob]
             if ua := headers.get("User-Agent"):
                 part += ["-user_agent", ua]
+            if job.proxy:
+                part += ["-http_proxy", job.proxy]
             return part + ["-i", url]
 
         argv += source(variant["url"])
@@ -193,7 +201,7 @@ class MediaJobs:
         async with self._sem:
             if job.status == "cancelled":
                 return
-            job.duration = await self.duration_of(job.variant["url"], headers)
+            job.duration = await self.duration_of(job.variant["url"], headers, job.proxy)
             job.status = "running"
             job.path.parent.mkdir(parents=True, exist_ok=True)
             argv = self._argv(job, headers)

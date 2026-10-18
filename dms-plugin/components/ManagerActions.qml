@@ -47,8 +47,11 @@ Row {
         onClicked: actions.service.post(actions.flipAction.path, null, actions.flipAction.ok)
     }
 
+    //: Clearing asks first: one stray click would empty the list.
     DankActionButton {
-        readonly property int count: actions.usable ? actions.service.stoppedCount : 0
+        id: purgeButton
+
+        readonly property int count: actions.usable ? actions.service.clearableCount : 0
 
         visible: actions.connected
         iconName: actions.purgeAction.icon
@@ -58,7 +61,68 @@ Row {
         iconColor: Theme.surfaceText
         enabled: count > 0
         opacity: enabled ? 1 : 0.4
-        onClicked: actions.service.post(actions.purgeAction.path, null, actions.purgeAction.ok)
+        onClicked: purgeConfirm.toggle()
+
+        MenuPopup {
+            id: purgeConfirm
+
+            alignEnd: true
+            menuWidth: 250
+            entries: [{
+                    "heading": "Clear " + purgeButton.count + (purgeButton.count === 1 ? " download?" : " downloads?")
+                }, {
+                    "icon": actions.purgeAction.icon,
+                    "text": "Clear from the list",
+                    "detail": "files are kept",
+                    "danger": true
+                }, {
+                    "icon": "close",
+                    "text": "Cancel"
+                }]
+            onTriggered: index => {
+                if (index === 1)
+                    actions.service.clearFinished()
+            }
+        }
+    }
+
+    //: When the downloads finish: shut down, suspend, or nothing (a one-off);
+    //: tinted while one is set.
+    DankActionButton {
+        readonly property string armed: actions.connected ? (actions.service.afterAll.action || "") : ""
+
+        visible: actions.connected
+        iconName: armed === "suspend" ? "bedtime" : "power_settings_new"
+        tooltipText: armed ? "When downloads finish: " + (armed === "shutdown" ? "shut down" : "suspend") : "When downloads finish…"
+        buttonSize: 36
+        iconSize: 20
+        iconColor: armed ? Theme.primary : Theme.surfaceText
+        onClicked: afterMenu.toggle()
+
+        MenuPopup {
+            id: afterMenu
+
+            readonly property string armed: parent.armed
+
+            alignEnd: true
+            menuWidth: 230
+            entries: [{
+                    "heading": "When downloads finish"
+                }, {
+                    "icon": "block",
+                    "text": "Do nothing",
+                    "checked": armed === ""
+                }, {
+                    "icon": "bedtime",
+                    "text": "Suspend",
+                    "checked": armed === "suspend"
+                }, {
+                    "icon": "power_settings_new",
+                    "text": "Shut down",
+                    "checked": armed === "shutdown"
+                }]
+            onTriggered: index => actions.service.setAfterAll(["", "", "suspend", "shutdown"][index])
+        }
     }
 
     Rectangle {

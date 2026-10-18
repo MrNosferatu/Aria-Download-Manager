@@ -41,6 +41,17 @@
       </div>
       <input id="f-dir-custom" placeholder="/path/to/folder" spellcheck="false" hidden>
     </div>
+    <!-- With the VPN on in Settings: starts where its site list puts this
+         link; flipping it decides for this download alone. -->
+    <div class="opts" id="f-vpn-row" hidden>
+      <label class="setting" for="f-vpn">
+        <span class="text">
+          <span class="label">Use the VPN</span>
+          <span id="f-vpn-hint" class="hint"></span>
+        </span>
+        <span class="switch"><input type="checkbox" id="f-vpn"><span class="track"><span class="knob"></span></span></span>
+      </label>
+    </div>
     <details id="f-more">
       <summary>Connections and speed <span id="f-more-sum" class="dim"></span></summary>
       <div class="grid3">

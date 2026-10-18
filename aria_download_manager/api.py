@@ -16,7 +16,7 @@ from urllib.parse import unquote
 from typing import Any, Callable
 
 import aiohttp
-from fastapi import Body, FastAPI, HTTPException, Request
+from fastapi import Body, FastAPI, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
@@ -34,6 +34,10 @@ from .timeline import Timeline
 from . import priorities as priority
 from . import compositor
 from . import qbittorrent as qbt
+from . import vpn as vpn_mod
+from .finishing import Finisher
+from .afterall import AfterAll
+from .config import DEFAULT_STATE_DIR
 from . import routing as routing_mod
 from . import seeding
 
@@ -106,6 +110,7 @@ class MediaProbeRequest(BaseModel):
     referer: str | None = None
     cookie: str | None = None
     user_agent: str | None = None
+    vpn: str = "auto"
     #: What the response claimed to be, when the sniffer saw it.
     content_type: str | None = None
     title: str | None = None
@@ -124,6 +129,7 @@ class MediaDownloadRequest(BaseModel):
     user_agent: str | None = None
     content_type: str | None = None
     title: str | None = None
+    vpn: str = "auto"
 
 
 class BulkRequest(BaseModel):
@@ -153,6 +159,31 @@ class ProbeRequest(BaseModel):
     referer: str | None = None
     cookie: str | None = None
     userAgent: str | None = None
+    #: The dialog's VPN choice for this link: auto, on or off.
+    vpn: str = "auto"
+
+
+class VpnRequest(BaseModel):
+    enabled: bool | None = None
+    folder: str | None = None
+    server: str | None = None
+    sites: list[str] | None = None
+
+
+class ColumnRequest(BaseModel):
+    title: str
+    exact: bool = True
+    #: "half", "two-thirds" or "full".
+    width: str
+
+
+class DownloadVpnRequest(BaseModel):
+    on: bool
+
+
+class AfterAllRequest(BaseModel):
+    #: "shutdown", "suspend", or "" to do nothing (cancels a countdown too).
+    action: str = ""
 
 
 class OpenRequest(BaseModel):
@@ -370,6 +401,14 @@ def create_app(cfg: Config) -> FastAPI:
         cfg, rpc, lambda level, message, **kw: store.add_event(level, message, **kw))
     router = routing_mod.Router(
         cfg, rpc, lambda level, message, **kw: store.add_event(level, message, **kw))
+    # The finish rules' extracting and commands (finishing.py), and the file
+    # types they can be limited to, by the same lists sorting uses.
+    finisher = Finisher(lambda level, message, **kw: store.add_event(level, message, **kw))
+    engine.finisher = finisher
+    engine.category_of = router.category_of
+    # Shut down or suspend once everything is done: a one-off (afterall.py).
+    after_all = AfterAll(cfg, store, finisher,
+                         lambda level, message, **kw: store.add_event(level, message, **kw))
 
     def prepare_add(options: dict, uris=None, torrent=None) -> dict:
         return router.apply(download_only.prepare(options), uris=uris, torrent=torrent)
@@ -382,6 +421,9 @@ def create_app(cfg: Config) -> FastAPI:
 
     # Torrents go to qBittorrent when it is up (see qbittorrent.py).
     qb = qbt.QBEngine(cfg, lambda level, message, **kw: store.add_event(level, message, **kw))
+    # Downloads through a VPN, each by its own choice or its site (vpn.py).
+    vpn = vpn_mod.Vpn(cfg, DEFAULT_STATE_DIR,
+                      lambda level, message, **kw: store.add_event(level, message, **kw))
     qb.prepare_torrent = lambda options, data: router.apply(options, torrent=data)
     poller.sources.append(qb.poll)
     poller.extras["qbittorrent"] = qb.public_state
@@ -474,6 +516,11 @@ def create_app(cfg: Config) -> FastAPI:
     # had used it: media jobs ride along with every state frame, so both
     # front-ends see them without polling anything new.
     poller.extras["media"] = media_jobs.public_state
+    poller.extras["vpn"] = vpn.status
+    poller.extras["finishing"] = finisher.public_state
+    poller.extras["afterAll"] = after_all.status
+    poller.observers.append(after_all.observe)
+    poller.observers.append(lambda snapshot: vpn.observe(snapshot, rpc))
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -498,6 +545,7 @@ def create_app(cfg: Config) -> FastAPI:
             except Exception as exc:
                 store.add_event("error", f"Could not cap torrent uploads: {exc}")
         await qb.start()
+        await vpn.start()
         poller.start()
         store.add_event("info", f"IPC socket listening at {ipc.path}")
         try:
@@ -510,6 +558,7 @@ def create_app(cfg: Config) -> FastAPI:
             timeline.save(force=True)
             await poller.stop()
             await qb.stop()
+            await vpn.stop()
             await supervisor.stop()
             await rpc.close()
 
@@ -525,6 +574,9 @@ def create_app(cfg: Config) -> FastAPI:
     app.state.media_jobs = media_jobs
     app.state.ipc = ipc
     app.state.qb = qb
+    app.state.vpn = vpn
+    app.state.finisher = finisher
+    app.state.after_all = after_all
 
     @app.exception_handler(qbt.QBError)
     async def qbittorrent_error_handler(request: Request, exc: qbt.QBError):
@@ -619,17 +671,21 @@ def create_app(cfg: Config) -> FastAPI:
                 rest.append(uri)
         return gids, rest
 
-    async def _probe_link(url: str, headers: dict[str, str], seconds: float = 15) -> dict[str, Any]:
-        """A HEAD (or a one-byte ranged GET) for a link's size, name and kind."""
+    async def _probe_link(url: str, headers: dict[str, str], seconds: float = 15,
+                          proxy: str | None = None) -> dict[str, Any]:
+        """A HEAD (or a one-byte ranged GET) for a link's size, name and kind.
+
+        ``proxy``: through the VPN, for a link that will download through it,
+        so not even the probe goes out over the normal connection."""
         info: dict[str, Any] = {"ok": True, "kind": "file", "size": None, "name": "",
                                 "contentType": "", "resumable": None, "finalUrl": url}
         timeout = aiohttp.ClientTimeout(total=seconds)
         try:
             async with aiohttp.ClientSession(timeout=timeout) as session:
-                res = await session.head(url, headers=headers, allow_redirects=True)
+                res = await session.head(url, headers=headers, allow_redirects=True, proxy=proxy)
                 if res.status >= 400:
                     res.release()
-                    res = await session.get(url, allow_redirects=True,
+                    res = await session.get(url, allow_redirects=True, proxy=proxy,
                                             headers={**headers, "Range": "bytes=0-0"})
                 async with res:
                     if res.status < 400:
@@ -657,7 +713,8 @@ def create_app(cfg: Config) -> FastAPI:
             headers["Referer"] = str(options["referer"])
         if options.get("user-agent"):
             headers["User-Agent"] = str(options["user-agent"])
-        info = await _probe_link(uri, headers, seconds=6)
+        proxy = options.get("all-proxy") or None
+        info = await _probe_link(uri, headers, seconds=6, proxy=proxy)
         name = info.get("name") or os.path.basename(str(info.get("finalUrl", "")).split("?")[0])
         if routing_mod.extension_of(name):
             folder = router.folder_for(router.category_of(name))
@@ -670,6 +727,8 @@ def create_app(cfg: Config) -> FastAPI:
         if not uris:
             raise HTTPException(400, "no URI given")
         options = clean_options(req.options)
+        # Torrents never use the VPN; for links it is chosen per download.
+        net = options.pop(vpn_mod.CHOICE_KEY, "auto")
         if req.paused:
             options["pause"] = "true"
         qb_gids, uris = await _add_to_qb(uris, options, req.paused)
@@ -687,11 +746,12 @@ def create_app(cfg: Config) -> FastAPI:
             options["pause-metadata"] = "true"
         gids: list[str] = []
         if req.mirrors:
-            gids.append(await rpc.add_uri(uris, options, req.position))
+            gids.append(await rpc.add_uri(uris, vpn.route(uris, {**options, vpn_mod.CHOICE_KEY: net}),
+                                          req.position))
         else:
             for index, uri in enumerate(uris):
                 position = None if req.position is None else req.position + index
-                one = dict(options)
+                one = vpn.route([uri], {**options, vpn_mod.CHOICE_KEY: net})
                 if router.needs_name(uri, one):
                     one = await _route_by_server_name(uri, one)
                 gids.append(await rpc.add_uri([uri], one, position))
@@ -715,9 +775,12 @@ def create_app(cfg: Config) -> FastAPI:
     async def add_file(req: TorrentRequest):
         payload = decode_b64(req.data, req.kind)
         options = clean_options(req.options)
+        # A metalink is HTTP downloads and may use the VPN; a torrent never does.
+        net = options.pop(vpn_mod.CHOICE_KEY, "auto")
         if req.paused:
             options["pause"] = "true"
         if req.kind == "metalink":
+            options = vpn.route(req.uris, {**options, vpn_mod.CHOICE_KEY: net})
             gids = await rpc.add_metalink(payload, options, req.position)
         elif qb.ready:
             gids = [await qb.add_torrent(base64.b64decode(payload), options, req.paused,
@@ -749,9 +812,17 @@ def create_app(cfg: Config) -> FastAPI:
             headers["User-Agent"] = req.user_agent
         return headers
 
+    def _media_proxy(req) -> str | None:
+        """A stream goes through the VPN by its own host or its page's."""
+        choice = getattr(req, "vpn", "auto")
+        if vpn.wants(req.url, choice) or vpn.wants(getattr(req, "referer", None) or "", choice):
+            return vpn.proxy_url
+        return None
+
     async def _probe_media(req) -> mediatools.Probe:
         kind = mediatools.kind_for(req.url, req.content_type or "")
         headers = _media_headers(req)
+        proxy = _media_proxy(req)
 
         if kind == "direct":
             # Nothing to parse: the URL is the file. A HEAD is enough to confirm
@@ -759,7 +830,7 @@ def create_app(cfg: Config) -> FastAPI:
             content_type = req.content_type or ""
             try:
                 async with aiohttp.ClientSession() as session:
-                    async with session.head(req.url, headers=headers,
+                    async with session.head(req.url, headers=headers, proxy=proxy,
                                             allow_redirects=True,
                                             timeout=aiohttp.ClientTimeout(total=15)) as res:
                         content_type = res.headers.get("Content-Type", content_type)
@@ -771,7 +842,7 @@ def create_app(cfg: Config) -> FastAPI:
 
         try:
             async with aiohttp.ClientSession() as session:
-                async with session.get(req.url, headers=headers,
+                async with session.get(req.url, headers=headers, proxy=proxy,
                                        allow_redirects=True,
                                        timeout=aiohttp.ClientTimeout(total=25)) as res:
                     if res.status >= 400:
@@ -831,6 +902,8 @@ def create_app(cfg: Config) -> FastAPI:
                 options["header"] = [f"Cookie: {headers['Cookie']}"]
             if headers.get("User-Agent"):
                 options["user-agent"] = headers["User-Agent"]
+            if proxy := _media_proxy(req):
+                options["all-proxy"] = proxy
             gid = await rpc.add_uri([variant["url"]], clean_options(options), None)
             poller.poke()
             store.add_event("info", f"Queued {req.filename or variant['url']}", gids=[gid])
@@ -846,7 +919,7 @@ def create_app(cfg: Config) -> FastAPI:
             req.url, probe_title, variant.get("height"))
         if not name.lower().endswith((".mp4", ".mkv", ".webm", ".m4a")):
             name += ".mp4"
-        job = media_jobs.start(variant, name, directory, _media_headers(req))
+        job = media_jobs.start(variant, name, directory, _media_headers(req), proxy=_media_proxy(req))
         return {"ok": True, "kind": "stream", "job": job.as_dict()}
 
     # ---- per-download ----------------------------------------------------
@@ -1159,10 +1232,25 @@ def create_app(cfg: Config) -> FastAPI:
         return {"ok": True}
 
     @app.post("/api/global/purge")
-    async def purge_all():
-        await rpc.purge_results()
+    async def purge_all(history_too: bool = Query(True, alias="history")):
+        """Clear finished and failed downloads off the list, files kept.
+
+        aria2 forgets its results, finished and failed torrents leave
+        qBittorrent (one still sharing is active, so it stays), and the
+        history that lists the ones neither engine holds any more is cleared;
+        purging aria2 alone left torrents and past rows where they were.
+        `?history=false` purges the engines only.
+        """
+        try:
+            await rpc.purge_results()
+        except (Aria2Error, aiohttp.ClientError):
+            pass
+        torrents = await qb.remove_finished()
+        forgotten = history.clear() if history_too else 0
         poller.poke()
-        return {"ok": True}
+        store.add_event("info", f"Cleared finished and failed downloads from the list ({torrents} torrent(s), "
+                                f"{forgotten} history entr{'y' if forgotten == 1 else 'ies'}). Files on disk were kept.")
+        return {"ok": True, "torrents": torrents, "forgotten": forgotten}
 
     @app.get("/api/global/options")
     async def get_global_options():
@@ -1243,6 +1331,52 @@ def create_app(cfg: Config) -> FastAPI:
     async def set_routing(req: RoutingRequest):
         router.save(enabled=req.enabled, folders=req.folders, extensions=req.extensions)
         return {"ok": True, **router.public_state()}
+
+    # ---- VPN for downloads -------------------------------------------------
+    @app.get("/api/vpn")
+    async def get_vpn():
+        return vpn.status()
+
+    @app.post("/api/vpn")
+    async def set_vpn(req: VpnRequest):
+        """Turn the VPN on or off, pick its config, edit the site list.
+
+        wireproxy is started again only when what it runs on changed; the
+        site list applies to the next download added."""
+        before = (vpn.enabled, str(vpn.folder()), vpn.server)
+        vpn.save(enabled=req.enabled, folder=req.folder, server=req.server, sites=req.sites)
+        if (vpn.enabled, str(vpn.folder()), vpn.server) != before:
+            await vpn.reload()
+        poller.poke()
+        return {"ok": True, **vpn.status()}
+
+    @app.post("/api/download/{gid}/vpn")
+    async def set_download_vpn(gid: str, req: DownloadVpnRequest):
+        """Send one download through the VPN or direct, whatever its site.
+
+        aria2 takes the new route at once and keeps what is on disk."""
+        if qbt.is_gid(gid):
+            raise HTTPException(409, "Torrents can’t use the VPN.")
+        if req.on and not vpn.enabled:
+            raise HTTPException(409, "Turn on the VPN in Settings first.")
+        status = (await rpc.tell_status(gid, ["status"])).get("status")
+        if status in ("complete", "removed", "error"):
+            raise HTTPException(409, "This download has stopped. Add it again to change how it connects.")
+        await rpc.change_option(gid, {"all-proxy": vpn.proxy_url if req.on else ""})
+        vpn.routed[gid] = req.on
+        poller.poke()
+        store.add_event("info", f"{gid} now " + ("uses the VPN" if req.on else "connects directly"), gid=gid)
+        return {"ok": True, "vpn": req.on}
+
+    @app.post("/api/after-all")
+    async def set_after_all(req: AfterAllRequest):
+        """When the downloads finish: shut down, suspend, or nothing (one-off)."""
+        try:
+            after_all.set(req.action)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        poller.poke()
+        return {"ok": True, **after_all.status()}
 
     @app.get("/api/rules")
     async def get_rules():
@@ -1436,7 +1570,7 @@ def create_app(cfg: Config) -> FastAPI:
             return {"ok": True, "gid": gid}
         if entry.get("name"):
             options["out"] = os.path.basename(entry["name"])
-        gid = await rpc.add_uri([url], clean_options(options))
+        gid = await rpc.add_uri([url], vpn.route([url], clean_options(options)))
         poller.poke()
         store.add_event("info", f"Re-added from history: {entry.get('name') or url}")
         return {"ok": True, "gid": gid}
@@ -1502,7 +1636,12 @@ def create_app(cfg: Config) -> FastAPI:
             headers["Referer"] = req.referer
         if req.userAgent:
             headers["User-Agent"] = req.userAgent
-        info = await _probe_link(req.url, headers)
+        through = vpn.wants(req.url, req.vpn)
+        info = await _probe_link(req.url, headers, proxy=vpn.proxy_url if through else None)
+        # Whether it will download through the VPN, so the dialog's switch
+        # starts where the site list puts it; the switch shows while it is on.
+        info["vpn"] = through
+        info["vpnEnabled"] = vpn.enabled
         if not info["name"]:
             info["name"] = os.path.basename(str(info["finalUrl"]).split("?")[0].rstrip("/"))
         # A link named as a file that answers with a web page: the site only
@@ -1604,6 +1743,13 @@ def create_app(cfg: Config) -> FastAPI:
         size = (max(0, min(req.width, 4000)), max(0, min(req.height, 4000)))
         return {"ok": True, "floated": await compositor.float_window(req.title, *size, exact=req.exact)}
 
+    @app.post("/api/window/column")
+    async def size_window_column(req: ColumnRequest):
+        """Open the DankBar window's column at a width when it opens tiled."""
+        if req.width not in compositor.COLUMN_WIDTHS:
+            raise HTTPException(400, f"width must be one of: {', '.join(compositor.COLUMN_WIDTHS)}")
+        return {"ok": True, **await compositor.size_column(req.title, req.width, exact=req.exact)}
+
     @app.post("/api/window/focus")
     async def focus_window(req: FloatRequest):
         """Focus the window titled so if it is open elsewhere (niri, Hyprland).
@@ -1629,6 +1775,7 @@ def create_app(cfg: Config) -> FastAPI:
             raise HTTPException(400, "no url given")
 
         options = clean_options(req.options)
+        net = options.pop(vpn_mod.CHOICE_KEY, "auto")
         headers: list[str] = list(options.pop("header", []) or []) if isinstance(
             options.get("header"), list
         ) else ([options.pop("header")] if options.get("header") else [])
@@ -1669,7 +1816,8 @@ def create_app(cfg: Config) -> FastAPI:
         existing: list[str] = []
         qb_gids, rest = await _add_to_qb(uris, torrent_options, req.paused, fetch_headers,
                                          maybe_torrent=named_torrent, existing=existing)
-        gids = qb_gids + [await rpc.add_uri([uri], dict(options), None) for uri in rest]
+        gids = qb_gids + [await rpc.add_uri([uri], vpn.route([uri], {**options, vpn_mod.CHOICE_KEY: net}), None)
+                          for uri in rest]
         poller.poke()
         origin = req.source or "browser"
         store.add_event(

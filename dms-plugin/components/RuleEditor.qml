@@ -39,6 +39,8 @@ Rectangle {
     readonly property int labelWidth: 120
     readonly property int labelGap: 12
     readonly property string action: rule.action || "pause_resume"
+    //: It fires once, when a download finishes, instead of on a speed.
+    readonly property bool finishing: Rules.isFinish(rule)
 
     function value(path) {
         const v = Fmt.getPath(editor.rule, path)
@@ -94,7 +96,44 @@ Rectangle {
               })
     }
 
+    //: A finish action's file type, by the sorting lists ("" for any).
+    readonly property string fileKind: (when.kinds || [])[0] || ""
+
+    function setFileKind(index) {
+        const value = Rules.KIND_VALUES[index]
+        patch(r => {
+                  if (value)
+                      r.when.kinds = [value]
+                  else
+                      delete r.when.kinds
+              })
+    }
+
     // ---- trigger --------------------------------------------------------------
+    //: Slows down or finishes. What both kinds share (torrents or not, the
+    //: name) is kept; the rest starts over as the other kind's default.
+    function setFinishing(finish) {
+        if (finish === editor.finishing)
+            return
+        patch(r => {
+                  const keep = {}
+                  for (const k of ["torrent_only", "http_only", "name_matches"]) {
+                      if (r.when[k] !== undefined)
+                          keep[k] = r.when[k]
+                  }
+                  for (const k of ["resume_after_seconds", "cooldown_seconds", "max_triggers", "options", "delete_archive", "command"])
+                      delete r[k]
+                  if (finish) {
+                      r.when = Object.assign({ "event": "finished", "kinds": ["archive"] }, keep)
+                      r.action = "extract"
+                  } else {
+                      r.when = Object.assign({ "statuses": ["active"], "speed_below": 51200, "for_seconds": 3 }, keep)
+                      r.action = "pause_resume"
+                      r.resume_after_seconds = 1.5
+                  }
+              })
+    }
+
     readonly property string cmp: Rules.blank(when.speed_below) && !Rules.blank(when.speed_above) ? "above" : "below"
     readonly property var speedRaw: cmp === "above" ? when.speed_above : when.speed_below
 
@@ -143,8 +182,10 @@ Rectangle {
     }
 
     // ---- limits ---------------------------------------------------------------
-    readonly property var setLimits: Rules.LIMITS.filter(l => Rules.limitSet(editor.rule, l[0]))
-    readonly property var unsetLimits: Rules.LIMITS.filter(l => !Rules.limitSet(editor.rule, l[0]))
+    //: A finish action fires once anyway: only the name is left to limit.
+    readonly property var limitChoices: finishing ? Rules.LIMITS.filter(l => l[0] === "when.name_matches") : Rules.LIMITS
+    readonly property var setLimits: limitChoices.filter(l => Rules.limitSet(editor.rule, l[0]))
+    readonly property var unsetLimits: limitChoices.filter(l => !Rules.limitSet(editor.rule, l[0]))
     readonly property var limitWords: ({
                                            "when.min_age_seconds": "start",
                                            "cooldown_seconds": "cooldown",
@@ -179,7 +220,7 @@ Rectangle {
     //: A group's caps heading.
     component Heading: StyledText {
         font.pixelSize: Theme.fontSizeSmall - 1
-        font.weight: Font.Bold
+        font.weight: Font.DemiBold
         font.letterSpacing: 0.9
         color: Theme.outline
     }
@@ -441,7 +482,7 @@ Rectangle {
             StyledText {
                 text: "Delete “" + (editor.rule.name || "this action") + "”?"
                 font.pixelSize: Theme.fontSizeMedium + 1
-                font.weight: Font.Bold
+                font.weight: Font.DemiBold
                 color: Theme.surfaceText
             }
 
@@ -492,6 +533,7 @@ Rectangle {
                 }
 
                 FormRow {
+                    visible: !editor.finishing
                     label: "Downloads that are"
                     labelWidth: editor.labelWidth
                     dirty: editor.changed("when.statuses")
@@ -549,6 +591,23 @@ Rectangle {
                     }
                 }
 
+                //: A finished download has no status to pick; its file type instead.
+                FormRow {
+                    visible: editor.finishing
+                    label: "File type"
+                    labelWidth: editor.labelWidth
+                    dirty: editor.changed("when.kinds")
+
+                    //: Five choices: a menu, where segments would run out of room.
+                    FormSelect {
+                        width: Math.min(200, editor.width - editor.labelWidth - 80)
+                        labels: Rules.KIND_LABELS
+                        currentIndex: Math.max(0, Rules.KIND_VALUES.indexOf(editor.fileKind))
+                        changed: editor.changed("when.kinds")
+                        onPicked: index => editor.setFileKind(index)
+                    }
+                }
+
                 FormRow {
                     label: "Kind"
                     labelWidth: editor.labelWidth
@@ -578,6 +637,30 @@ Rectangle {
                 }
 
                 FormRow {
+                    label: "Type"
+                    labelWidth: editor.labelWidth
+                    dirty: editor.changed("when.event")
+
+                    Segmented {
+                        y: 2
+                        color: Theme.surfaceContainerHigh
+                        model: ["Speed", "On finish"]
+                        currentIndex: editor.finishing ? 1 : 0
+                        onPicked: index => editor.setFinishing(index === 1)
+                    }
+                }
+
+                StyledText {
+                    width: parent.width
+                    visible: editor.finishing
+                    wrapMode: Text.WordWrap
+                    text: "Runs once for each download, as soon as it finishes: when aria2 completes it, or when a torrent starts seeding."
+                    font.pixelSize: Theme.fontSizeSmall
+                    color: Theme.surfaceVariantText
+                }
+
+                FormRow {
+                    visible: !editor.finishing
                     label: "Speed stays"
                     labelWidth: editor.labelWidth
                     dirty: editor.changed("when.speed_below") || editor.changed("when.speed_above")
@@ -599,6 +682,7 @@ Rectangle {
                 }
 
                 FormRow {
+                    visible: !editor.finishing
                     label: "For at least"
                     labelWidth: editor.labelWidth
                     dirty: editor.changed("when.for_seconds")
@@ -635,16 +719,86 @@ Rectangle {
                     dirty: editor.changed("action")
 
                     FormSelect {
+                        readonly property var values: editor.finishing ? Rules.FINISH_VALUES : Rules.ACTION_VALUES
+
                         width: Math.min(280, editor.width - editor.labelWidth - 80)
-                        labels: Rules.ACTION_LABELS
-                        currentIndex: Math.max(0, Rules.ACTION_VALUES.indexOf(editor.action))
+                        labels: editor.finishing ? Rules.FINISH_LABELS : Rules.ACTION_LABELS
+                        currentIndex: Math.max(0, values.indexOf(editor.action))
                         changed: editor.changed("action")
-                        onPicked: index => editor.set("action", Rules.ACTION_VALUES[index])
+                        onPicked: index => editor.set("action", values[index])
                     }
                 }
 
                 FormRow {
-                    visible: Rules.resumes(editor.action)
+                    visible: editor.finishing && editor.action === "extract"
+                    label: "Archive"
+                    labelWidth: editor.labelWidth
+                    dirty: editor.changed("delete_archive")
+
+                    BoolSwitch {
+                        y: 2
+                        width: 52
+                        height: 32
+                        checked: editor.rule.delete_archive === true
+                        onToggled: value => editor.set("delete_archive", value ? true : "")
+                    }
+
+                    Unit {
+                        text: "Delete after extracting"
+                    }
+                }
+
+                StyledText {
+                    width: parent.width
+                    visible: editor.finishing && editor.action === "extract"
+                    wrapMode: Text.WordWrap
+                    text: "An archive with a single top-level folder is extracted as that folder; otherwise its files go into a new folder named after it. Password-protected archives are skipped."
+                    font.pixelSize: Theme.fontSizeSmall
+                    color: Theme.surfaceVariantText
+                }
+
+                //: A command is long: its own line, the whole width, under its label.
+                Column {
+                    width: parent.width
+                    visible: editor.finishing && editor.action === "run"
+                    spacing: 6
+
+                    StyledText {
+                        text: "Command"
+                        font.pixelSize: Theme.fontSizeSmall + 1
+                        color: Theme.surfaceVariantText
+                    }
+
+                    FormText {
+                        width: parent.width
+                        implicitHeight: 34
+                        mono: true
+                        text: editor.rule.command || ""
+                        placeholderText: "notify-send \"Downloaded\" {name}"
+                        changed: editor.changed("command")
+                        invalid: !!editor.issues["command"]
+                        onEdited: text => editor.set("command", text)
+                    }
+
+                    StyledText {
+                        visible: !!editor.issues["command"]
+                        text: editor.issues["command"] || ""
+                        font.pixelSize: Theme.fontSizeSmall - 1
+                        color: Theme.error
+                    }
+                }
+
+                StyledText {
+                    width: parent.width
+                    visible: editor.finishing && editor.action === "run"
+                    wrapMode: Text.WordWrap
+                    text: "{path}, {dir} and {name} are replaced with the download’s path, folder and name (quoted). They’re also available as ARIA_PATH, ARIA_DIR and ARIA_NAME."
+                    font.pixelSize: Theme.fontSizeSmall
+                    color: Theme.surfaceVariantText
+                }
+
+                FormRow {
+                    visible: !editor.finishing && Rules.resumes(editor.action)
                     label: "Resume after"
                     labelWidth: editor.labelWidth
                     dirty: editor.changed("resume_after_seconds")
@@ -829,7 +983,7 @@ Rectangle {
 
                 StyledText {
                     visible: editor.setLimits.length === 0
-                    text: "None: it may run on any download, any number of times."
+                    text: editor.finishing ? "None. Applies to every matching download." : "None. It can run on any download, any number of times."
                     font.pixelSize: Theme.fontSizeSmall
                     color: Theme.outline
                 }
@@ -931,8 +1085,11 @@ Rectangle {
                     height: 34
                     visible: editor.unsetLimits.length > 0
 
+                    //: Under the limit rows it lines up with their controls; with
+                    //: none set it starts at the left, under "None.", with the
+                    //: whole width for its list.
                     AddPill {
-                        x: editor.labelWidth + editor.labelGap
+                        x: editor.setLimits.length ? editor.labelWidth + editor.labelGap : 0
                         maximumWidth: parent.width - x
                         text: "Add a limit"
                         hint: editor.unsetLimits.map(l => editor.limitWords[l[0]]).join(", ")

@@ -243,13 +243,13 @@ Item {
                     StyledText {
                         text: "Automatic actions"
                         font.pixelSize: Theme.fontSizeMedium + 1
-                        font.weight: Font.Bold
+                        font.weight: Font.DemiBold
                         color: Theme.surfaceText
                     }
 
                     StyledText {
                         width: parent.width
-                        text: masterCard.on ? "Watch running downloads and step in when one stalls"
+                        text: masterCard.on ? "Act on downloads automatically when they stall or finish"
                                             : "Off — nothing below runs. You can still edit and switch them."
                         wrapMode: Text.WordWrap
                         maximumLineCount: 2
@@ -489,7 +489,7 @@ Item {
                         topPadding: 4
                         text: "Let the manager babysit downloads"
                         font.pixelSize: Theme.fontSizeLarge
-                        font.weight: Font.Bold
+                        font.weight: Font.DemiBold
                         color: Theme.surfaceText
                     }
 
@@ -779,7 +779,7 @@ Item {
                     width: parent.width
                     text: saveBar.changedNames.length === 1 ? "Save changes to " + saveBar.changedNames[0] + "?" : "Save your changes?"
                     font.pixelSize: Theme.fontSizeLarge
-                    font.weight: Font.Bold
+                    font.weight: Font.DemiBold
                     color: Theme.surfaceText
                     wrapMode: Text.WordWrap
                 }

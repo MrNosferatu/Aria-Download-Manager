@@ -42,6 +42,27 @@ Singleton {
     property var events: []
 
     readonly property var downloads: (snapshot && snapshot.downloads) || []
+    //: The download-only VPN (vpn.py), live with every state frame: whether
+    //: it is on and connected, its server, sites, and which downloads use it.
+    readonly property var vpn: (snapshot && snapshot.vpn) || ({})
+    //: Finish actions at work or just done (finishing.py): extracting, commands.
+    readonly property var finishing: (snapshot && snapshot.finishing) || []
+    //: Shut down or suspend once the downloads finish (afterall.py): the
+    //: choice, and its countdown's end once everything is done.
+    readonly property var afterAll: (snapshot && snapshot.afterAll) || ({})
+    readonly property real afterAllDeadline: afterAll.deadline || 0
+
+    //: The countdown starting is said wherever the user is, whatever the
+    //: notification settings: they asked for it, and a minute is short.
+    onAfterAllDeadlineChanged: if (afterAllDeadline > 0)
+                                   ToastService.showInfo((afterAll.action === "suspend" ? "Suspending" : "Shutting down") + " in a minute",
+                                                         "All downloads have finished. To cancel, open Aria Download Manager or its menu.")
+
+    function setAfterAll(action) {
+        post("/api/after-all", {
+                 "action": action
+             }, action === "shutdown" ? "Will shut down when downloads finish" : (action === "suspend" ? "Will suspend when downloads finish" : "Cancelled: nothing happens when downloads finish"))
+    }
     readonly property var globalStat: (snapshot && snapshot.global) || ({})
     readonly property var counts: (snapshot && snapshot.counts) || ({})
     readonly property var aria2: (snapshot && snapshot.aria2) || ({})
@@ -174,6 +195,9 @@ Singleton {
         }
         return (history ? (history.entries || []) : []).filter(e => !live[e.key] && !live[e.path] && !live[e.gid])
     }
+    //: What "Clear finished" takes off the list: the finished and failed
+    //: downloads the engines hold, and the past ones from the history.
+    readonly property int clearableCount: stoppedCount + pastEntries.length
     readonly property int pastFailed: pastEntries.filter(e => e.status === "error").length
     readonly property int pastDone: pastEntries.length - pastFailed
     property var serverConfig: null
@@ -686,6 +710,12 @@ Singleton {
         act("POST", path, body, okMessage, callback)
     }
 
+    //: Finished and failed off the list, files kept (asked first by the
+    //: buttons that offer it).
+    function clearFinished() {
+        post("/api/global/purge", null, "Cleared finished and failed", () => loadHistory())
+    }
+
     function del(path, okMessage, callback) {
         act("DELETE", path, null, okMessage, callback)
     }
@@ -876,6 +906,33 @@ Singleton {
             if (done)
                 done("")
         })
+    }
+
+    //: Settings → VPN. `done(error)` as for saveRouting.
+    function saveVpn(payload, okMessage, done) {
+        root.request("POST", "/api/vpn", payload, (data, error) => {
+            if (error) {
+                if (done)
+                    done(error)
+                else
+                    root.showFailure("Couldn't save", error)
+                return
+            }
+            if (data && root.snapshot)
+                root.snapshot = Object.assign({}, root.snapshot, {
+                                                  "vpn": data
+                                              })
+            root.notice(okMessage || "VPN saved")
+            if (done)
+                done("")
+        })
+    }
+
+    //: One download through the VPN or direct, whatever its site.
+    function setDownloadVpn(gid, on) {
+        post("/api/download/" + gid + "/vpn", {
+                 "on": on
+             }, on ? "Now using the VPN" : "Now connecting directly")
     }
 
     function loadOptions() {

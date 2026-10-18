@@ -1,4 +1,5 @@
 import QtQuick
+import Quickshell
 import qs.Common
 import qs.Services
 import qs.Widgets
@@ -6,6 +7,7 @@ import "../lib/Fmt.js" as Fmt
 import "../lib/OptionHelp.js" as OptionHelp
 import "../lib/Layout.js" as Layout
 import "../lib/Units.js" as Units
+import "../lib/Vpn.js" as Vpn
 
 Item {
     id: tab
@@ -143,13 +145,50 @@ Item {
         return n
     }
 
-    //: Every match on the page, for the search field's "N found".
+    //: One search for every setting, aria2's options and the manager's own
+    //: cards alike, in both modes. Simple searches what Simple shows and
+    //: offers "N more in Advanced"; switching modes is the user's choice,
+    //: since it rebuilds the fields.
+    readonly property bool searching: search !== ""
+    //: Matches only Advanced shows, for Simple's "N more in Advanced".
+    readonly property int advancedOnlyHits: {
+        if (!search || advanced)
+            return 0
+        const simpleKeys = simpleOptions.map(o => o[0])
+        let n = 0
+        for (const g of groups)
+            n += hits(g.options.filter(o => simpleKeys.indexOf(o[0]) < 0))
+        n += hits(advancedKeys.map(k => [k, k]))
+        return n + [procCardFound, logCardFound].filter(f => f).length
+    }
+
+    function cardMatches(words) {
+        if (!search)
+            return true
+        const text = words.join(" ").toLowerCase()
+        return Fmt.searchForms(search).some(needle => text.indexOf(needle) >= 0)
+    }
+
+    readonly property bool folderCardFound: cardMatches(["Download folder", "dir", "Sort into subfolders by type",
+                                                         "sorting", "Archives Music Video Images"])
+    readonly property bool routingCardFound: cardMatches(["Where each type goes", "sorting", "extensions"]
+                                                         .concat(routingCategories.map(c => routingLabels[c] + " " + (routingFolders[c] || "")))
+                                                         .concat(routingCategories.map(c => (routingExtensions[c] || []).join(" "))))
+    readonly property bool vpnCardFound: cardMatches(["VPN for downloads", "WireGuard", "Proton", "wireproxy", "Server",
+                                                      "Config folder", "Sites that use the VPN", "tunnel", "proxy"].concat(vpnSites))
+    readonly property bool procCardFound: cardMatches(["aria2c process", "Restart aria2c", "pid", "version", "RPC"])
+    readonly property bool logCardFound: cardMatches(["Event log", "errors", "log"])
+
+    //: Every match shown, for the search field's "N found".
     readonly property int searchHits: {
         if (!search)
             return 0
-        let n = 0
+        let n = [folderCardFound, routingEnabled && routingCardFound, vpnCardFound].filter(f => f).length
+        if (!advanced)
+            return n + hits(simpleOptions)
         for (const g of groups)
             n += hits(g.options)
+        n += [procCardFound, logCardFound].filter(f => f).length
         return n + hits(advancedKeys.map(k => [k, k]))
     }
 
@@ -186,25 +225,32 @@ Item {
         return false
     }
 
-    //: Whether any option was touched since the last save; drives the save bar.
-    //: `edits` is written in place, which notifies nothing, hence the flag.
+    //: How many options differ from what is saved, and whether any do; they
+    //: drive the save bar. `edits` is written in place, which notifies
+    //: nothing, so these are counted here, not in a binding over `edits`.
+    property int optionChanges: 0
     property bool optionsDirty: false
-    readonly property bool dirty: optionsDirty || routingDirty
+    readonly property bool dirty: optionsDirty || routingDirty || vpnDirty
+    //: What the save bar counts: each option, and each card as one.
+    readonly property int changeTotal: optionChanges + (routingDirty ? 1 : 0) + (vpnDirty ? 1 : 0)
 
     function record(key, value) {
         edits[key] = value
-        // Fields report their value when they are seeded too, so "touched"
-        // is not enough: dirty means some edit differs from what is saved.
+        recount()
+    }
+
+    //: Fields report their value when they are seeded too, so "touched" is
+    //: not enough: an option counts while its edit differs from what is saved.
+    function recount() {
         const current = service ? service.globalOptions : ({})
-        let differs = false
+        let n = 0
         for (const k in edits) {
             const original = current[k] === undefined || current[k] === null ? "" : String(current[k])
-            if (!Units.same(edits[k], original)) {
-                differs = true
-                break
-            }
+            if (!Units.same(edits[k], original))
+                n++
         }
-        optionsDirty = differs
+        optionChanges = n
+        optionsDirty = n > 0
     }
 
     //: Bumped by Discard: every field goes back to what is saved.
@@ -218,6 +264,7 @@ Item {
         const out = [["Download folder", simpleCard]]
         if (routingEnabled)
             out.push(["Where each type goes", routingCard])
+        out.push(["VPN for downloads", vpnCard])
         if (advanced) {
             for (let i = 0; i < groups.length; i++)
                 out.push([groups[i].title, "group:" + i])
@@ -225,7 +272,10 @@ Item {
             out.push(["aria2c process", procCard])
             out.push(["Event log", logCard])
         }
-        return out
+        // While searching, only the sections that hold a match.
+        if (!searching)
+            return out
+        return out.filter(s => typeof s[1] === "string" ? hits(groups[Number(s[1].split(":")[1])].options) > 0 : s[1].visible)
     }
 
     function jumpTo(target) {
@@ -242,9 +292,10 @@ Item {
 
     function discard() {
         edits = ({})
-        optionsDirty = false
+        recount()
         saveError = ""
         seedRouting()
+        seedVpn()
         generation++
         dirField.text = Qt.binding(() => tab.savedDir)
     }
@@ -262,6 +313,18 @@ Item {
                 changed++
             }
         }
+        if (tab.vpnDirty)
+            service.saveVpn({
+                                "enabled": tab.vpnEnabled,
+                                "folder": tab.vpnFolder,
+                                "server": tab.vpnServer,
+                                "sites": tab.vpnSites
+                            }, changed || tab.routingDirty ? undefined : "VPN saved", error => {
+                                if (error)
+                                    tab.saveError = tab.plainSaveError(error)
+                                else
+                                    tab.vpnEdited = false
+                            })
         if (tab.routingDirty) {
             service.saveRouting({
                                     "enabled": tab.routingEnabled,
@@ -271,15 +334,15 @@ Item {
                                     if (error)
                                         tab.saveError = tab.plainSaveError(error)
                                     else
-                                        tab.routingDirty = false
+                                        tab.routingEdited = false
                                 })
-        } else if (!changed) {
-            optionsDirty = false
+        } else if (!changed && !tab.vpnDirty) {
+            recount()
             service.notice("Nothing changed")
             return
         }
         if (!changed) {
-            optionsDirty = false
+            recount()
             return
         }
         service.saveOptions(options, "Applied " + changed + " change" + (changed === 1 ? "" : "s"), error => {
@@ -288,7 +351,7 @@ Item {
                                     return
                                 }
                                 tab.edits = ({})
-                                tab.optionsDirty = false
+                                tab.recount()
                             })
     }
 
@@ -337,6 +400,7 @@ Item {
         service.loadOptions()
         service.loadRouting()
         seedRouting()
+        seedVpn()
         if (service.requestedLog)
             revealLog()
     }
@@ -346,7 +410,16 @@ Item {
     property bool routingEnabled: false
     property var routingFolders: ({})
     property var routingExtensions: ({})
-    property bool routingDirty: false
+    //: Touched since it was seeded; dirty only while it differs from what
+    //: the manager has, so putting a change back clears the save bar.
+    property bool routingEdited: false
+    readonly property bool routingDirty: {
+        const saved = service ? service.routing : null
+        if (!routingEdited || !saved)
+            return false
+        return routingEnabled !== (saved.enabled === true) || !Units.sameMap(routingFolders, saved.folders)
+               || !Units.sameMap(routingExtensions, saved.extensions)
+    }
     readonly property var routingCategories: ["archive", "music", "video", "image", "other"]
     readonly property var routingLabels: ({
             "archive": "Archives",
@@ -363,21 +436,21 @@ Item {
         routingEnabled = data.enabled === true
         routingFolders = Object.assign({}, data.folders || ({}))
         routingExtensions = Object.assign({}, data.extensions || ({}))
-        routingDirty = false
+        routingEdited = false
     }
 
     function setRoutingFolder(category, value) {
         const next = Object.assign({}, routingFolders)
         next[category] = value
         routingFolders = next
-        routingDirty = true
+        routingEdited = true
     }
 
     function setRoutingExtensions(category, text) {
         const next = Object.assign({}, routingExtensions)
         next[category] = text.split(/[\s,]+/).filter(part => part.length > 0)
         routingExtensions = next
-        routingDirty = true
+        routingEdited = true
     }
 
     Connections {
@@ -385,6 +458,67 @@ Item {
         function onRoutingChanged() {
             tab.seedRouting()
         }
+        //: Saved values reloaded (after a save, or changed elsewhere): an edit
+        //: may now match them.
+        function onGlobalOptionsChanged() {
+            tab.recount()
+        }
+    }
+
+    //: The download-only VPN (the manager's vpn.py), held here while it is
+    //: edited and saved with everything else; its status line is live.
+    readonly property string home: Quickshell.env("HOME") || ""
+    property bool vpnEnabled: false
+    property string vpnFolder: ""
+    property string vpnServer: ""
+    property var vpnSites: []
+    //: Touched since it was seeded; dirty only while it differs from what
+    //: the manager has, so putting a change back clears the save bar.
+    property bool vpnEdited: false
+    readonly property bool vpnDirty: vpnEdited && (vpnEnabled !== (vpnLive.enabled === true) || vpnFolder !== (vpnLive.folder || "")
+                                                   || vpnServer !== (vpnLive.server || "")
+                                                   || JSON.stringify(vpnSites) !== JSON.stringify(vpnLive.sites || []))
+    property bool vpnAdding: false
+    readonly property var vpnLive: service ? service.vpn : ({})
+
+    function seedVpn() {
+        const v = vpnLive || ({})
+        vpnEnabled = v.enabled === true
+        vpnFolder = v.folder || ""
+        vpnServer = v.server || ""
+        vpnSites = (v.sites || []).slice()
+        vpnEdited = false
+    }
+
+    //: The live state arrives with every frame; it only resets an unedited card.
+    onVpnLiveChanged: if (!vpnEdited)
+                          seedVpn()
+
+    //: What the tunnel is doing, in words, and the dot's colour.
+    readonly property var vpnStatus: {
+        const v = vpnLive || ({})
+        const name = String(v.server || "").replace(/\.conf$/i, "")
+        if (vpnDirty)
+            return ["Unsaved changes. Save to apply them.", Theme.outline]
+        if (!v.enabled)
+            return ["Off. All downloads use your normal connection.", Theme.outline]
+        if (!v.installed)
+            return ["wireproxy isn’t installed. Install it with: sudo pacman -S wireproxy", Theme.error]
+        if (!(v.servers || []).length)
+            return ["No WireGuard configs found in " + Fmt.homePath(v.folder, tab.home) + ". Add your Proton .conf files there.", Theme.error]
+        if (v.connected)
+            return ["Connected via " + name, Theme.success]
+        if (v.running)
+            return ["Connecting via " + name + "…", Theme.warning]
+        return ["Not running" + (v.lastError ? ": " + v.lastError : ""), Theme.error]
+    }
+
+    function addVpnSites(text) {
+        const added = text.split(/[\s,]+/).map(s => Vpn.vpnSiteOf(s)).filter(s => s.length > 0 && tab.vpnSites.indexOf(s) < 0)
+        if (!added.length)
+            return
+        vpnSites = vpnSites.concat(added)
+        vpnEdited = true
     }
 
     Connections {
@@ -504,7 +638,7 @@ Item {
             anchors.verticalCenter: parent.verticalCenter
             text: parent.text
             font.pixelSize: Theme.fontSizeMedium
-            font.weight: Font.Bold
+            font.weight: Font.DemiBold
             color: Theme.surfaceText
         }
 
@@ -546,26 +680,49 @@ Item {
             width: parent.width - tab.scrollbarGutter
             spacing: 12
 
-            // ---- advanced: find an option, or jump to a group --------------
+            // ---- find a setting (both modes), or jump to a group --------------
             Column {
                 width: parent.width
-                visible: tab.advanced
                 spacing: 10
 
                 SearchPill {
                     id: searchField
 
                     width: parent.width
-                    placeholderText: "Find an aria2 option"
+                    placeholderText: "Search settings"
                     trailingText: tab.searchHits + " found"
                     onTextChanged: tab.search = text.trim()
+                }
+
+                Item {
+                    width: parent.width
+                    height: 32
+                    visible: tab.advancedOnlyHits > 0
+
+                    StyledText {
+                        anchors.left: parent.left
+                        anchors.leftMargin: 4
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: tab.advancedOnlyHits === 1 ? "1 more match in Advanced" : tab.advancedOnlyHits + " more matches in Advanced"
+                        font.pixelSize: Theme.fontSizeSmall
+                        color: Theme.surfaceVariantText
+                    }
+
+                    PillButton {
+                        anchors.right: parent.right
+                        anchors.verticalCenter: parent.verticalCenter
+                        size: 30
+                        kind: "text"
+                        text: "Show"
+                        onClicked: tab.setMode("advanced")
+                    }
                 }
 
                 //: The window's section list already jumps; the chips are for
                 //: the popout.
                 Flow {
                     width: parent.width
-                    visible: !tab.search && !tab.wide
+                    visible: tab.advanced && !tab.search && !tab.wide
                     spacing: 6
 
                     Repeater {
@@ -599,7 +756,7 @@ Item {
                 id: simpleCard
 
                 width: content.width
-                visible: !tab.advanced || !tab.search
+                visible: tab.folderCardFound || (!tab.advanced && tab.hits(tab.simpleOptions) > 0)
 
                 Column {
                     width: parent.width
@@ -650,7 +807,7 @@ Item {
                             checked: tab.routingEnabled
                             onToggled: value => {
                                 tab.routingEnabled = value
-                                tab.routingDirty = true
+                                tab.routingEdited = true
                             }
                         }
                     }
@@ -665,7 +822,9 @@ Item {
                         required property var modelData
 
                         width: parent.width
+                        visible: tab.matches(simpleOption.modelData[0], simpleOption.modelData[1])
                         divider: true
+                        highlight: tab.search
                         optionKey: simpleOption.modelData[0]
                         label: simpleOption.modelData[1]
                         kind: simpleOption.modelData[2]
@@ -689,7 +848,7 @@ Item {
                 id: routingCard
 
                 width: content.width
-                visible: tab.routingEnabled && (!tab.advanced || !tab.search)
+                visible: tab.routingEnabled && tab.routingCardFound
                 padding: 14
 
                 Column {
@@ -952,6 +1111,272 @@ Item {
                 }
             }
 
+            // ---- the VPN for downloads ---------------------------------------
+            Card {
+                id: vpnCard
+
+                width: content.width
+                visible: tab.vpnCardFound
+                padding: 14
+
+                Column {
+                    width: parent.width
+                    spacing: 10
+                    bottomPadding: 4
+
+                    Item {
+                        width: parent.width
+                        height: 32
+
+                        StyledText {
+                            anchors.left: parent.left
+                            anchors.verticalCenter: parent.verticalCenter
+                            text: "VPN for downloads"
+                            font.pixelSize: Theme.fontSizeMedium
+                            font.weight: Font.DemiBold
+                            color: Theme.surfaceText
+                        }
+
+                        BoolSwitch {
+                            anchors.right: parent.right
+                            anchors.verticalCenter: parent.verticalCenter
+                            checked: tab.vpnEnabled
+                            onToggled: value => {
+                                tab.vpnEnabled = value
+                                tab.vpnEdited = true
+                            }
+                        }
+                    }
+
+                    Row {
+                        width: parent.width
+                        spacing: 8
+
+                        Rectangle {
+                            anchors.verticalCenter: parent.verticalCenter
+                            width: 8
+                            height: 8
+                            radius: 4
+                            color: tab.vpnStatus[1]
+                        }
+
+                        StyledText {
+                            width: parent.width - 16
+                            anchors.verticalCenter: parent.verticalCenter
+                            text: tab.vpnStatus[0]
+                            wrapMode: Text.WordWrap
+                            font.pixelSize: Theme.fontSizeSmall
+                            color: tab.vpnStatus[1] === Theme.error ? Theme.error : Theme.surfaceVariantText
+                        }
+                    }
+
+                    Column {
+                        width: parent.width
+                        spacing: 10
+                        opacity: tab.vpnEnabled ? 1 : 0.55
+
+                        //: The server: one of the folder's .conf files.
+                        Item {
+                            width: parent.width
+                            height: 36
+
+                            StyledText {
+                                anchors.left: parent.left
+                                anchors.verticalCenter: parent.verticalCenter
+                                text: "Server"
+                                font.pixelSize: Theme.fontSizeSmall + 1
+                                color: Theme.surfaceText
+                            }
+
+                            PillButton {
+                                id: serverButton
+
+                                anchors.right: parent.right
+                                anchors.verticalCenter: parent.verticalCenter
+                                size: 34
+                                kind: "outlined"
+                                icon: "dns"
+                                enabled: (tab.vpnLive.servers || []).length > 0
+                                text: tab.vpnServer ? tab.vpnServer.replace(/\.conf$/i, "") : "No configs found"
+                                onClicked: serverMenu.toggle()
+
+                                MenuPopup {
+                                    id: serverMenu
+
+                                    alignEnd: true
+                                    menuWidth: 260
+                                    entries: (tab.vpnLive.servers || []).map(s => ({
+                                                                                      "icon": "dns",
+                                                                                      "text": s.replace(/\.conf$/i, ""),
+                                                                                      "checked": s === tab.vpnServer
+                                                                                  }))
+                                    onTriggered: index => {
+                                        tab.vpnServer = tab.vpnLive.servers[index]
+                                        tab.vpnEdited = true
+                                    }
+                                }
+                            }
+                        }
+
+                        //: The folder of configs; a new one lists its files once saved.
+                        Column {
+                            width: parent.width
+                            spacing: 4
+
+                            StyledText {
+                                text: "Config folder · one .conf file per server"
+                                font.pixelSize: Theme.fontSizeSmall
+                                color: Theme.surfaceVariantText
+                            }
+
+                            DirectoryField {
+                                width: parent.width
+                                placeholderText: "~/.config/aria-download-manager/wireguard"
+                                dialogTitle: "Choose the WireGuard config folder"
+                                startDir: tab.vpnFolder
+                                text: tab.vpnFolder
+                                onTextChanged: if (text !== tab.vpnFolder) {
+                                                   tab.vpnFolder = text
+                                                   tab.vpnEdited = true
+                                               }
+                            }
+                        }
+
+                        //: The sites whose downloads use it, as chips: a tap takes
+                        //: one off, "+ add site" puts one on (a pasted link
+                        //: becomes its site).
+                        Column {
+                            width: parent.width
+                            spacing: 6
+
+                            StyledText {
+                                text: "Sites that use the VPN (subdomains included)"
+                                font.pixelSize: Theme.fontSizeSmall
+                                color: Theme.surfaceVariantText
+                            }
+
+                            Flow {
+                                width: parent.width
+                                spacing: 6
+
+                                Repeater {
+                                    model: tab.vpnSites
+
+                                    Rectangle {
+                                        id: siteChip
+
+                                        required property string modelData
+
+                                        width: siteRow.implicitWidth + 18
+                                        height: 26
+                                        radius: 13
+                                        color: Theme.surfaceContainerHighest
+
+                                        Row {
+                                            id: siteRow
+
+                                            anchors.centerIn: parent
+                                            spacing: 4
+
+                                            StyledText {
+                                                anchors.verticalCenter: parent.verticalCenter
+                                                text: siteChip.modelData
+                                                font.pixelSize: Theme.fontSizeSmall - 1
+                                                font.family: "monospace"
+                                                color: Theme.surfaceText
+                                            }
+
+                                            DankIcon {
+                                                anchors.verticalCenter: parent.verticalCenter
+                                                name: "close"
+                                                size: 12
+                                                color: siteArea.containsMouse ? Theme.surfaceText : Theme.surfaceVariantText
+                                            }
+                                        }
+
+                                        MouseArea {
+                                            id: siteArea
+
+                                            anchors.fill: parent
+                                            hoverEnabled: true
+                                            cursorShape: Qt.PointingHandCursor
+                                            onClicked: {
+                                                tab.vpnSites = tab.vpnSites.filter(s => s !== siteChip.modelData)
+                                                tab.vpnEdited = true
+                                            }
+                                        }
+                                    }
+                                }
+
+                                Rectangle {
+                                    width: tab.vpnAdding ? 170 : addSiteLabel.implicitWidth + 20
+                                    height: 26
+                                    radius: 13
+                                    color: "transparent"
+                                    border.width: 1
+                                    border.color: tab.vpnAdding ? Theme.primary : Theme.outlineVariant
+
+                                    StyledText {
+                                        id: addSiteLabel
+
+                                        anchors.centerIn: parent
+                                        visible: !tab.vpnAdding
+                                        text: "+ add site"
+                                        font.pixelSize: Theme.fontSizeSmall - 1
+                                        color: Theme.surfaceText
+                                    }
+
+                                    MouseArea {
+                                        anchors.fill: parent
+                                        visible: !tab.vpnAdding
+                                        cursorShape: Qt.PointingHandCursor
+                                        onClicked: {
+                                            tab.vpnAdding = true
+                                            siteInput.forceActiveFocus()
+                                        }
+                                    }
+
+                                    TextInput {
+                                        id: siteInput
+
+                                        anchors.fill: parent
+                                        anchors.leftMargin: 10
+                                        anchors.rightMargin: 10
+                                        verticalAlignment: TextInput.AlignVCenter
+                                        visible: tab.vpnAdding
+                                        color: Theme.surfaceText
+                                        clip: true
+                                        font.pixelSize: Theme.fontSizeSmall - 1
+                                        font.family: "monospace"
+                                        onAccepted: {
+                                            tab.addVpnSites(text)
+                                            text = ""
+                                        }
+                                        onActiveFocusChanged: if (!activeFocus) {
+                                                                  tab.addVpnSites(text)
+                                                                  text = ""
+                                                                  tab.vpnAdding = false
+                                                              }
+                                        Keys.onEscapePressed: {
+                                            text = ""
+                                            focus = false
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    StyledText {
+                        width: parent.width
+                        wrapMode: Text.WordWrap
+                        text: "Only downloads set to use the VPN go through it; torrents and the rest of your system are unaffected. If the tunnel goes down, those downloads stop instead of falling back to your normal connection."
+                        font.pixelSize: Theme.fontSizeSmall - 1
+                        color: Theme.surfaceVariantText
+                    }
+                }
+            }
+
             // ---- advanced: the curated groups -------------------------------
             Repeater {
                 id: groupRepeater
@@ -1013,7 +1438,7 @@ Item {
 
                 width: content.width
                 padding: 14
-                visible: tab.advanced && (!tab.search || found > 0)
+                visible: tab.advanced && (!tab.searching || found > 0)
 
                 Item {
                     width: parent.width
@@ -1036,7 +1461,7 @@ Item {
                         anchors.verticalCenter: parent.verticalCenter
                         text: "Every aria2 option"
                         font.pixelSize: Theme.fontSizeMedium
-                        font.weight: Font.Bold
+                        font.weight: Font.DemiBold
                         color: Theme.surfaceText
                     }
 
@@ -1128,7 +1553,7 @@ Item {
 
                 width: content.width
                 padding: 14
-                visible: tab.advanced && !tab.search
+                visible: tab.advanced && (!tab.searching || tab.procCardFound)
 
                 //: Health first: a dot, the state in words, and version, pid
                 //: and uptime on the right.
@@ -1272,7 +1697,7 @@ Item {
 
                 width: content.width
                 padding: 14
-                visible: tab.advanced && !tab.search
+                visible: tab.advanced && (!tab.searching || tab.logCardFound)
 
                 Item {
                     width: parent.width
@@ -1294,7 +1719,7 @@ Item {
                         anchors.verticalCenter: parent.verticalCenter
                         text: "Event log"
                         font.pixelSize: Theme.fontSizeMedium
-                        font.weight: tab.logExpanded ? Font.Bold : Font.Medium
+                        font.weight: tab.logExpanded ? Font.DemiBold : Font.Medium
                         color: Theme.surfaceText
                     }
 
@@ -1451,18 +1876,7 @@ Item {
             anchors.right: saveNow.left
             anchors.rightMargin: 8
             anchors.verticalCenter: parent.verticalCenter
-            text: {
-                let n = 0
-                const current = tab.service ? tab.service.globalOptions : ({})
-                for (const k in tab.edits) {
-                    const original = current[k] === undefined || current[k] === null ? "" : String(current[k])
-                    if (!Units.same(tab.edits[k], original))
-                        n++
-                }
-                if (tab.routingDirty)
-                    n++
-                return n === 1 ? "1 unsaved change" : n + " unsaved changes"
-            }
+            text: tab.changeTotal === 1 ? "1 unsaved change" : tab.changeTotal + " unsaved changes"
             font.pixelSize: Theme.fontSizeSmall + 1
             color: Theme.surfaceText
             wrapMode: Text.NoWrap

@@ -24,6 +24,9 @@ DankFloatingWindow {
     //: by niri or Hyprland like any other window.
     readonly property var cfg: service ? service.cfg : ({})
     readonly property bool floating: cfg.windowMode !== "tiled"
+    //: Tiled, the width its column opens at: "default" (niri's own), "half",
+    //: "two-thirds" or "full".
+    readonly property string columnWidth: cfg.windowColumn || "default"
 
     //: niri opens a window of fixed size (minimum = maximum) floating, as it
     //: does a dialog; any other opens tiled and only then gets floated, a
@@ -126,6 +129,16 @@ DankFloatingWindow {
         // A reopened window comes back at its normal size.
         if (!visible)
             filled = false
+        if (visible && service && !floating && columnWidth !== "default")
+            service.request("POST", "/api/window/column", {
+                                "title": win.title,
+                                "exact": true,
+                                "width": win.columnWidth
+                            }, (data, error) => {
+                                // Hyprland has no columns: full maximizes it.
+                                if (!error && data && data.maximized)
+                                    win.filled = true
+                            })
         if (visible && service && floating)
             service.request("POST", "/api/window/float", {
                                 "title": win.title,

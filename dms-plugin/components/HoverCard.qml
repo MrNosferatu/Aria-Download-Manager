@@ -206,7 +206,7 @@ PanelWindow {
                     anchors.verticalCenter: parent.verticalCenter
                     text: card.headline
                     font.pixelSize: Theme.fontSizeMedium
-                    font.weight: Font.Bold
+                    font.weight: Font.DemiBold
                     color: card.down ? Theme.error : Theme.surfaceText
                     wrapMode: Text.NoWrap
                     elide: Text.ElideRight

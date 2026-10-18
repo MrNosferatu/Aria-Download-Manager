@@ -348,7 +348,7 @@ Column {
 
             text: (label + (on ? (desc ? " ↓" : " ↑") : "")).toUpperCase()
             font.pixelSize: Theme.fontSizeSmall - 1
-            font.weight: Font.Bold
+            font.weight: Font.DemiBold
             font.letterSpacing: 0.6
             color: on ? Theme.primary : Theme.outline
 
@@ -392,7 +392,7 @@ Column {
                 visible: view.sortKey === "progress"
                 text: view.sortDesc ? "↓" : "↑"
                 font.pixelSize: Theme.fontSizeSmall - 1
-                font.weight: Font.Bold
+                font.weight: Font.DemiBold
                 color: Theme.primary
             }
 
