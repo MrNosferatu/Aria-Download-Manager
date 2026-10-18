@@ -409,9 +409,12 @@ class QBClient:
 
     async def share_limits(self, hashes: list[str], ratio: float, minutes: int,
                            inactive: int = -2) -> None:
+        # qBittorrent 5.2 refuses the call without shareLimitAction; older
+        # versions ignore it. "Default" keeps the global setting's action.
         await self.request("POST", "torrents/setShareLimits", form={
             "hashes": "|".join(hashes), "ratioLimit": str(ratio),
-            "seedingTimeLimit": str(minutes), "inactiveSeedingTimeLimit": str(inactive)})
+            "seedingTimeLimit": str(minutes), "inactiveSeedingTimeLimit": str(inactive),
+            "shareLimitAction": "Default"})
 
     async def upload_limit(self, hashes: list[str], limit: int) -> None:
         await self.request("POST", "torrents/setUploadLimit",
@@ -528,8 +531,17 @@ class QBSupervisor:
                 raise QBError("qbittorrent-nox not found. Install it (Arch: sudo pacman -S "
                               "qbittorrent-nox) or set torrent.engine: aria2")
             self._write_profile()
-            await self._spawn(binary)
-            await self._wait_ready(timeout)
+            # One that cannot bind its port (an old instance still shutting
+            # down) is stopped and started again, a couple of times.
+            for attempt in range(3):
+                try:
+                    await self._spawn(binary)
+                    await self._wait_ready(timeout)
+                    break
+                except QBError:
+                    if attempt == 2:
+                        raise
+                    await asyncio.sleep(1.0)
             self.on_event("info", f"qBittorrent {self.version} ready for torrents "
                                   f"(pid {self.proc.pid if self.proc else '?'})")
             self._monitor_task = asyncio.create_task(self._monitor())
@@ -544,7 +556,24 @@ class QBSupervisor:
             except Exception as exc:
                 self.on_event("warn", f"Could not apply settings to qBittorrent: {exc}")
 
+    async def _port_free(self, seconds: float = 15.0) -> bool:
+        """Wait until nothing answers on the Web UI port (an old one has quit)."""
+        deadline = time.monotonic() + seconds
+        while time.monotonic() < deadline:
+            try:
+                _, writer = await asyncio.wait_for(
+                    asyncio.open_connection(self.client.host, self.client.port), 1.0)
+            except (OSError, asyncio.TimeoutError):
+                return True
+            writer.close()
+            await asyncio.sleep(0.3)
+        return False
+
     async def _spawn(self, binary: str) -> None:
+        # A qBittorrent still shutting down (the manager restarted) holds the
+        # port: the new one would run on without a Web UI, and the old one
+        # could even answer the readiness check before it goes.
+        await self._port_free()
         argv = [binary, f"--profile={self.profile}",
                 f"--webui-port={int(self.cfg.get('qbittorrent.port', 8089))}"]
         self.proc = await asyncio.create_subprocess_exec(
@@ -561,6 +590,11 @@ class QBSupervisor:
             if line:
                 self.last_error = line
                 self.on_event("warn", line, source="qbittorrent")
+                # Running without its Web UI is no use to the manager: stop it,
+                # and it is started again once the port is free.
+                if "Unable to bind" in line and proc.returncode is None:
+                    with contextlib.suppress(ProcessLookupError):
+                        proc.terminate()
 
     async def _wait_ready(self, timeout: float) -> None:
         deadline = time.monotonic() + timeout
