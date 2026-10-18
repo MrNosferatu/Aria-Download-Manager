@@ -20,9 +20,14 @@ DankFloatingWindow {
     //: narrower, the window shows the popout's layout.
     readonly property bool wideLayout: body.width >= 900
 
+    //: Settings → Window: open floating at the chosen size, or tiled, placed
+    //: by niri or Hyprland like any other window.
+    readonly property var cfg: service ? service.cfg : ({})
+    readonly property bool floating: cfg.windowMode !== "tiled"
+
     //: niri opens a window of fixed size (minimum = maximum) floating, as it
     //: does a dialog; any other opens tiled and only then gets floated, a
-    //: visible jump. So the window maps fixed at its size and becomes
+    //: visible jump. So a floating window maps fixed at its size and becomes
     //: resizable a moment later.
     property bool settling: false
 
@@ -38,9 +43,10 @@ DankFloatingWindow {
             bringForward(null)
             return
         }
-        settling = true
+        settling = floating
         visible = true
-        settleTimer.restart()
+        if (settling)
+            settleTimer.restart()
     }
 
     function hide() {
@@ -108,18 +114,19 @@ DankFloatingWindow {
     // Qt's own "no limit" (QWINDOWSIZE_MAX): a 0 × 0 maximum would be ignored
     // and leave the window stuck at the size it opened with.
     maximumSize: settling ? Qt.size(implicitWidth, implicitHeight) : Qt.size(16777215, 16777215)
-    implicitWidth: 1120
-    implicitHeight: 820
+    implicitWidth: parseInt(cfg.windowWidth) || 1120
+    implicitHeight: parseInt(cfg.windowHeight) || 820
     visible: false
 
     onClosed: win.visible = false
-    //: On niri / Hyprland a new window tiles; the manager asks the compositor to
-    //: float this one (desktop.float_windows), so no window rule is needed.
+    //: On niri / Hyprland a new window tiles; set to open floating, the
+    //: manager asks the compositor to float this one (desktop.float_windows),
+    //: so no window rule is needed.
     onVisibleChanged: {
         // A reopened window comes back at its normal size.
         if (!visible)
             filled = false
-        if (visible && service)
+        if (visible && service && floating)
             service.request("POST", "/api/window/float", {
                                 "title": win.title,
                                 "exact": true,

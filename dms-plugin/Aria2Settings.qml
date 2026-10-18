@@ -487,6 +487,98 @@ PluginSettings {
         }
     }
 
+    // ---- window ------------------------------------------------------------------
+    //: The standalone window (Click opens → Window, or the popout's "open in
+    //: window"). Each takes effect the next time it opens.
+    Group {
+        title: "WINDOW"
+
+        Row_ {
+            divider: false
+            label: "Opens as"
+            description: "Tiled lets niri or Hyprland place it like any other window"
+
+            Segmented {
+                color: Theme.surfaceContainer
+                model: ["Floating", "Tiled"]
+                currentIndex: settings.get("windowMode", "floating") === "tiled" ? 1 : 0
+                onPicked: index => settings.saveValue("windowMode", index === 1 ? "tiled" : "floating")
+            }
+        }
+
+        Row_ {
+            label: "Floating size"
+            description: settings.get("windowMode", "floating") === "tiled" ? "Used when it opens floating" : ""
+
+            Row {
+                spacing: 12
+
+                Repeater {
+                    model: [["windowWidth", 1120, 640, 2400], ["windowHeight", 820, 480, 1600]]
+
+                    Row {
+                        id: windowPair
+
+                        required property var modelData
+
+                        spacing: 8
+
+                        MiniSlider {
+                            id: windowSlider
+
+                            anchors.verticalCenter: parent.verticalCenter
+                            width: 110
+                            minimum: windowPair.modelData[2]
+                            maximum: windowPair.modelData[3]
+                            step: 10
+                            value: parseInt(settings.get(windowPair.modelData[0], windowPair.modelData[1])) || windowPair.modelData[1]
+                            onCommitted: value => settings.saveValue(windowPair.modelData[0], value)
+                        }
+
+                        StyledText {
+                            anchors.verticalCenter: parent.verticalCenter
+                            width: 58
+                            horizontalAlignment: Text.AlignRight
+                            text: windowSlider.value + " px"
+                            font.pixelSize: Theme.fontSizeSmall + 1
+                            color: Theme.surfaceText
+                        }
+                    }
+                }
+            }
+        }
+
+        Row_ {
+            label: "Details column"
+            description: "Width of the details beside the list; dragging its edge sets it too"
+
+            Row {
+                spacing: 8
+
+                MiniSlider {
+                    id: paneSlider
+
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: 150
+                    minimum: 300
+                    maximum: 800
+                    step: 10
+                    value: parseInt(settings.get("windowPaneWidth", 360)) || 360
+                    onCommitted: value => settings.saveValue("windowPaneWidth", String(value))
+                }
+
+                StyledText {
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: 58
+                    horizontalAlignment: Text.AlignRight
+                    text: paneSlider.value + " px"
+                    font.pixelSize: Theme.fontSizeSmall + 1
+                    color: Theme.surfaceText
+                }
+            }
+        }
+    }
+
     // ---- notifications -----------------------------------------------------------
     //: The old single "notify" switch seeds both, so turning on toasts before
     //: the split keeps them on after it.

@@ -42,10 +42,14 @@ Item {
     //: list, kept in the plugin's settings, and held to what leaves the list
     //: room.
     property int draggedPaneWidth: -1
+    //: Settings → Window → Details column; dragging the divider sets it too.
     readonly property int storedPaneWidth: parseInt((service && service.cfg.windowPaneWidth) || "360") || 360
     readonly property int paneMin: 300
     readonly property int paneMax: Math.max(paneMin, width - rail.width - 360)
     readonly property int paneWidth: Math.max(paneMin, Math.min(paneMax, draggedPaneWidth > 0 ? draggedPaneWidth : storedPaneWidth))
+    //: A drag holds the width until it is saved; a change from Settings
+    //: (or the saved drag itself) then takes over again.
+    onStoredPaneWidthChanged: draggedPaneWidth = -1
     readonly property int statusHeight: 34
 
     Connections {
