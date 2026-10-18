@@ -1,11 +1,11 @@
 /* The file tree (lib/filetree-view.js), shared by the download dialog and the
    manager page. One grid for every row and the header, so columns line up. */
 .ftree {
-  --ft-cols: minmax(0, 1fr) 84px 132px 92px;
+  --ft-cols: minmax(0, 1fr) 84px 132px 126px;
   display: flex; flex-direction: column; gap: 8px; min-width: 0;
   container-type: inline-size;
 }
-.ftree.ft-noprogress { --ft-cols: minmax(0, 1fr) 84px 92px; }
+.ftree.ft-noprogress { --ft-cols: minmax(0, 1fr) 84px 120px; }
 .ftree.ft-noprogress .ft-done, .ftree.ft-noprogress .ft-col-progress { display: none; }
 
 .ft-bar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
@@ -61,7 +61,7 @@
 .ft-bar-fill { display: block; height: 100%; background: var(--primary); border-radius: 3px; }
 .ft-done.is-full .ft-bar-fill { background: var(--success); }
 .ft-pct { width: 38px; text-align: right; color: var(--on-surface-var); font-size: var(--fs-xs); font-variant-numeric: tabular-nums; }
-.ft-level { height: 26px; font-size: var(--fs-sm); padding: 0 24px 0 10px; border-radius: 13px; background-position: right 4px center; }
+.ft-level { height: 26px; font-size: var(--fs-sm); padding: 0 22px 0 8px; border-radius: 13px; background-position: right 4px center; }
 .ft-level.is-raised { background-color: var(--secondary-container); color: var(--on-secondary-container); font-weight: 600; }
 .is-off .ft-level { color: var(--on-surface-var); }
 .ft-foldall[hidden] { display: none; }
@@ -69,14 +69,16 @@
 /* A narrow pane (the manager page's side pane): the progress becomes a line
    under the name and the counts step aside, so the name keeps its room. */
 @container (max-width: 520px) {
-  .ft-head, .ft-row { --ft-cols: minmax(0, 1fr) 62px 76px; gap: 6px; padding: 0 6px; }
+  .ft-head, .ft-row { --ft-cols: minmax(0, 1fr) 62px 104px; gap: 6px; padding: 0 6px; }
   .ft-col-progress, .ft-count, .ft-folder { display: none; }
   .ft-level { padding-left: 8px; }
   .ft-row { position: relative; }
-  .ft-done { position: absolute; left: 36px; right: 154px; bottom: 3px; }
+  .ft-done { position: absolute; left: 36px; right: 182px; bottom: 3px; }
   .ft-done .ft-bar-track { height: 3px; }
   .ft-pct { display: none; }
   .ft-row:not(.is-dir) .ft-name { padding-left: calc(var(--depth, 0) * 14px + 26px); }
   .ft-name { padding-left: calc(var(--depth, 0) * 14px); }
 }
 .ft-empty { padding: 14px; color: var(--on-surface-var); font-size: var(--fs-md); margin: 0; }
+.ft-note { flex: none; font-size: var(--fs-xs); color: var(--warning); }
+.is-noted .ft-label { color: var(--warning); }

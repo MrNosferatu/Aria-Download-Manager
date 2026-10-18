@@ -93,13 +93,12 @@ Item {
 
         Repeater {
             model: [
-                ["inbox", "All", "all", manager.counts.total],
+                ["inbox", "All", "all", (manager.counts.total || 0) + (manager.service ? manager.service.pastEntries.length : 0)],
                 ["downloading", "Active", "active", manager.counts.active],
                 ["schedule", "Queued", "waiting", manager.counts.waiting],
                 ["pause_circle", "Paused", "paused", manager.counts.paused],
-                ["task_alt", "Done", "complete", manager.counts.complete],
-                ["error", "Failed", "error", manager.counts.error],
-                ["history", "History", "history", undefined]
+                ["task_alt", "Done", "complete", (manager.counts.complete || 0) + (manager.service ? manager.service.pastDone : 0)],
+                ["error", "Failed", "error", (manager.counts.error || 0) + (manager.service ? manager.service.pastFailed : 0)]
             ]
 
             RailItem {

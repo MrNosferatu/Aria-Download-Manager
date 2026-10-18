@@ -162,6 +162,20 @@ Singleton {
     property string speedSource: "hybrid"
     property var triggers: []
     property var history: null
+    //: Finished downloads aria2 no longer holds: the history, less what the
+    //: live list still shows. They are listed under Done (Failed for one that
+    //: stopped with an error), so All has them too.
+    readonly property var pastEntries: {
+        const live = ({})
+        for (const d of downloads) {
+            live[d.gid] = true
+            if (d.path)
+                live[d.path] = true
+        }
+        return (history ? (history.entries || []) : []).filter(e => !live[e.key] && !live[e.path] && !live[e.gid])
+    }
+    readonly property int pastFailed: pastEntries.filter(e => e.status === "error").length
+    readonly property int pastDone: pastEntries.length - pastFailed
     property var serverConfig: null
 
     signal rulesLoaded

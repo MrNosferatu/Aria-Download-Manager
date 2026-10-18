@@ -7,11 +7,14 @@
    over the wanted bytes, green at 100%; and a priority, "Mixed" when the
    files inside differ, that sets every file in it. Sortable columns, Expand
    all, and a filter for big torrents. Changes go to `onChange(levels)` as
-   they happen; the page decides when to save. */
+   they happen; the page decides when to save (or, for a finished torrent in
+   History, to fetch). `notes` puts a word on a file's row ("not on disk");
+   `onOpen(path)` opens a file on a double click. */
 'use strict';
 
 const FT_LEVELS = [[1, 'Normal'], [2, 'High'], [3, 'Max']];
-const FT_ROW_LEVELS = [[0, 'Skip'], ...FT_LEVELS];
+// The menu says "don't download" in full; a skipped row reads Skip.
+const FT_ROW_LEVELS = [[0, "Don't download"], ...FT_LEVELS];
 const FT_SORTS = [['name', 'Name'], ['size', 'Size'], ['progress', 'Progress'], ['priority', 'Priority']];
 const FT_CHEVRON = '<svg class="ico" viewBox="0 0 24 24"><path d="M10 6 8.59 7.41 13.17 12l-4.58 4.59L10 18l6-6z"/></svg>';
 const FT_FOLDER = '<svg class="ico" viewBox="0 0 24 24"><path d="M10 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z"/></svg>';
@@ -43,8 +46,11 @@ function mountFileTree(host, options) {
     desc: false,
     root: null,
     editedAt: 0,
+    notes: options.notes || {},
   };
   const onChange = options.onChange || (() => {});
+  const onOpen = options.onOpen || null;
+  const pathOf = (index) => (S.files.find((f) => String(f.index) === String(index)) || {}).path || '';
 
   host.classList.add('ftree');
   if (!S.progress) host.classList.add('ft-noprogress');
@@ -127,6 +133,7 @@ function mountFileTree(host, options) {
         ${row.isDir ? `<button type="button" class="ft-twisty${row.open ? ' is-open' : ''}" data-role="twisty" aria-label="${row.open ? 'Fold' : 'Unfold'}">${FT_CHEVRON}</button>` : ''}
         ${row.isDir ? `<span class="ft-folder">${FT_FOLDER}</span>` : ''}
         <span class="ft-label"></span>
+        ${!row.isDir && S.notes[row.index] ? `<span class="ft-note">${S.notes[row.index]}</span>` : ''}
         ${row.isDir ? `<span class="ft-count">${row.count === 1 ? '1 file' : `${row.count} files`}</span>` : ''}
       </span>
       <span class="ft-size">${size}</span>
@@ -137,6 +144,14 @@ function mountFileTree(host, options) {
       <select class="ft-level${row.level >= 2 ? ' is-raised' : ''}" data-role="level" aria-label="Priority">${levelOptions}</select>`;
     const label = el.querySelector('.ft-label');
     label.textContent = row.name;
+    if (!row.isDir && S.notes[row.index]) el.classList.add('is-noted');
+    if (!row.isDir && onOpen) {
+      el.addEventListener('dblclick', (e) => {
+        if (e.target.closest('input, select, button')) return;
+        const path = pathOf(row.index);
+        if (path && !S.notes[row.index]) onOpen(path);
+      });
+    }
     label.title = row.waiting ? `${row.name} · starts after the higher priorities` : row.name;
     const check = el.querySelector('[data-role="check"]');
     check.indeterminate = row.state === 1;

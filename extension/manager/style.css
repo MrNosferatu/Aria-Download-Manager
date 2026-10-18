@@ -716,3 +716,5 @@ input.fld {
   & span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   &.own { border-color: var(--primary); background: color-mix(in oklch, var(--primary) 10%, var(--surface)); }
 }
+/* Finished rows aria2 forgot, after the live ones: part of the same list. */
+.past-rows { display: contents; }

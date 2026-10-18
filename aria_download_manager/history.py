@@ -180,6 +180,7 @@ class History:
         self.pending_files.discard(key)
         if not entry:
             return
+        kept = {f["index"]: f.get("level") for f in entry.get("files") or [] if f.get("level") is not None}
         entry["files"] = [
             {
                 "index": int(f.get("index") or i + 1),
@@ -190,9 +191,26 @@ class History:
             }
             for i, f in enumerate(files)
         ]
+        # A priority the engine reports (qBittorrent) wins; else the one a
+        # fetch asked for is kept across the refetch.
+        for f, source in zip(entry["files"], files):
+            level = source.get("priority") if source.get("priority") is not None else kept.get(f["index"])
+            if level is not None:
+                f["level"] = int(level)
         if magnet:
             entry["magnet"] = magnet
         entry["files_gid"] = gid
+        self._dirty = True
+        self.save()
+
+    def set_levels(self, key: str, levels: dict[int, int]) -> None:
+        """Keep the priorities a fetch asked for, so the detail shows them."""
+        entry = self.get(key)
+        if not entry:
+            return
+        for f in entry.get("files") or []:
+            if f["index"] in levels:
+                f["level"] = int(levels[f["index"]])
         self._dirty = True
         self.save()
 

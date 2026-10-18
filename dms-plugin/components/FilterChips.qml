@@ -3,20 +3,17 @@ import qs.Common
 import qs.Widgets
 
 //: The Downloads filters. Drawn here rather than with DankFilterChips, which
-//: styles every chip alike: an empty filter dims, a non-empty Failed turns
-//: error-red so it is noticed, and History — a different list, not a filter
-//: on this one — stands apart at the right edge with an outlined look.
+//: styles every chip alike: an empty filter dims, and a non-empty Failed
+//: turns error-red so it is noticed. Finished downloads aria2 forgot are
+//: under Done, so there is no separate History.
 Item {
     id: chips
 
-    //: [{label, value, count}], History last.
+    //: [{label, value, count}]
     property var model: []
     property string current: "all"
 
     signal picked(string value)
-
-    readonly property var filters: model.filter(c => c.value !== "history")
-    readonly property var history: model.find(c => c.value === "history") || null
 
     implicitHeight: Math.max(flow.implicitHeight, 32)
 
@@ -31,7 +28,6 @@ Item {
         signal activated
         readonly property bool empty: chipData.count === 0 && chipData.value !== "all"
         readonly property bool alarm: chipData.value === "error" && chipData.count > 0
-        readonly property bool apart: chipData.value === "history"
 
         readonly property color ink: {
             if (selected)
@@ -40,7 +36,7 @@ Item {
                 return Theme.error
             if (empty)
                 return Theme.outline
-            return apart ? Theme.surfaceVariantText : Theme.surfaceText
+            return Theme.surfaceText
         }
 
         width: chipRow.implicitWidth + 24
@@ -53,8 +49,7 @@ Item {
                 return Theme.withAlpha(Theme.error, area.containsMouse ? 0.18 : 0.12)
             return area.containsMouse ? Theme.withAlpha(Theme.surfaceText, 0.06) : "transparent"
         }
-        //: History's outline is dashed, drawn below; the rest are solid.
-        border.width: selected || apart ? 0 : 1
+        border.width: selected ? 0 : 1
         border.color: {
             if (alarm)
                 return Theme.withAlpha(Theme.error, 0.5)
@@ -63,33 +58,6 @@ Item {
             return Theme.outlineVariant
         }
 
-        Canvas {
-            id: dashes
-
-            anchors.fill: parent
-            visible: chip.apart && !chip.selected
-
-            property color tint: Theme.outlineVariant
-
-            onTintChanged: requestPaint()
-            onWidthChanged: requestPaint()
-
-            onPaint: {
-                const ctx = getContext("2d")
-                ctx.reset()
-                const r = (height - 1) / 2
-                ctx.strokeStyle = tint
-                ctx.lineWidth = 1
-                ctx.setLineDash([3, 3])
-                ctx.beginPath()
-                ctx.moveTo(r + 0.5, 0.5)
-                ctx.lineTo(width - r - 0.5, 0.5)
-                ctx.arc(width - r - 0.5, r + 0.5, r, -Math.PI / 2, Math.PI / 2)
-                ctx.lineTo(r + 0.5, height - 0.5)
-                ctx.arc(r + 0.5, r + 0.5, r, Math.PI / 2, Math.PI * 1.5)
-                ctx.stroke()
-            }
-        }
 
         Row {
             id: chipRow
@@ -128,12 +96,11 @@ Item {
         id: flow
 
         anchors.left: parent.left
-        anchors.right: historyChip.left
-        anchors.rightMargin: Theme.spacingS
+        anchors.right: parent.right
         spacing: 6
 
         Repeater {
-            model: chips.filters
+            model: chips.model
 
             Chip {
                 required property var modelData
@@ -143,16 +110,5 @@ Item {
                 onActivated: chips.picked(modelData.value)
             }
         }
-    }
-
-    Chip {
-        id: historyChip
-
-        anchors.right: parent.right
-        anchors.top: parent.top
-        visible: !!chips.history
-        chipData: chips.history || ({})
-        selected: chips.current === "history"
-        onActivated: chips.picked("history")
     }
 }

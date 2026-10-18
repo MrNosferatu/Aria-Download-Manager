@@ -33,10 +33,8 @@ const S = {
   speedSource: 'hybrid',
   // Which action card is open (-1: none), and whether as JSON.
   openRule: -1,
-  // The History entry opened under its row ('' for none), and the files
-  // ticked in each for fetching.
+  // The finished entry opened under its row ('' for none).
   historyOpen: '',
-  historyPicks: new Map(),
   ruleJson: false,
   config: null,
   history: null,
@@ -321,12 +319,22 @@ function applyState(state) {
   flip.disabled = !aria2.running || (!busy && !waiting);
   $('#btn-purge').disabled = !(counts.stopped > 0);
 
-  setCount('all', counts.total ?? (state.downloads || []).length);
+  // Finished downloads aria2 forgot are listed with the live ones.
+  const past = pastEntries();
+  const pastFailed = past.filter((e) => e.status === 'error').length;
+  setCount('all', (counts.total ?? (state.downloads || []).length) + past.length);
   setCount('active', counts.active ?? 0);
   setCount('waiting', counts.waiting ?? 0);
   setCount('paused', counts.paused ?? 0);
-  setCount('complete', counts.complete ?? 0);
-  setCount('error', counts.error ?? 0);
+  setCount('complete', (counts.complete ?? 0) + past.length - pastFailed);
+  setCount('error', (counts.error ?? 0) + pastFailed);
+  // A download that finishes (or fails) is recorded: read the history again,
+  // so it stays listed once aria2 forgets it.
+  const finished = (counts.complete ?? 0) + (counts.error ?? 0);
+  if (finished !== S.finishedSeen) {
+    S.finishedSeen = finished;
+    loadHistory();
+  }
 
   const rules = state.rules || {};
   $('#rules-master').checked = !!rules.enabled;
@@ -479,22 +487,43 @@ function setEmpty(title, text) {
   host.innerHTML = `${icon('download')}<b>${escapeHtml(title)}</b><span>${escapeHtml(text)}</span>`;
 }
 
+/* Finished downloads aria2 no longer holds: the history, less what the live
+   list still shows. They sit under Done (Failed for one that stopped with an
+   error), after the live rows, so All has them too. */
+function pastEntries() {
+  const live = new Set();
+  for (const d of S.state?.downloads || []) {
+    live.add(d.gid);
+    if (d.path) live.add(d.path);
+  }
+  return (S.history?.entries || []).filter((e) => !live.has(e.key) && !live.has(e.path) && !live.has(e.gid));
+}
+
+function visiblePast() {
+  const needle = S.search.toLowerCase();
+  return sortHistory(pastEntries().filter((e) => {
+    const status = e.status === 'error' ? 'error' : 'complete';
+    if (S.filter !== 'all' && status !== S.filter) return false;
+    return !needle || String(e.name || e.key).toLowerCase().includes(needle);
+  }));
+}
+
 function renderDownloads() {
-  if (S.filter === 'history') return;  // history is rendered from its own fetch
   const list = visibleDownloads();
+  const past = visiblePast();
   const container = $('#downloads');
-  $('#empty').hidden = list.length > 0;
-  if (!list.length) {
+  $('#empty').hidden = list.length + past.length > 0;
+  if (!list.length && !past.length) {
     // Every empty list says why it is empty and what to do next.
     const EMPTY = {
       all: ['No downloads yet', 'Click a download link on any site, paste one with Add, or right-click a link → Download link.'],
       active: ['Nothing is downloading right now', 'Paused and queued downloads are under their own filters.'],
       waiting: ['The queue is empty', 'Downloads wait here when more are added than run at once.'],
       paused: ['Nothing is paused', ''],
-      complete: ['Nothing finished since aria2c started', 'aria2 forgets finished downloads when it restarts. History keeps them.'],
+      complete: ['Nothing finished yet', 'Finished downloads stay here, even after aria2 forgets them.'],
       error: ['Nothing has failed', 'Downloads that stop with an error land here, with the reason and a Retry button.'],
     };
-    if (S.search) setEmpty(`Nothing matches “${S.search}”`, 'Older downloads that aria2 no longer holds are in History.');
+    if (S.search) setEmpty(`Nothing matches “${S.search}”`, '');
     else setEmpty(...(EMPTY[S.filter] || EMPTY.all));
   }
 
@@ -514,6 +543,7 @@ function renderDownloads() {
   for (const [gid, row] of S.rows) {
     if (!seen.has(gid)) { row.remove(); S.rows.delete(gid); S.expanded.delete(gid); }
   }
+  renderPast(container, past);
   for (const dl of list) {
     const origin = S.openWhenListed.has(dl.gid) ? dl.gid : dl.following;
     if (!origin || !S.openWhenListed.has(origin) || dl.numFiles < 2) continue;
@@ -964,6 +994,7 @@ function renderDetail(host, gid, data) {
     if (!draft.tree) {
       draft.tree = mountFileTree($d('d-tree'), {
         files, base: st.dir || '', levels, progress: true,
+        onOpen: (path) => act(`/api/download/${gid}/open`, { method: 'POST', body: { file: path } }).catch(() => {}),
         onChange: (next) => saveLevels(gid, draft, next, $d('d-saved')),
       });
     } else {
@@ -1881,17 +1912,14 @@ function setSort(field, desc = SORT_DEFAULT_DESC[field]) {
     localStorage.setItem('aria.sortDesc', String(S.sortDesc));
   } catch { /* remembered or not, the list still sorts */ }
   renderSortControl();
-  if (S.filter === 'history') renderHistory();
-  else renderDownloads();
+  S.pastSignature = '';
+  renderDownloads();
 }
 
 function renderSortControl() {
-  const history = S.filter === 'history';
   const select = $('#sort-field');
-  // History has no queue: it is ordered by when things finished instead.
-  select.querySelector('[value="queue"]').disabled = history;
-  const field = history && S.sort === 'queue' ? 'finished' : S.sort;
-  const desc = history && S.sort === 'queue' ? true : S.sortDesc;
+  const field = S.sort;
+  const desc = S.sortDesc;
   select.value = field;
   const btn = $('#sort-dir');
   const words = field === 'queue'
@@ -2042,26 +2070,33 @@ async function loadHistory() {
     toast(err.message, 'error');
     return;
   }
-  renderHistory();
+  if (S.state) applyState(S.state);
+  renderDownloads();
 }
 
-function renderHistory() {
+/* The finished rows aria2 forgot, after the live ones, in a box of their own
+   so the live rows' incremental updates leave them be. Same shape as a
+   download row: tile, name, one line, one action — Open when the file is
+   there, Again when it is not. Under Done, the record can be cleared. */
+function renderPast(container, rows) {
   const data = S.history;
-  const host = $('#downloads');
   const bar = $('#history-bar');
-  if (S.filter !== 'history') { bar.hidden = true; return; }
-  bar.hidden = false;
-  if (!data) return;
-
-  const s = data.summary || {};
-  $('#history-summary').textContent =
-    `${s.count || 0} recorded · ${s.completed || 0} finished · ${fmtBytes(s.bytes || 0)} · kept in ${s.file || ''}`;
-
-  const rows = sortHistory(data.entries || []);
-  $('#empty').hidden = rows.length > 0;
-  if (!rows.length) setEmpty('No history yet', 'Finished downloads are remembered here, even after a restart.');
-  // Same shape as a download row: tile, name, one line, one action and the
-  // rest beside it — Open when the file is there, Again when it is not.
+  bar.hidden = S.filter !== 'complete' || !rows.length;
+  if (data && !bar.hidden) {
+    const s = data.summary || {};
+    $('#history-summary').textContent =
+      `${rows.length} that aria2 no longer holds · ${s.count || 0} recorded · kept in ${s.file || ''}`;
+  }
+  if (!S.pastBox) {
+    S.pastBox = document.createElement('div');
+    S.pastBox.className = 'past-rows';
+  }
+  if (S.pastBox.parentNode !== container || container.lastElementChild !== S.pastBox) container.append(S.pastBox);
+  // Redrawn only when what it shows changed: an open detail keeps its place.
+  const signature = JSON.stringify([rows.map((e) => [e.key, e.status, e.file_exists, e.finished_at]), S.historyOpen]);
+  if (signature === S.pastSignature) return;
+  S.pastSignature = signature;
+  const host = S.pastBox;
   host.innerHTML = rows.map((e) => {
     const kind = fileKind(e.name || e.key);
     const missing = e.file_exists === false;
@@ -2114,7 +2149,7 @@ function renderHistory() {
         if (ev.target.closest('button') && ev.target.closest('button') !== btn) return;
         ev.stopPropagation();
         S.historyOpen = S.historyOpen === key ? '' : key;
-        renderHistory();
+        renderDownloads();
         return;
       }
       ev.stopPropagation();
@@ -2141,22 +2176,12 @@ async function fillHistoryDetail(host, entry) {
     host.innerHTML = `<p class="hint err">${escapeHtml(err.message)}</p>`;
     return;
   }
-  const picks = S.historyPicks.get(entry.key) || new Set();
-  S.historyPicks.set(entry.key, picks);
   const torrent = Boolean(entry.isTorrent);
   const stopped = entry.status === 'error' || entry.status === 'removed';
   const magnet = record.magnet || (String(record.url || '').startsWith('magnet:') ? record.url : '');
   const folder = entry.dir || String(entry.path || '').replace(/\/[^/]*$/, '');
   const home = (p) => String(p || '').replace(/^\/home\/[^/]+/, '~');
-  const stateOf = (f) => (!f.selected ? 'skipped' : f.exists ? 'done' : 'missing');
-  const relative = (path) => {
-    for (const base of [`${entry.path}/`, `${entry.dir}/`]) if (path.startsWith(base)) return path.slice(base.length);
-    return path;
-  };
-  // In natural order, as the file tree shows them: "(2)" before "(10)".
-  const files = (record.files || []).slice().sort((a, b) => treeCompareNames(relative(a.path), relative(b.path)));
-  const counts = { done: 0, missing: 0, skipped: 0 };
-  for (const f of files) counts[stateOf(f)] += 1;
+  const files = record.files || [];
 
   const buttons = [];
   if (torrent) buttons.push(['folder', 'Open folder', 'folder', 'btn btn-sm btn-primary']);
@@ -2182,51 +2207,41 @@ async function fillHistoryDetail(host, entry) {
     body += '<p class="hint">Its file list was not recorded: it finished before this version of the manager kept one.</p>';
   }
   if (torrent && files.length) {
-    body += `<div class="hsum"><span class="hint">${counts.done} of ${files.length} files here${
-      counts.missing ? ` · ${counts.missing} not on disk` : ''}${counts.skipped ? ` · ${counts.skipped} skipped` : ''}</span>
-      <span class="hlegend"><span class="done">${icon('check')}done</span><span class="skip">${icon('remove')}skipped</span><span class="miss">${icon('info')}not on disk</span></span></div>
-      <div class="hfiles">${files.map((f) => {
-        const st = stateOf(f);
-        const mark = st === 'done' ? `<span class="hmark done" aria-label="Done">${icon('check')}</span>`
-          : `<input type="checkbox" data-pick="${f.index}"${picks.has(f.index) ? ' checked' : ''}${magnet ? '' : ' disabled'} aria-label="Fetch ${escapeHtml(relative(f.path))}">`;
-        return `<label class="hfile is-${st}">${mark}<span class="name">${escapeHtml(relative(f.path))}</span>
-          <span class="note">${st === 'missing' ? 'not on disk' : st === 'skipped' ? 'skipped' : ''}</span><span class="size">${fmtBytes(f.length)}</span></label>`;
-      }).join('')}</div>`;
-    if (counts.done < files.length) body += '<div class="hfoot"><span class="hint" data-role="picked"></span><button class="btn btn-primary btn-sm" data-role="more"></button></div>';
+    body += `<div class="htree" data-role="tree"></div>${magnet ? ''
+      : '<p class="hint">No magnet link was recorded, so changes here cannot fetch it again.</p>'}`;
   }
   host.innerHTML = `<div class="hactions">${buttons.map(([what, label, ico, cls]) =>
     `<button class="${cls}" data-do="${what}">${icon(ico)}<span>${escapeHtml(label)}</span></button>`).join('')}</div>${body}`;
 
-  const paintPicks = () => {
-    const chosen = files.filter((f) => picks.has(f.index));
-    const bytes = chosen.reduce((sum, f) => sum + f.length, 0);
-    const note = host.querySelector('[data-role="picked"]');
-    const more = host.querySelector('[data-role="more"]');
-    if (!note) return;
-    note.textContent = magnet ? `${chosen.length} picked · ${fmtBytes(bytes)} · into ${home(entry.path || folder)}`
-      : 'No magnet link was recorded, so it cannot be added again.';
-    more.innerHTML = `${icon('download')}<span>Download ${chosen.length} more</span>`;
-    more.disabled = !chosen.length || !magnet;
-  };
-  paintPicks();
-  for (const box of host.querySelectorAll('[data-pick]')) {
-    box.addEventListener('change', () => {
-      const index = Number(box.dataset.pick);
-      if (box.checked) picks.add(index); else picks.delete(index);
-      paintPicks();
-    });
-  }
-  const fetchFiles = async (indices, ok) => {
+  const fetchFiles = async (body, ok) => {
     try {
-      await act('/api/history/fetch', { method: 'POST', body: { key: entry.key, indices } }, ok);
-      picks.clear();
+      await act('/api/history/fetch', { method: 'POST', body: { key: entry.key, ...body } }, ok);
       loadHistory();
     } catch { /* the toast said why */ }
   };
-  host.querySelector('[data-role="more"]')?.addEventListener('click', () => {
-    const chosen = [...picks];
-    fetchFiles(chosen, `Fetching ${chosen.length} more`);
-  });
+  // The same tree a live torrent has: what is on disk is its progress. A
+  // changed priority (or "don't download") fetches that choice once the
+  // clicks settle, keeping what is there.
+  if (torrent && files.length > 1) {
+    const levels = Object.fromEntries(files.map((f) => [String(f.index), f.level ?? (f.selected ? 1 : 0)]));
+    const notes = Object.fromEntries(files.filter((f) => f.selected && !f.exists).map((f) => [String(f.index), 'not on disk']));
+    let timer = 0;
+    mountFileTree(host.querySelector('[data-role="tree"]'), {
+      files: files.map((f) => ({ index: String(f.index), path: f.path, length: f.length, completedLength: f.exists ? f.completed : 0 })),
+      base: entry.dir || '',
+      levels,
+      notes,
+      progress: true,
+      onOpen: (path) => act('/api/history/open', { method: 'POST', body: { key: entry.key, file: path } }).catch(() => {}),
+      onChange: (next) => {
+        clearTimeout(timer);
+        timer = setTimeout(() => {
+          const wanted = files.filter((f) => Number(next[String(f.index)]) > 0 && !f.exists).length;
+          if (wanted && magnet) fetchFiles({ levels: next }, `Fetching ${wanted} file${wanted === 1 ? '' : 's'}`);
+        }, 1200);
+      },
+    });
+  }
   for (const btn of host.querySelectorAll('[data-do]')) {
     btn.addEventListener('click', async () => {
       const what = btn.dataset.do;
@@ -2235,7 +2250,7 @@ async function fillHistoryDetail(host, entry) {
         else if (what === 'open') await act('/api/history/open', { method: 'POST', body: { key: entry.key, folder: false } });
         else if (what === 'copy') { await navigator.clipboard.writeText(magnet); toast('Magnet copied', 'ok'); }
         else if (what === 'again') {
-          if (torrent && magnet && files.length) await fetchFiles(files.map((f) => f.index), stopped ? 'Resumed' : 'Added again');
+          if (torrent && magnet && files.length) await fetchFiles({ indices: files.map((f) => f.index) }, stopped ? 'Resumed' : 'Added again');
           else { await act('/api/history/readd', { method: 'POST', body: { key: entry.key } }, 'Added again'); loadHistory(); }
         } else if (what === 'forget') {
           await act('/api/history/remove', { method: 'POST', body: { key: entry.key } }, 'Forgotten');
@@ -3006,7 +3021,7 @@ function selectedRows() {
 
 function renderBulkBar() {
   const bar = $('#bulk-bar');
-  bar.hidden = !S.selecting || S.filter === 'history';
+  bar.hidden = !S.selecting;
   const n = S.selection.size;
   $('#bulk-count').textContent = n === 1 ? '1 selected' : `${n} selected`;
   for (const id of ['#bulk-pause', '#bulk-resume', '#bulk-remove']) $(id).disabled = !n;
@@ -3056,11 +3071,11 @@ function setFilter(filter) {
   for (const [, row] of S.rows) row.remove();
   S.rows.clear();
   $('#downloads').innerHTML = '';
+  S.pastSignature = '';
   S.selection.clear();
   renderBulkBar();
   renderSortControl();
-  if (S.filter === 'history') loadHistory();
-  else { $('#history-bar').hidden = true; renderDownloads(); }
+  renderDownloads();
 }
 
 function switchTab(name) {
@@ -3106,8 +3121,7 @@ function init() {
   $('#sort-field').addEventListener('change', (e) => setSort(e.target.value));
   $('#sort-dir').addEventListener('click', () => {
     const field = $('#sort-field').value;
-    const desc = S.filter === 'history' && S.sort === 'queue' ? true : S.sortDesc;
-    setSort(field, !desc);
+    setSort(field, !S.sortDesc);
   });
   renderSortControl();
   $('#btn-history-clear').addEventListener('click', async () => {
@@ -3227,3 +3241,4 @@ function revealLog() {
 }
 
 document.addEventListener('DOMContentLoaded', init);
+

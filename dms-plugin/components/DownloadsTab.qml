@@ -183,7 +183,23 @@ Item {
         confirmingBulkRemove = true
     }
 
-    readonly property bool historyMode: filter === "history"
+    // ---- finished downloads aria2 no longer holds ---------------------------
+    //: The manager's history, less what the live list still shows (see the
+    //: service): listed as "h:" + their key under Done, Failed and All.
+    readonly property var pastEntries: service ? service.pastEntries : []
+    readonly property var pastById: {
+        const out = ({})
+        for (const e of pastEntries)
+            out["h:" + e.key] = e
+        return out
+    }
+
+    function pastStatus(entry) {
+        return entry.status === "error" ? "error" : "complete"
+    }
+
+    readonly property int pastDone: service ? service.pastDone : 0
+    readonly property int pastFailed: service ? service.pastFailed : 0
 
     // ---- sort ------------------------------------------------------------
     //: "queue", "added" or "finished", and whether it runs backwards. Kept in
@@ -203,9 +219,8 @@ Item {
         const field = service ? service.cfg.downloadSort : ""
         return sortFields.indexOf(field) >= 0 ? field : "queue"
     }
-    //: History has no queue; it is ordered by when things finished instead.
-    readonly property string sortField: historyMode && storedSort === "queue" ? "finished" : storedSort
-    readonly property bool sortDesc: historyMode && storedSort === "queue" ? true : (service ? service.cfg.downloadSortDesc === true : false)
+    readonly property string sortField: storedSort
+    readonly property bool sortDesc: service ? service.cfg.downloadSortDesc === true : false
 
     function setSort(field, desc) {
         PluginService.savePluginData("ariaDownloadManager", "downloadSort", field)
@@ -214,39 +229,6 @@ Item {
 
     onSortFieldChanged: recompute()
     onSortDescChanged: recompute()
-
-    readonly property var historyEntries: {
-        const entries = service && service.history ? (service.history.entries || []) : []
-        const key = sortField === "added" ? "added_at" : "finished_at"
-        const dir = sortDesc ? -1 : 1
-        const at = e => e[key] || e.first_seen || 0
-        return entries.slice().sort((a, b) => dir * (at(a) - at(b)))
-    }
-
-    //: History as the list shows it: filtered by the search box, with a
-    //: header row (Today, Yesterday, This week, Earlier) wherever the day
-    //: group changes. {header} or {entry}.
-    readonly property var historyRows: {
-        const needle = search.toLowerCase()
-        const key = sortField === "added" ? "added_at" : "finished_at"
-        const out = []
-        let group = ""
-        for (const e of historyEntries) {
-            if (needle && String(e.name || e.key || "").toLowerCase().indexOf(needle) === -1)
-                continue
-            const g = Fmt.dayGroup(e[key] || e.first_seen)
-            if (g !== group) {
-                out.push({
-                             "header": g
-                         })
-                group = g
-            }
-            out.push({
-                         "entry": e
-                     })
-        }
-        return out
-    }
 
     // gid -> row, so a delegate can bind to live values without the list model
     // itself churning every tick.
@@ -263,7 +245,7 @@ Item {
     property var gids: []
 
     function recompute() {
-        if (!service || historyMode)
+        if (!service)
             return
 
         const rank = {
@@ -302,29 +284,66 @@ Item {
             })
         }
 
-        const next = list.map(d => d.gid)
+        // Finished ones aria2 has forgotten: after the queue, newest first, or
+        // among the live ones by the same date.
+        const past = pastEntries.filter(e => (filter === "all" || pastStatus(e) === filter)
+                                            && (!needle || String(e.name || e.key || "").toLowerCase().indexOf(needle) >= 0))
+        let next
+        if (sortField === "queue") {
+            past.sort((a, b) => (b.finished_at || 0) - (a.finished_at || 0))
+            next = list.map(d => d.gid).concat(past.map(e => "h:" + e.key))
+        } else {
+            const live = sortField === "added" ? "addedAt" : "finishedAt"
+            const old = sortField === "added" ? "added_at" : "finished_at"
+            const items = list.map(d => ({
+                                             "id": d.gid,
+                                             "at": d[live]
+                                         })).concat(past.map(e => ({
+                                                                       "id": "h:" + e.key,
+                                                                       "at": e[old] || e.first_seen
+                                                                   })))
+            items.sort((a, b) => {
+                const xNone = a.at === undefined || a.at === null
+                const yNone = b.at === undefined || b.at === null
+                if (xNone || yNone)
+                    return xNone - yNone
+                return dir * (a.at - b.at)
+            })
+            next = items.map(i => i.id)
+        }
         if (next.join(",") !== gids.join(","))
             gids = next
     }
 
     function setFilter(name) {
         filter = name
-        if (!service)
-            return
-        if (name === "history")
-            service.loadHistory()
-        else
-            recompute()
+        recompute()
     }
 
     onSearchChanged: recompute()
 
-    Component.onCompleted: recompute()
+    Component.onCompleted: {
+        if (service)
+            service.loadHistory()
+        recompute()
+    }
 
+    //: A download that finishes (or fails) is recorded: read the history
+    //: again, so it stays listed once aria2 forgets it.
+    property int finishedSeen: -1
 
     Connections {
         target: tab.service
         function onSnapshotChanged() {
+            const c = tab.service.counts || ({})
+            const finished = (c.complete || 0) + (c.error || 0)
+            if (finished !== tab.finishedSeen) {
+                tab.finishedSeen = finished
+                tab.service.loadHistory()
+            }
+            tab.recompute()
+        }
+        function onHistoryLoaded() {
             tab.recompute()
         }
     }
@@ -343,7 +362,7 @@ Item {
                 {
                     "label": "All",
                     "value": "all",
-                    "count": c.total || 0
+                    "count": (c.total || 0) + tab.pastEntries.length
                 },
                 {
                     "label": "Active",
@@ -363,16 +382,12 @@ Item {
                 {
                     "label": "Done",
                     "value": "complete",
-                    "count": c.complete || 0
+                    "count": (c.complete || 0) + tab.pastDone
                 },
                 {
                     "label": "Failed",
                     "value": "error",
-                    "count": c.error || 0
-                },
-                {
-                    "label": "History",
-                    "value": "history"
+                    "count": (c.error || 0) + tab.pastFailed
                 }
             ]
         }
@@ -392,7 +407,7 @@ Item {
 
         //: While selecting, the selection bar takes this row's place rather
         //: than stacking under it.
-        readonly property bool tools: !tab.selecting || tab.historyMode
+        readonly property bool tools: !tab.selecting
 
         SearchPill {
             id: searchField
@@ -402,7 +417,7 @@ Item {
             anchors.right: sortPill.left
             anchors.rightMargin: 8
             anchors.verticalCenter: parent.verticalCenter
-            placeholderText: tab.historyMode ? "Search history" : "Search downloads"
+            placeholderText: "Search downloads"
             onTextChanged: tab.search = text
         }
 
@@ -418,11 +433,11 @@ Item {
                 })
 
             visible: searchRow.tools
-            anchors.right: selectButton.visible ? selectButton.left : (clearHistoryButton.visible ? clearHistoryButton.left : addButton.left)
+            anchors.right: clearHistoryButton.visible ? clearHistoryButton.left : (selectButton.visible ? selectButton.left : addButton.left)
             anchors.rightMargin: 8
             anchors.verticalCenter: parent.verticalCenter
             size: 40
-            kind: tab.historyMode ? "outlined" : "surface"
+            kind: "surface"
             icon: "sort"
             text: shortLabels[tab.sortField] || "Queue"
             onClicked: sortMenu.toggle()
@@ -433,8 +448,8 @@ Item {
                 alignEnd: true
                 menuWidth: 220
                 entries: {
-                    const fields = tab.historyMode ? tab.sortFields.slice(1) : tab.sortFields
-                    const labels = tab.historyMode ? tab.sortLabels.slice(1) : tab.sortLabels
+                    const fields = tab.sortFields
+                    const labels = tab.sortLabels
                     const out = [{
                                      "heading": "Order by"
                                  }]
@@ -454,7 +469,7 @@ Item {
                     return out
                 }
                 onTriggered: index => {
-                    const fields = tab.historyMode ? tab.sortFields.slice(1) : tab.sortFields
+                    const fields = tab.sortFields
                     if (index >= 1 && index <= fields.length) {
                         const field = fields[index - 1]
                         if (field !== tab.sortField)
@@ -472,7 +487,7 @@ Item {
             anchors.right: addButton.left
             anchors.rightMargin: addButton.visible ? 8 : 0
             anchors.verticalCenter: parent.verticalCenter
-            visible: searchRow.tools && !tab.historyMode
+            visible: searchRow.tools
             buttonSize: 40
             iconSize: 18
             iconName: "checklist"
@@ -485,14 +500,15 @@ Item {
         PillButton {
             id: clearHistoryButton
 
-            anchors.right: addButton.left
-            anchors.rightMargin: addButton.visible ? 8 : 0
+            //: Under Done, the record of what aria2 forgot can be cleared.
+            anchors.right: selectButton.visible ? selectButton.left : addButton.left
+            anchors.rightMargin: 8
             anchors.verticalCenter: parent.verticalCenter
-            visible: tab.historyMode
+            visible: searchRow.tools && tab.filter === "complete" && tab.pastEntries.length > 0
             size: 40
             kind: "dangerText"
             icon: "delete_sweep"
-            text: "Clear"
+            text: "Clear history"
             onClicked: tab.confirmingClearHistory = true
         }
 
@@ -580,7 +596,7 @@ Item {
         id: selectionBar
 
         anchors.fill: searchRow
-        visible: tab.selecting && !tab.historyMode
+        visible: tab.selecting
         radius: Theme.cornerRadius
         color: Theme.primaryContainer
 
@@ -752,7 +768,7 @@ Item {
         anchors.top: bulkBar.bottom
         anchors.topMargin: visible ? 12 : 0
         width: parent.width - tab.scrollbarGutter
-        visible: tab.historyMode && tab.confirmingClearHistory
+        visible: tab.confirmingClearHistory
         height: visible ? clearColumn.implicitHeight + 26 : 0
         radius: 14
         color: Theme.withAlpha(Theme.error, 0.10)
@@ -810,103 +826,65 @@ Item {
         }
     }
 
-    StyledText {
-        id: historySummary
-
-        anchors.top: clearHistoryConfirm.bottom
-        anchors.topMargin: visible ? 12 : 0
-        width: parent.width
-        //: Board 15 goes straight to the day groups; the count is in the
-        //: clear confirmation, where it matters.
-        visible: false
-        height: visible ? implicitHeight : 0
-        text: {
-            if (!tab.service || !tab.service.history)
-                return ""
-            const s = tab.service.history.summary || ({})
-            return (s.count || 0) + " recorded · " + (s.completed || 0) + " finished · " + Fmt.bytes(s.bytes || 0)
-        }
-        font.pixelSize: Theme.fontSizeSmall
-        color: Theme.surfaceVariantText
-        wrapMode: Text.NoWrap
-        elide: Text.ElideRight
-    }
-
     // ---- list ------------------------------------------------------------
     DankListView {
         id: list
 
-        anchors.top: historySummary.bottom
-        anchors.topMargin: historySummary.visible ? 8 : 12
+        anchors.top: clearHistoryConfirm.bottom
+        anchors.topMargin: 12
         anchors.bottom: parent.bottom
         width: parent.width
         clip: true
         spacing: 6
-        visible: !tab.historyMode
         model: tab.gids
 
-        delegate: DownloadRow {
+        //: A live download, or ("h:" + key) a finished one aria2 forgot.
+        delegate: Item {
+            id: rowItem
+
             required property var modelData
+            readonly property bool past: String(modelData).indexOf("h:") === 0
 
             width: list.width - tab.scrollbarGutter
-            service: tab.service
-            gid: modelData
-            dl: tab.byGid[modelData] || ({})
-            expanded: tab.expandedGid === modelData
-            selectable: tab.selecting
-            listMode: tab.pickMode && !tab.selecting
-            selected: tab.isSelected(modelData) || (tab.pickMode && tab.selectedGid === modelData)
-            onToggleSelected: range => tab.toggleSelection(modelData, range)
-            onToggleExpand: {
-                if (tab.pickMode)
-                    tab.selectedGid = modelData
-                else
-                    tab.expandedGid = (tab.expandedGid === modelData ? "" : modelData)
-            }
-        }
-    }
+            height: rowLoader.item ? rowLoader.item.height : 0
 
-    DankListView {
-        id: historyList
-
-        anchors.top: historySummary.bottom
-        anchors.topMargin: historySummary.visible ? 8 : 12
-        anchors.bottom: parent.bottom
-        width: parent.width
-        clip: true
-        spacing: 6
-        visible: tab.historyMode
-        model: tab.historyRows
-
-        //: A day header, or an entry.
-        delegate: Item {
-            id: historyItem
-
-            required property var modelData
-
-            width: historyList.width - tab.scrollbarGutter
-            height: modelData.header ? 32 : historyRow.height
-
-            StyledText {
-                anchors.left: parent.left
-                anchors.leftMargin: 6
-                anchors.bottom: parent.bottom
-                anchors.bottomMargin: 4
-                visible: !!historyItem.modelData.header
-                text: (historyItem.modelData.header || "").toUpperCase()
-                font.pixelSize: Theme.fontSizeSmall - 1
-                font.weight: Font.DemiBold
-                font.letterSpacing: 0.7
-                color: Theme.surfaceVariantText
-            }
-
-            HistoryRow {
-                id: historyRow
+            Loader {
+                id: rowLoader
 
                 width: parent.width
-                visible: !historyItem.modelData.header
-                service: tab.service
-                entry: historyItem.modelData.entry || ({})
+                sourceComponent: rowItem.past ? pastRow : liveRow
+            }
+
+            Component {
+                id: liveRow
+
+                DownloadRow {
+                    width: rowItem.width
+                    service: tab.service
+                    gid: rowItem.modelData
+                    dl: tab.byGid[rowItem.modelData] || ({})
+                    expanded: tab.expandedGid === rowItem.modelData
+                    selectable: tab.selecting
+                    listMode: tab.pickMode && !tab.selecting
+                    selected: tab.isSelected(rowItem.modelData) || (tab.pickMode && tab.selectedGid === rowItem.modelData)
+                    onToggleSelected: range => tab.toggleSelection(rowItem.modelData, range)
+                    onToggleExpand: {
+                        if (tab.pickMode)
+                            tab.selectedGid = rowItem.modelData
+                        else
+                            tab.expandedGid = (tab.expandedGid === rowItem.modelData ? "" : rowItem.modelData)
+                    }
+                }
+            }
+
+            Component {
+                id: pastRow
+
+                HistoryRow {
+                    width: rowItem.width
+                    service: tab.service
+                    entry: tab.pastById[rowItem.modelData] || ({})
+                }
             }
         }
     }
@@ -919,12 +897,10 @@ Item {
         id: emptyState
 
         readonly property string kind: {
-            if (tab.historyMode)
-                return tab.search ? "historySearch" : "history"
             if (tab.search)
                 return "search"
             // Nothing at all, not just nothing under this filter.
-            if (tab.filter === "all" && tab.service && (tab.service.counts.total || 0) === 0)
+            if (tab.filter === "all" && tab.service && (tab.service.counts.total || 0) + tab.pastEntries.length === 0)
                 return "first"
             return tab.filter
         }
@@ -934,11 +910,9 @@ Item {
                 "active": ["downloading", "Nothing is downloading right now", "Paused and queued downloads are under their own filters."],
                 "waiting": ["schedule", "The queue is empty", "Downloads wait here when more are added than run at once."],
                 "paused": ["pause_circle", "Nothing is paused", ""],
-                "complete": ["task_alt", "Nothing finished since aria2c started", "aria2 forgets finished downloads when it restarts. History keeps them."],
+                "complete": ["task_alt", "Nothing finished yet", "Finished downloads stay here, even after aria2 forgets them."],
                 "error": ["task_alt", "Nothing has failed", "Downloads that stop with an error land here, with the reason and a Retry button."],
-                "history": ["history", "No history yet", "Every finished download is recorded here and kept across restarts, even after aria2 forgets it."],
-                "historySearch": ["search_off", "Nothing in history matches “" + tab.search + "”", "History keeps finished and failed downloads, by the name they were saved under."],
-                "search": ["search_off", "Nothing matches “" + tab.search + "”", (tab.suggestion ? "Did you mean “" + tab.suggestion + "”? " : "") + "Older downloads that aria2 no longer holds are in History."],
+                "search": ["search_off", "Nothing matches “" + tab.search + "”", tab.suggestion ? "Did you mean “" + tab.suggestion + "”?" : ""],
                 "first": ["download", "No downloads yet", "Paste a link anywhere in this panel with Ctrl V, or send one from the browser extension."]
             })
 
@@ -948,7 +922,7 @@ Item {
         width: Math.min(list.width - Theme.spacingXL * 2, 380)
         spacing: Theme.spacingS
         visible: !!tab.service && tab.service.connected
-                 && (tab.historyMode ? historyList.count === 0 : (list.count === 0 && !tab.adding))
+                 && list.count === 0 && !tab.adding
 
         Rectangle {
             anchors.horizontalCenter: parent.horizontalCenter
@@ -1013,26 +987,15 @@ Item {
             }
 
             PillButton {
-                visible: emptyState.kind === "search" || emptyState.kind === "historySearch"
+                visible: emptyState.kind === "search"
                 text: "Clear search"
                 size: 34
                 kind: "outlined"
                 onClicked: searchField.text = ""
             }
 
-            //: The file finished yesterday is not under All any more; the
-            //: same words may find it in History.
             PillButton {
-                visible: emptyState.kind === "search"
-                text: "Search History"
-                icon: "history"
-                size: 34
-                kind: "outlined"
-                onClicked: tab.setFilter("history")
-            }
-
-            PillButton {
-                visible: ["all", "first", "search", "history", "historySearch"].indexOf(emptyState.kind) === -1
+                visible: ["all", "first", "search"].indexOf(emptyState.kind) === -1
                 text: "Show all downloads"
                 size: 34
                 kind: "outlined"

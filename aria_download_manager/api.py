@@ -160,6 +160,8 @@ class OpenRequest(BaseModel):
     folder: bool = False
     #: History entry key, for /api/history/open.
     key: str | None = None
+    #: One of that entry's recorded files, to open that file (a torrent's).
+    file: str | None = None
 
 
 class HistoryFetchRequest(BaseModel):
@@ -167,7 +169,10 @@ class HistoryFetchRequest(BaseModel):
 
     key: str
     #: aria2's 1-based file indices to fetch.
-    indices: list[int]
+    indices: list[int] = Field(default_factory=list)
+    #: Or each file's priority (index -> 0 don't download … 3 maximum), as the
+    #: History detail's tree sets them; the chosen ones are those above 0.
+    levels: dict[str, int] | None = None
 
 
 class FloatRequest(BaseModel):
@@ -1356,29 +1361,39 @@ def create_app(cfg: Config) -> FastAPI:
         if not magnet:
             raise HTTPException(409, "this entry has no magnet link or info hash to add it again by")
         have = {f["index"] for f in entry.get("files") or [] if f.get("selected") and f.get("exists")}
-        chosen = sorted(set(int(i) for i in req.indices) | have)
+        if req.levels is not None:
+            # The tree says it all: what is set to "don't download" stays out,
+            # even a file already there.
+            wanted = {int(i) for i, level in req.levels.items() if int(level) > 0}
+            chosen = sorted(wanted)
+        else:
+            chosen = sorted(set(int(i) for i in req.indices) | have)
         if not chosen:
             raise HTTPException(400, "pick at least one file")
         directory = entry.get("dir") or router.base_dir()
         if qbt.is_gid(entry.get("gid", "")) and qb.ready:
             gid = await qb.add_magnet(magnet, {"dir": directory, "pause-metadata": "true"})
-            asyncio.get_running_loop().create_task(_qb_select_when_ready(gid, chosen))
+            asyncio.get_running_loop().create_task(_qb_select_when_ready(gid, chosen, req.levels))
         else:
             gid = await rpc.add_uri([magnet], {
                 "dir": directory,
                 "select-file": ",".join(str(i) for i in chosen),
                 "check-integrity": "true",
             })
-        store.add_event("info", f"Fetching {len(set(req.indices) - have)} more file(s) of {entry.get('name', '')}", gid=gid)
+        history.set_levels(req.key, {int(i): int(v) for i, v in (req.levels or {}).items()} or {i: 1 for i in chosen})
+        store.add_event("info", f"Fetching {len(set(chosen) - have)} more file(s) of {entry.get('name', '')}", gid=gid)
         poller.poke()
         return {"ok": True, "gid": gid, "select-file": chosen}
 
-    async def _qb_select_when_ready(gid: str, chosen: list[int]) -> None:
+    async def _qb_select_when_ready(gid: str, chosen: list[int], levels: dict | None = None) -> None:
         """qBittorrent knows a magnet's files only once its metadata is in."""
         for _ in range(240):
             try:
                 if (await qb.detail(gid)).get("files"):
-                    await qb.select(gid, chosen)
+                    if levels:
+                        await qb.set_levels(gid, {str(i): int(v) for i, v in levels.items()})
+                    else:
+                        await qb.select(gid, chosen)
                     await qb.client.simple("recheck", [qbt.hash_of(gid)])
                     await qb.resume(gid)
                     return
@@ -1534,6 +1549,12 @@ def create_app(cfg: Config) -> FastAPI:
         row = next((d for d in store.snapshot.get("downloads", []) if d.get("gid") == gid), None)
         if not row:
             raise HTTPException(404, "no such download")
+        if req.file:
+            # One of its files (a torrent's tree), as aria2 or qBittorrent lists them.
+            files = (await qb.detail(gid)).get("files") if qbt.is_gid(gid) else await rpc.get_files(gid)
+            if req.file not in {f.get("path") for f in files or []}:
+                raise HTTPException(404, "that file is not part of this download")
+            return await _open_reported(req.file, os.path.dirname(req.file), req.folder)
         return await _open_reported(row.get("path") or "", row.get("dir") or "", req.folder)
 
     @app.post("/api/history/open")
@@ -1542,6 +1563,11 @@ def create_app(cfg: Config) -> FastAPI:
         entry = history.get(req.key or "")
         if not entry:
             raise HTTPException(404, "no such history entry")
+        if req.file:
+            # Only a file the manager recorded for this entry, never any path.
+            if req.file not in {f.get("path") for f in entry.get("files") or []}:
+                raise HTTPException(404, "that file is not part of this download")
+            return await _open_reported(req.file, os.path.dirname(req.file), req.folder)
         return await _open_reported(entry.get("path") or "", entry.get("dir") or "", req.folder)
 
     async def _open_reported(path: str, folder: str, want_folder: bool) -> dict:
