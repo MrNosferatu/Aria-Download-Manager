@@ -574,8 +574,15 @@ function buildRow(gid) {
     renderBulkBar();
     row.classList.toggle('is-selected', row._refs.pick.checked);
   });
-  row._refs.tile.addEventListener('click', () => toggleDetail(gid));
-  row._refs.name.addEventListener('click', () => toggleDetail(gid));
+  // Selecting, a click anywhere on the row ticks it and nothing else
+  // happens; otherwise the tile and the name open the detail.
+  $('.dl-main', row).addEventListener('click', (e) => {
+    if (!S.selecting || e.target.closest('button, input, select, a')) return;
+    row._refs.pick.checked = !row._refs.pick.checked;
+    row._refs.pick.dispatchEvent(new Event('change'));
+  });
+  row._refs.tile.addEventListener('click', () => { if (!S.selecting) toggleDetail(gid); });
+  row._refs.name.addEventListener('click', () => { if (!S.selecting) toggleDetail(gid); });
   row._actionKey = '';
   return row;
 }
@@ -646,6 +653,9 @@ function updateRow(row, dl) {
   r.fill.style.width = `${dl.isMetadata ? 30 : dl.progress}%`;
   r.pick.hidden = !S.selecting;
   r.pick.checked = S.selection.has(dl.gid);
+  // Selecting, the row's own buttons step aside: a click is a tick.
+  r.actions.hidden = S.selecting;
+  if (S.selecting) r.more.hidden = true;
   row.classList.toggle('is-selected', S.selecting && r.pick.checked);
 
   const metaHtml = metaFor(dl);
@@ -2093,7 +2103,8 @@ function renderPast(container, rows) {
   }
   if (S.pastBox.parentNode !== container || container.lastElementChild !== S.pastBox) container.append(S.pastBox);
   // Redrawn only when what it shows changed: an open detail keeps its place.
-  const signature = JSON.stringify([rows.map((e) => [e.key, e.status, e.file_exists, e.finished_at]), S.historyOpen]);
+  const signature = JSON.stringify([rows.map((e) => [e.key, e.status, e.file_exists, e.finished_at, S.selection.has(`h:${e.key}`)]),
+    S.historyOpen, S.selecting]);
   if (signature === S.pastSignature) return;
   S.pastSignature = signature;
   const host = S.pastBox;
@@ -2115,15 +2126,17 @@ function renderPast(container, rows) {
       ? (e.url ? `<button class="btn btn-sm" data-hist="readd" data-key="${key}">${icon(partway ? 'play' : 'retry')}${
         failed ? 'Retry' : partway ? 'Resume' : 'Again'}</button>` : '')
       : `<button class="btn btn-sm" data-hist="open" data-key="${key}">${icon('open')}Open</button>`;
-    return `<article class="dl is-${failed ? 'error' : missing ? 'missing' : 'complete'}${open ? ' is-open' : ''}" data-entry="${key}">
-      <div class="dl-main" data-hist="toggle" data-key="${key}">
+    const picked = S.selection.has(`h:${e.key}`);
+    return `<article class="dl is-${failed ? 'error' : missing ? 'missing' : 'complete'}${open ? ' is-open' : ''}${picked ? ' is-selected' : ''}" data-entry="${key}">
+      <div class="dl-main" data-hist="${S.selecting ? 'pick' : 'toggle'}" data-key="${key}">
+        ${S.selecting ? `<input type="checkbox" class="dl-pick" tabindex="-1" aria-label="Select"${picked ? ' checked' : ''}>` : ''}
         <span class="dl-tile" aria-hidden="true"><svg class="ico" viewBox="0 0 24 24"><path d="${kind.path}"/></svg></span>
         <div class="dl-body">
           <div class="dl-title"><span class="dl-name" title="${escapeHtml(e.path || e.name || '')}">${escapeHtml(e.name || e.key)}</span>
             <span class="dl-badges">${missing ? '<span class="tag tag-missing">File missing</span>' : ''}</span></div>
           <div class="dl-meta">${failed ? `<span class="err">${escapeHtml(e.error || 'Failed')}</span>` : meta}</div>
         </div>
-        <div class="dl-actions">
+        <div class="dl-actions"${S.selecting ? ' hidden' : ''}>
           ${primary}
           ${!missing && !failed && !open ? `<button class="btn btn-icon btn-sm" data-hist="folder" data-key="${key}" title="Show in folder" aria-label="Show in folder">${icon('folder')}</button>` : ''}
           ${open ? `<button class="btn btn-icon btn-sm hist-fold" data-hist="toggle" data-key="${key}" title="Fold" aria-label="Fold">${icon('chevron')}</button>`
@@ -2144,6 +2157,15 @@ function renderPast(container, rows) {
     btn.addEventListener('click', async (ev) => {
       const key = btn.dataset.key;
       const what = btn.dataset.hist;
+      // Selecting, the row's click ticks it.
+      if (what === 'pick') {
+        ev.stopPropagation();
+        const id = `h:${key}`;
+        if (S.selection.has(id)) S.selection.delete(id); else S.selection.add(id);
+        renderBulkBar();
+        renderDownloads();
+        return;
+      }
       // A click on the row opens its detail; its own buttons do their own thing.
       if (what === 'toggle') {
         if (ev.target.closest('button') && ev.target.closest('button') !== btn) return;
@@ -3006,6 +3028,13 @@ function renderLog() {
 function setSelecting(on) {
   S.selecting = on;
   if (!on) S.selection.clear();
+  // A tick is a tick: no detail stays open while picking.
+  if (on) {
+    for (const gid of [...S.expanded]) toggleDetail(gid);
+    if (S.paneGid) toggleDetail(S.paneGid);
+    S.historyOpen = '';
+  }
+  S.pastSignature = '';
   $('#btn-select').classList.toggle('btn-primary', on);
   $('#btn-select').classList.toggle('btn-outline', !on);
   $('#btn-select').textContent = on ? 'Done' : 'Select';
@@ -3019,14 +3048,23 @@ function selectedRows() {
   return [...S.selection].map((gid) => known.get(gid)).filter(Boolean);
 }
 
+// Finished ones aria2 forgot are selected as "h:" + key: they can only be
+// forgotten, and their files stay.
+const selectedPast = () => [...S.selection].filter((id) => id.startsWith('h:')).map((id) => id.slice(2));
+const selectedLive = () => [...S.selection].filter((id) => !id.startsWith('h:'));
+
 function renderBulkBar() {
   const bar = $('#bulk-bar');
   bar.hidden = !S.selecting;
   const n = S.selection.size;
   $('#bulk-count').textContent = n === 1 ? '1 selected' : `${n} selected`;
-  for (const id of ['#bulk-pause', '#bulk-resume', '#bulk-remove']) $(id).disabled = !n;
-  const visible = visibleDownloads();
-  $('#bulk-all').textContent = n && n >= visible.length ? 'None' : 'All';
+  const live = selectedLive().length;
+  $('#bulk-pause').disabled = !live;
+  $('#bulk-resume').disabled = !live;
+  $('#bulk-remove').disabled = !n;
+  $('#bulk-remove').title = live ? 'Remove the selected downloads' : 'Forget the selected (files stay)';
+  const visible = visibleDownloads().length + visiblePast().length;
+  $('#bulk-all').textContent = n && n >= visible ? 'None' : 'All';
 }
 
 async function bulk(action, gids, deleteFiles) {
@@ -3041,6 +3079,7 @@ async function bulk(action, gids, deleteFiles) {
    in the selection raise the question. */
 function askBulkRemove() {
   const rows = selectedRows();
+  if (!rows.length) { runBulkRemove(false); return; }
   const finished = rows.filter((d) => d.status === 'complete');
   if (!finished.length) { runBulkRemove(false); return; }
   const rest = rows.length - finished.length;
@@ -3059,6 +3098,9 @@ async function runBulkRemove(keepFinishedFiles) {
   if (unfinished.length) out = await bulk('remove', unfinished, true);
   if (finished.length) out = await bulk('remove', finished, !keepFinishedFiles);
   if (out && out.message) toast(out.message, 'ok');
+  const past = selectedPast();
+  for (const key of past) await api('/api/history/remove', { method: 'POST', body: { key } }).catch(() => {});
+  if (past.length) { toast(past.length === 1 ? 'Forgotten' : `Forgot ${past.length}`, 'ok'); loadHistory(); }
   S.selection.clear();
   renderBulkBar();
 }
@@ -3136,18 +3178,19 @@ function init() {
 
   $('#btn-select').addEventListener('click', () => setSelecting(!S.selecting));
   $('#bulk-all').addEventListener('click', () => {
-    const visible = visibleDownloads();
+    const visible = [...visibleDownloads().map((d) => d.gid), ...visiblePast().map((e) => `h:${e.key}`)];
     if (S.selection.size >= visible.length) S.selection.clear();
-    else for (const d of visible) S.selection.add(d.gid);
+    else for (const id of visible) S.selection.add(id);
+    S.pastSignature = '';
     renderBulkBar();
     renderDownloads();
   });
   $('#bulk-pause').addEventListener('click', async () => {
-    const out = await bulk('pause', [...S.selection], false);
+    const out = await bulk('pause', selectedLive(), false);
     if (out?.message) toast(out.message, 'ok');
   });
   $('#bulk-resume').addEventListener('click', async () => {
-    const out = await bulk('resume', [...S.selection], false);
+    const out = await bulk('resume', selectedLive(), false);
     if (out?.message) toast(out.message, 'ok');
   });
   $('#bulk-remove').addEventListener('click', askBulkRemove);

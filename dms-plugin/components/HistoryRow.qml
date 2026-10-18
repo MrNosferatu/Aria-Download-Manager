@@ -14,6 +14,17 @@ Rectangle {
     property var service: null
     property var entry: ({})
     property bool expanded: false
+    //: Selecting (the list's bulk mode): a box to tick, and a click anywhere
+    //: ticks it; the detail and the row's own buttons step aside.
+    property bool selectable: false
+    property bool selected: false
+
+    signal toggleSelected(bool range)
+
+    onSelectableChanged: {
+        if (selectable)
+            expanded = false
+    }
 
     readonly property bool failed: entry.status === "error"
 
@@ -140,7 +151,13 @@ Rectangle {
 
     height: expanded ? 52 + detailLoader.height + 14 : 52
     radius: expanded ? 18 : 12
-    color: expanded ? Theme.surfaceContainerHigh : Theme.surfaceContainer
+    color: {
+        if (selected)
+            return Theme.withAlpha(Theme.primary, 0.10)
+        if (selectable && rowArea.containsMouse)
+            return Theme.surfaceContainerHigh
+        return expanded ? Theme.surfaceContainerHigh : Theme.surfaceContainer
+    }
     border.width: failed || expanded ? 1 : 0
     border.color: failed ? Theme.withAlpha(Theme.error, 0.35) : Theme.outlineVariant
 
@@ -159,9 +176,13 @@ Rectangle {
 
         anchors.fill: head
         acceptedButtons: Qt.LeftButton | Qt.RightButton
+        hoverEnabled: row.selectable
         cursorShape: Qt.PointingHandCursor
         onClicked: mouse => {
-            if (mouse.button === Qt.RightButton) {
+            if (row.selectable) {
+                if (mouse.button === Qt.LeftButton)
+                    row.toggleSelected((mouse.modifiers & Qt.ShiftModifier) !== 0)
+            } else if (mouse.button === Qt.RightButton) {
                 const at = rowArea.mapToItem(historyMenu.parent, mouse.x, mouse.y)
                 historyMenu.openAt(at.x, at.y)
             } else {
@@ -169,16 +190,29 @@ Rectangle {
             }
         }
         onDoubleClicked: mouse => {
-            if (mouse.button === Qt.LeftButton && row.canOpen)
+            if (mouse.button === Qt.LeftButton && row.canOpen && !row.selectable)
                 row.openFile()
         }
+    }
+
+    //: The box, while selecting; the click itself is the row's.
+    DankIcon {
+        id: picker
+
+        anchors.left: parent.left
+        anchors.leftMargin: 12
+        anchors.verticalCenter: head.verticalCenter
+        visible: row.selectable
+        name: row.selected ? "check_box" : "check_box_outline_blank"
+        size: 20
+        color: row.selected ? Theme.primary : Theme.surfaceVariantText
     }
 
     Rectangle {
         id: tile
 
-        anchors.left: parent.left
-        anchors.leftMargin: 10
+        anchors.left: row.selectable ? picker.right : parent.left
+        anchors.leftMargin: row.selectable ? 8 : 10
         anchors.verticalCenter: head.verticalCenter
         width: 34
         height: 34
@@ -199,6 +233,8 @@ Rectangle {
         anchors.right: parent.right
         anchors.rightMargin: 6
         anchors.verticalCenter: head.verticalCenter
+        visible: !row.selectable
+        width: visible ? implicitWidth : 0
         spacing: 4
 
         PillButton {

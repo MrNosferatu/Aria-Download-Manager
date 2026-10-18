@@ -37,10 +37,14 @@ Item {
     //: A selection can mix the two cases, so they are counted separately: the
     //: unfinished ones are cleaned up without asking, and only the finished
     //: ones raise the question of whether to keep what was downloaded.
-    readonly property var selectedFinished: selectedGids.filter(g => (byGid[g] || {}).status === "complete")
-    readonly property var selectedUnfinished: selectedGids.filter(g => (byGid[g] || {}).status !== "complete")
+    readonly property var selectedFinished: selectedLive.filter(g => (byGid[g] || {}).status === "complete")
+    readonly property var selectedUnfinished: selectedLive.filter(g => (byGid[g] || {}).status !== "complete")
 
     readonly property var selectedGids: Object.keys(selection).filter(g => selection[g])
+    //: Live downloads, and finished ones aria2 forgot ("h:" + key), which
+    //: can only be forgotten.
+    readonly property var selectedLive: selectedGids.filter(g => g.indexOf("h:") !== 0)
+    readonly property var selectedPast: selectedGids.filter(g => g.indexOf("h:") === 0)
     readonly property int selectedCount: selectedGids.length
 
     function isSelected(gid) {
@@ -92,6 +96,8 @@ Item {
             clearSelection()
             lastClicked = ""
         } else {
+            // A tick is a tick: no row stays open while picking.
+            expandedGid = ""
             // Esc leaves selection mode; the tab needs focus to hear it.
             tab.forceActiveFocus()
         }
@@ -156,9 +162,23 @@ Item {
     }
 
     function runBulk(action) {
-        if (!selectedCount)
+        if (!selectedLive.length)
             return
-        service.bulk(action, selectedGids, false, () => tab.clearSelection())
+        service.bulk(action, selectedLive, false, () => tab.clearSelection())
+    }
+
+    //: Finished ones aria2 forgot leave the record; their files stay.
+    function forgetPast(keys) {
+        let waiting = keys.length
+        for (const id of keys)
+            service.request("POST", "/api/history/remove", {
+                                "key": id.slice(2)
+                            }, () => {
+                                if (--waiting === 0) {
+                                    tab.service.notice(keys.length === 1 ? "Forgotten" : "Forgot " + keys.length)
+                                    tab.service.loadHistory()
+                                }
+                            })
     }
 
     //: `keepFinishedFiles` only governs the finished downloads; a part file is
@@ -166,10 +186,13 @@ Item {
     function runBulkRemove(keepFinishedFiles) {
         const unfinished = selectedUnfinished
         const finished = selectedFinished
+        const past = selectedPast
         if (unfinished.length)
             service.bulk("remove", unfinished, true)
         if (finished.length)
             service.bulk("remove", finished, !keepFinishedFiles)
+        if (past.length)
+            forgetPast(past)
         tab.confirmingBulkRemove = false
         tab.clearSelection()
     }
@@ -643,7 +666,7 @@ Item {
                     iconName: modelData[0]
                     iconColor: Theme.onPrimaryContainer
                     tooltipText: modelData[1]
-                    enabled: tab.selectedCount > 0
+                    enabled: tab.selectedLive.length > 0
                     opacity: enabled ? 1 : 0.4
                     onClicked: tab.runBulk(modelData[2])
                 }
@@ -655,7 +678,7 @@ Item {
                 iconSize: Theme.iconSizeSmall
                 iconName: "delete"
                 iconColor: Theme.error
-                tooltipText: "Remove the selected downloads"
+                tooltipText: tab.selectedPast.length && !tab.selectedLive.length ? "Forget the selected (files stay)" : "Remove the selected downloads"
                 enabled: tab.selectedCount > 0
                 opacity: enabled ? 1 : 0.4
                 onClicked: tab.askBulkRemove()
@@ -884,6 +907,9 @@ Item {
                     width: rowItem.width
                     service: tab.service
                     entry: tab.pastById[rowItem.modelData] || ({})
+                    selectable: tab.selecting
+                    selected: tab.isSelected(rowItem.modelData)
+                    onToggleSelected: range => tab.toggleSelection(rowItem.modelData, range)
                 }
             }
         }

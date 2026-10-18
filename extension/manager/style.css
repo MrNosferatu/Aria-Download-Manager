@@ -718,3 +718,6 @@ input.fld {
 }
 /* Finished rows aria2 forgot, after the live ones: part of the same list. */
 .past-rows { display: contents; }
+/* Selecting: a row's own buttons step aside, the row's click is a tick. */
+.dl .dl-actions[hidden] { display: none; }
+body:has(#bulk-bar:not([hidden])) .dl .dl-main { cursor: pointer; }

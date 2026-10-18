@@ -484,7 +484,7 @@ Rectangle {
     color: {
         if (selected && !listMode)
             return Theme.withAlpha(Theme.primary, 0.10)
-        if (listMode && rowArea.containsMouse && !selected)
+        if ((listMode || selectable) && rowArea.containsMouse && !selected)
             return Theme.surfaceContainerHigh
         return expanded ? Theme.surfaceContainerHigh : Theme.surfaceContainer
     }
@@ -503,17 +503,22 @@ Rectangle {
         return "transparent"
     }
 
-    //: In the wide list the whole row picks the download. Anywhere, a double
-    //: click opens it and a right click brings up its menu at the pointer.
+    //: Selecting, a click anywhere on the row ticks it (Shift for a range)
+    //: and nothing else happens. Otherwise, in the wide list the whole row
+    //: picks the download; anywhere, a double click opens it and a right
+    //: click brings up its menu at the pointer.
     MouseArea {
         id: rowArea
 
         anchors.fill: parent
         acceptedButtons: Qt.LeftButton | Qt.RightButton
-        hoverEnabled: row.listMode
-        cursorShape: row.listMode ? Qt.PointingHandCursor : Qt.ArrowCursor
+        hoverEnabled: row.listMode || row.selectable
+        cursorShape: row.listMode || row.selectable ? Qt.PointingHandCursor : Qt.ArrowCursor
         onClicked: mouse => {
-            if (mouse.button === Qt.RightButton) {
+            if (row.selectable) {
+                if (mouse.button === Qt.LeftButton)
+                    row.toggleSelected((mouse.modifiers & Qt.ShiftModifier) !== 0)
+            } else if (mouse.button === Qt.RightButton) {
                 const at = rowArea.mapToItem(rowMenu.parent, mouse.x, mouse.y)
                 rowMenu.openAt(at.x, at.y)
             } else if (row.listMode) {
@@ -521,7 +526,7 @@ Rectangle {
             }
         }
         onDoubleClicked: mouse => {
-            if (mouse.button === Qt.LeftButton && row.canOpen)
+            if (mouse.button === Qt.LeftButton && row.canOpen && !row.selectable)
                 row.openFile()
         }
     }
