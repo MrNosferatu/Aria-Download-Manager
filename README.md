@@ -1,588 +1,137 @@
 # Aria Download Manager
 
-A background download server built on aria2c, driven from a browser extension
-(which hands it the browser's own downloads and carries the full manager UI) and,
-optionally, a DankMaterialShell bar widget. Every aria2 capability that matters
-for downloading — queueing, splitting a file into parts, parallel downloads,
-parallel connections per server, speed limits, BitTorrent — is exposed in the UI,
-and a small rules engine can take automatic action on a download when it
-misbehaves (for example: *speed under 50 KiB/s for 3 seconds → pause and resume*).
+A download manager for Linux built on **aria2c** (and **qBittorrent** for
+torrents), driven from a browser extension and, optionally, a
+[DankMaterialShell](https://danklinux.com) bar widget.
+
+- Takes over the browser's downloads, cookies and all, so login-protected
+  files and JavaScript-triggered downloads just land in the queue.
+- Queueing, parallel downloads, split files, connections per server, speed
+  limits, history that survives restarts.
+- Torrents with real per-file priorities and file choice before downloading,
+  through a qBittorrent the manager runs itself.
+- A **Download** button over a page's video player (HLS/DASH through ffmpeg).
+- Automatic actions on misbehaving downloads, e.g. *under 50 KiB/s for 3
+  seconds → pause and resume*.
 
 ```
-Extension ──native messaging──→ native host ──┐
-                                              ├─ Unix socket ─→ manager ──JSON-RPC──→ aria2c
-DankBar widget (optional) ────────────────────┘                   │
-                                                                  └── rules engine (1 Hz tick)
+Extension ──native messaging──→ bridge ──┐
+                                         ├─ Unix socket ─→ manager ─→ aria2c / qBittorrent
+DankBar widget (optional) ───────────────┘
 ```
 
-The manager listens on nothing but a Unix socket
-(`$XDG_RUNTIME_DIR/aria-download-manager.sock`). A socket is not network traffic, so a
-VPN or proxy built into the browser cannot route it away the way it can with
-`127.0.0.1` — and there is no port for anything else to reach. The only TCP in
-the picture is the manager's own link to aria2c's RPC on loopback.
+The manager opens no network port: it listens only on a user-only Unix socket
+(`$XDG_RUNTIME_DIR/aria-download-manager.sock`), so no website can reach it and
+an in-browser VPN cannot get in the way.
 
-The manager owns the aria2c process: it spawns it, waits for its RPC to answer,
-restarts it if it dies, and shuts it down cleanly on exit — including on SIGHUP,
-so closing the terminal does not leave an orphan behind. If it ever does find a
-leftover aria2c on its RPC port (after a `kill -9`, say), it adopts that process
-instead of failing to start.
-
----
-
-## 1. Install
-
-aria2c itself is the only external requirement:
+## Install
 
 ```bash
-sudo pacman -S aria2        # Arch
-sudo apt install aria2      # Debian/Ubuntu
-sudo dnf install aria2      # Fedora
+git clone https://github.com/MrNosferatu/Aria-Download-Manager.git
+cd Aria-Download-Manager
+./install.sh
 ```
 
-Recommended for torrents: **qbittorrent-nox**. When it is installed, torrents
-(magnets, `.torrent` files and `.torrent` links) go to a qBittorrent the manager
-runs itself, and everything else stays with aria2c — see §1b.
+The installer, safe to run again after a `git pull`:
 
-```bash
-sudo pacman -S qbittorrent-nox    # Arch
-sudo apt install qbittorrent-nox  # Debian/Ubuntu
-sudo dnf install qbittorrent-nox  # Fedora
-```
+1. installs **aria2** with pacman, apt or dnf (asking first), and offers
+   **qbittorrent-nox** (torrent priorities) and **ffmpeg** (streamed video);
+2. installs the Python dependencies into `.venv` if the system Python lacks them;
+3. starts the manager as a systemd user service, now and at every login;
+4. registers the extension's native-messaging bridge;
+5. links and enables the DankBar plugin if DankMaterialShell is installed.
 
-The Python side needs `fastapi`, `aiohttp` and `PyYAML`, which are already
-present on this machine's system Python. On another machine:
+`./install.sh --dry-run` shows what it would do; `-y` skips the questions.
 
-```bash
-python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
-```
+### The browser extension
 
-There is no web server: FastAPI only routes the requests that arrive on the
-socket, in-process. `.torrent` uploads travel as base64 JSON, so no
-`python-multipart` either.
+- **Firefox:** open the `.xpi` from
+  [Releases](https://github.com/MrNosferatu/Aria-Download-Manager/releases).
+- **Chromium:** `chrome://extensions` → *Developer mode* → *Load unpacked* →
+  this checkout's `extension/` folder, then run `./install.sh` again so the
+  bridge registers that extension.
 
-## 1b. Torrents: aria2c or qBittorrent
+Restart the browser once. Flatpak and Snap browsers cannot start the bridge;
+use a native package.
 
-aria2 can only select or skip a torrent's files, so on aria2 the manager fakes
-priorities as strict tiers (a lower tier starts only when every higher one is
-done). qBittorrent has the real thing, so with `torrent.engine: auto` (the
-default) torrents go to qbittorrent-nox whenever it is installed:
+### The DankBar widget
 
-- **Per-file priority** — Do not download / Normal / High / Maximum, set in the
-  torrent's Files list. Higher priorities get their pieces first, as in
-  qBittorrent itself.
-- **Choose files before downloading** — the DankBar Add panel always does
-  (it shows the torrent's files once they arrive), and so do the extension's
-  download dialog and the manager page's "choose files first".
-- **Download in order** and **First and last pieces first**, per torrent.
-- **Download only, never seed** — global or per torrent, through qBittorrent's
-  share limits (stop at ratio 0 / seeding time 0) plus a 1 KiB/s upload cap
-  while downloading.
-- `.torrent` links the browser hands over are fetched by the manager with the
-  page's cookie, so private-tracker links work; a link that turns out not to be
-  a torrent goes to aria2c like any other file.
-
-Torrents show up in the same list, tagged *Torrent · qBittorrent*, and pause,
-resume, remove (with files), queue order, limits and history all work as for
-aria2 downloads. The rules engine acts on aria2 downloads only. The manager runs
-qbittorrent-nox with its own profile under `~/.local/share/aria-download-manager/qbittorrent`,
-its Web UI on `127.0.0.1:8089` with no password, and stops it on exit; set
-`qbittorrent.managed: false` to use one you already run. If it cannot start,
-torrents fall back to aria2c and Settings says why. `torrent.engine: aria2`
-keeps everything on aria2c.
-
-## 2. Run
-
-```bash
-cp config.example.yaml config.yaml     # optional; defaults work as-is
-./run.sh                               # or: python3 -m aria_download_manager
-```
-
-```
-Aria Download Manager 1.1.0
-  socket     /run/user/1000/aria-download-manager.sock
-  config     /home/you/GitHub/Aria2C/config.yaml
-```
-
-Useful flags:
-
-| Flag | Purpose |
-| --- | --- |
-| `--no-aria2` | attach to an aria2c you already run instead of spawning one |
-| `--print-argv` | show the exact aria2c command line that would be used |
-| `--print-config` | show the effective config after merging defaults |
-| `-c FILE` | use a different config file |
-| `--install-native-host` | register the extension's IPC bridge with Firefox and Chromium browsers (see §3) |
-
-### Run it in the background at login
-
-```bash
-mkdir -p ~/.config/systemd/user
-cp systemd/aria-download-manager.service ~/.config/systemd/user/
-systemctl --user daemon-reload
-systemctl --user enable --now aria-download-manager
-systemctl --user status aria-download-manager
-```
-
-`KillMode=control-group` in the unit means stopping the service also stops the
-aria2c child, leaving no orphaned downloader behind. Adjust `WorkingDirectory`
-if the checkout lives somewhere other than `~/GitHub/Aria2C`.
-
-### Closing the terminal, and leftover aria2c processes
-
-`aria2c` runs in its own session so that a stray Ctrl-C cannot interrupt a
-download mid-write. The flip side is that it can outlive its manager, and it holds
-the RPC port while it does. That is handled:
-
-| What happened | What the manager does |
-| --- | --- |
-| Terminal closed (**SIGHUP**), Ctrl-C (SIGINT), `systemctl stop` (SIGTERM) | shuts down gracefully: saves the session, stops aria2c, leaves nothing behind |
-| Manager `kill -9`'d, or the machine lost power | next run finds the leftover aria2c and **adopts** it — downloads keep going, and the UI shows it as adopted with its real pid |
-| A leftover aria2c that no longer accepts our secret | reclaimed: SIGTERM (which makes it save its session), then replaced |
-| Something *else* is on the RPC port | refuses to touch it and says so plainly — change `aria2.rpc.port` or stop that process |
-
-If you would rather downloads *continue* after you close the terminal, set
-`aria2.stop_on_exit: false`. The manager then leaves aria2c running on exit and
-adopts it again next time.
-
-## 3. Browser extension
-
-`extension/` is the browser half: it takes over the browser's own downloads,
-hands them here, and carries the full manager UI. Firefox is the supported
-target; the same directory also loads in Chromium.
-
-**Install it** — pick one:
-
-| | How | Survives a browser restart |
-| --- | --- | --- |
-| From AMO | Once published, one click from the add-on's page | yes, and auto-updates |
-| Signed file | `./extension/build.sh sign unlisted` → open the `.xpi` in Firefox (`about:addons` → gear → *Install Add-on From File*) | yes |
-| Unpacked, Firefox | `about:debugging#/runtime/this-firefox` → *Load Temporary Add-on* → `extension/manifest.json` | no — gone on restart |
-| Unpacked, Chromium | `chrome://extensions` → *Developer mode* → *Load unpacked* → `extension/` | yes |
-
-Signing needs a free AMO API key; `extension/store/listing.md` has the
-submission material, and `extension/build.sh` wraps the packaging.
-
-**Releases are automatic.** `.github/workflows/extension-release.yml` runs on
-every push to `main` that touches `extension/`. When the version in
-`extension/manifest.json` has no `extension-v<version>` tag yet, it lints and
-builds the extension, signs the Firefox `.xpi` (if the `WEB_EXT_API_KEY` and
-`WEB_EXT_API_SECRET` repository secrets are set), tags the commit and publishes
-a GitHub Release with the packages. So: bump the version once on a branch,
-merge, and the release follows; pushes with an already-released version do
-nothing. It can also be started by hand from the Actions tab.
-
-**Register the IPC bridge once.** The extension reaches the manager through
-native messaging: the browser starts a small host process
-(`aria_download_manager/native_host.py`), which relays to the manager's Unix socket.
-Nothing goes over the network, so an in-browser VPN cannot get in the way.
-
-```bash
-python3 -m aria_download_manager --install-native-host
-```
-
-That writes a launcher to `~/.local/share/aria-download-manager/` and a host manifest
-for Firefox (`~/.mozilla/native-messaging-hosts/`) and for every Chromium-family
-browser that has the extension loaded unpacked from this checkout — the
-extension id is read from the browser profile. For a packed Chromium install,
-pass `--chrome-extension-id ID`. Restart the browser afterwards. Re-run it if you
-move the checkout or change `server.socket`. Browsers installed as Flatpak or
-Snap cannot start host processes outside their sandbox, so they cannot use the
-extension; use a native package.
-
-**It takes over the browser's own downloads.** Anything the browser starts to
-download is cancelled, wiped from the download list, and queued in aria2c
-instead, with the page's cookies, referer and user-agent attached — so a
-login-protected file, a `Content-Disposition` attachment or a JavaScript-triggered
-download all end up in the queue with no clicking. Cookies come from the
-browser's cookie store rather than `document.cookie`, so `HttpOnly` session
-cookies travel with the request too. `blob:` and `data:` downloads are left
-alone: aria2 cannot fetch those.
-
-On top of that:
-
-| Surface | What it does |
-| --- | --- |
-| Toolbar popup | live download speed, active and queued counts, progress of what is running, a box to paste a link or magnet, the *Send downloads to Aria* switch with a per-site exception under it, and the button that opens the full manager (§5) |
-| Badge | number of active downloads, `!` when the manager is unreachable |
-| Right-click a link / image / video / audio | send just that one |
-| Right-click a page | send the page URL, or every downloadable link on it |
-| Right-click a selection | send every link inside it |
-| Click capture | left-click on a magnet, or on a link the browser would *render* rather than download, sends it here instead |
-| Sites that only serve the browser | some sites (MediaFire's captcha, logins, one-time links) answer anything but the browser with a web page. A caught browser download is held paused rather than cancelled while the manager checks the link; if it gets a page where the browser got a file, the download carries on in the browser. The dialog says so and offers *Let the browser download it* first. And should aria2 still save a page under a file's name, the manager spots it from the first bytes, deletes it and says why |
-| Download dialog | optional (Settings → *Show a download dialog*, off by default): every caught download — browser downloads, clicks, the context menu, the popup's Add box — opens a small window first. A file shows its real name, size, type and whether it can resume, with the connections, parts and speed limit to set, and *Save to* as a menu of the download folder (or, with sorting on, the folder the file sorts into), the sorting folders and recent ones; *Choose…* opens the desktop's folder chooser (zenity, kdialog or yad); *Download later* queues it paused, *Let the browser download it* hands it back. A torrent or magnet is added held, and once its file list arrives the window shows every file with a checkbox and a priority, the save folder, *Download in order*, *First and last pieces first* and download-only, like qBittorrent's add dialog; Cancel or closing the window removes it again. Only the extension opens it, so the DankBar widget never shows a second one. On niri and Hyprland it opens floating and centred, not tiled: the manager asks the compositor (`desktop.float_windows`, on by default), so no window rule is needed. The DankBar widget's detached window floats the same way |
-| Alt+click | sends any link, even with capture off |
-| Settings page | *Simple* shows the connection test, the save folder, add-paused and notifications; *Advanced* adds what gets caught (browser downloads, file links, torrents (magnets and .torrent files), Alt+click, the video button), minimum size, file types, sites to leave alone, and in-page toasts |
-
-## 4. Custom download actions (the rules engine)
-
-Rules live in `config.yaml` and are editable from the **Rules** tab. Each rule is
-evaluated for every download once per poll tick (1 s by default). When all of its
-conditions hold **continuously** for `for_seconds`, the action fires once and
-that download enters `cooldown_seconds` for that rule.
-
-The default rule is the requested behaviour:
-
-```yaml
-rules:
-  - name: stall-recovery
-    enabled: true
-    when:
-      statuses: [active]
-      speed_below: 51200      # bytes/s — 50 KiB/s
-      for_seconds: 3
-      min_age_seconds: 8      # ignore the ramp-up right after a start
-      max_progress: 99.0      # leave a nearly-finished download alone
-    action: pause_resume
-    resume_after_seconds: 1.5
-    cooldown_seconds: 25      # don't re-fire immediately
-    max_triggers: 20          # give up after this many attempts
-```
-
-**Conditions** (all optional; all listed ones must match)
-
-| Key | Meaning |
-| --- | --- |
-| `statuses` | which aria2 statuses the rule applies to (default `[active]`) |
-| `speed_below` / `speed_above` | download speed in bytes/s |
-| `speed_source` | `hybrid` (default), `measured` or `aria2` — see the note below |
-| `connections_below` | fewer than N live connections |
-| `min_age_seconds` | ignore downloads younger than this |
-| `min_progress` / `max_progress` | percentage window |
-| `min_size` | total size at least N bytes |
-| `torrent_only` / `http_only` | restrict by download kind |
-| `name_matches` | regex against the download name |
-
-**Actions**
-
-| Action | Effect |
-| --- | --- |
-| `pause_resume` | pause, wait `resume_after_seconds`, unpause — the classic stall fix. Also takes back the concurrency slot (see below); `preserve_slot: false` opts out |
-| `force_pause_resume` | same, but drops connections immediately |
-| `restart` | remove and re-add with the same URLs and options (HTTP/FTP only) |
-| `set_option` | apply an `options:` mapping to that download (e.g. fewer connections) |
-| `stop` | pause and leave it paused |
-| `log_only` | record it in the log and do nothing |
-
-### Why the speed you see lags the bytes
-
-aria2's `downloadSpeed` is a **moving average**, so it keeps reporting a healthy
-figure for several seconds after the transfer has actually stopped — the size
-freezes while the speed is still showing 5 MB/s, then it decays. That is aria2's
-own smoothing, not a reporting delay in this manager.
-
-Because a stall rule that trusts that number reacts seconds late, the manager also
-computes `measuredSpeed`: bytes actually added to the file over the last ~3
-seconds. The window spans a few samples rather than one tick, because aria2
-completes data in piece-sized chunks and a merely-slow download can add nothing
-for a single second without being stalled.
-
-Which figure rules use is your choice — **Actions tab → "Speed by"** (Hybrid, Write speed, Reported speed), or
-`rules_speed_source` in the config, or `when.speed_source` on one rule:
-
-| Value | Behaviour |
-| --- | --- |
-| `hybrid` *(default)* | the measured figure when available, else aria2's |
-| `measured` | measured only. Reacts immediately; while no measurement exists yet a rule will not fire at all, so it never acts on a guess |
-| `aria2` | aria2's own number, lag included |
-
-The download row shows aria2's number normally, and both when they disagree
-materially — that gap is exactly what makes a stalled download look alive.
-
-### Pausing hands the slot to the next download
-
-This one is aria2's design, not a setting: pausing an active download **frees a
-concurrency slot**, and aria2 immediately starts the next queued item. Unpausing
-puts your download back in the *queue*, not back to running — so with
-`max-concurrent-downloads: 1` a stall fix would silently swap the stalled download
-with the next one, every time it fired.
-
-`pause_resume` therefore takes the slot back: it moves the download to the head of
-the queue and, if something grabbed the slot meanwhile, bounces that one so aria2
-promotes yours again (the bounced download goes back to waiting, next in line).
-The log says which happened — *"kept its slot"*, *"slot reclaimed"*, or *"could not
-get its slot back — it is queued next"*. Set `preserve_slot: false` on the rule for
-aria2's untouched behaviour.
-
-`min_age_seconds` is counted from the moment a download **starts transferring**,
-not from when it was queued. A download can sit in the queue for minutes; it still
-gets its full grace period once it actually starts, and a pause/resume restarts
-that period too.
-
-`cooldown_seconds` and `max_triggers` are the safety valves that stop a rule from
-thrashing a download. The **Actions** switch in the header disables all
-rules at once, and each download's row shows a live countdown badge
-(`stall-recovery 2.1/3s`) plus a trigger count, so you can see a rule building up
-before it fires. Every trigger is written to the **Log** tab.
-
-## 5. The manager page
-
-The extension carries the whole manager UI: *open the full manager* in its
-toolbar popup opens it in a tab (or brings an open one forward). It talks to the
-manager through the native-messaging host and the socket, like everything else
-in the extension. The files are `extension/manager/`.
-
-The manager polls aria2 once a second, and backs off to `poll_interval_idle`
-whenever nothing is downloading *and* nothing is subscribed to the live stream,
-so an idle manager with no windows open barely ticks. Any command wakes it
-immediately.
-
-**Downloads** — one row per download with progress, speed, ETA, live connection
-count and seeders. Filter chips by status, plus a name filter. Row actions:
-pause, resume, move to top / up / down the queue, retry, remove. Expanding a row
-shows a piece map of the downloaded parts, the file list (with per-file selection
-for torrents), the live per-connection speeds, the URLs, peers, and editable
-per-download options (split, connections per server, speed limits).
-
-**Add download** — URLs (one per line, or as mirrors of one file), or a
-`.torrent`/`.metalink` file; destination directory, output filename, connections
-per server, split, minimum part size, speed limit, referer, user-agent, cookie,
-extra headers, proxy, checksum, queue position, and add-paused.
-
-**Settings** — *Simple* shows the seven options that decide how a download
-behaves (folder, downloads at once, connections per server, parts, the two
-speed limits, resume). *Advanced* shows every aria2 option, grouped, with a
-search box, then the aria2c process card and the event log. An option aria2
-cannot change while running is saved to `config.yaml` and marked *Applies
-after restart*.
-
-**History** — the last filter chip on the Downloads tab. aria2's session file only
-keeps *unfinished* downloads, so completed ones would vanish on the next restart.
-The manager records every download it sees finish in `history.json`, which
-survives restarts and aria2's own purge; each row can be queued again from its
-recorded URL or forgotten. Files on disk are never touched by clearing history.
-
-> **In-progress downloads are not at risk.** They live in aria2's session file
-> plus the `.aria2` control file beside the partial file, and resume on restart.
-> Verified: a download interrupted at 13% came back at 31% after a restart and
-> finished to 100% as one clean file.
-
-**Header** — the live throughput as the headline figure, then active/queued/done/
-failed counts, and pause all / resume all / purge finished. Global speed limits
-live under *Settings* with the rest of the aria2 options, where they belong.
-
-**Downloads** — filter chips carry their own counts (*All* and *Complete*
-included), each row shows its progress as both a wash across the card and a rail
-along its bottom edge, and a finished download whose file has since been moved or
-deleted is marked **file missing**. *Select* turns on bulk mode for pausing,
-resuming or removing several at once.
-
-Press `n` anywhere to open the add dialog.
-
-**Speeds and sizes** — every speed limit, part size, cache size and the rules'
-speed threshold is a number plus a unit (B/s · KiB/s · MiB/s · GiB/s, or
-B · KiB · MiB · GiB), shown in the most readable unit — `12 MiB/s`, not
-`12582912`. Changing the unit reinterprets the number you typed, shorthand like
-`12M` typed into the box works too, and an empty speed limit means no limit.
-Values are still stored as bytes, which is what aria2 and `config.yaml` get.
-The DankBar widget and the extension's minimum-size setting use the same
-control.
-
-### Removing a download, and its bytes
-
-aria2 never deletes anything itself, so a removed download used to leave its part
-file and `.aria2` control file on disk forever. Now:
-
-- **An unfinished download** — cancelling it takes the part file with it. There is
-  nothing to ask: a half-written file is only ever rubbish.
-- **A finished download** — you are asked once, because its file is the point:
-  *keep file* removes only the row, *delete file* removes both.
-
-Deletion is confined to the download's own directory and the configured download
-directory, only ever touches the paths aria2 reported for that download plus
-their `.aria2` control files, and refuses anything that is not a regular file.
-Emptied folders left by a multi-file torrent are pruned.
-
-### The same UI on the DankBar (optional)
-
-If you run [DankMaterialShell](https://danklinux.com), `dms-plugin/` is the same
-manager as a DMS plugin: a download icon on the bar showing live speed, clicked to
-open a panel with Downloads, Actions and Settings (the event log folds away at the
-bottom of Settings). It is a second front-end onto this daemon over the same
-socket, so the extension's manager page and the bar can be open at once. Right-clicking the icon gives quick actions (pause/resume all,
-purge, add from clipboard), and the panel can be detached into an ordinary
-window that survives a click elsewhere.
+After the installer, add it in DMS *Settings → DankBar*. Left-click opens the
+panel, right-click gives quick actions, and the panel can be detached into a
+window. Useful key bindings:
 
 ```sh
-ln -s "$PWD/dms-plugin" ~/.config/DankMaterialShell/plugins/ariaDownloadManager
-dms ipc call plugins enable ariaDownloadManager      # then add it in Settings -> DankBar
-dms ipc call ariaDownloadManager toggle                     # bind this to a key if you like
-dms ipc call ariaDownloadManager toggleWindow               # ...or this, for the standalone window
+dms ipc call ariaDownloadManager toggle        # the bar panel
+dms ipc call ariaDownloadManager toggleWindow  # the standalone window
 ```
 
-See [dms-plugin/README.md](dms-plugin/README.md) for settings, IPC and hacking notes.
+More in [dms-plugin/README.md](dms-plugin/README.md).
 
-## 5b. Downloading video from a page
+## Using it
 
-A modern player never puts a downloadable URL in the page. It fetches an HLS or
-DASH manifest and feeds segments to the `<video>` element through Media Source
-Extensions, so `video.src` is a `blob:` handle to a buffer in memory — nothing a
-download manager can fetch.
+- **Toolbar popup:** live speed, what is running, a box for a link or magnet,
+  the *Send downloads to Aria* switch, and *open the full manager*.
+- **Right-click** a link, image, video, page or selection to send it; Alt+click
+  sends any link.
+- **Manager page / DankBar panel:** downloads with details (files, peers,
+  piece map, options), Add, the automatic Actions, and Settings (*Simple* or
+  every aria2 option under *Advanced*).
+- Removing an unfinished download deletes its partial file; a finished one asks
+  whether to keep the file.
 
-What is still visible is the manifest going past on the network, and a manifest
-is a published list of exactly the qualities the site will serve. So the
-extension watches requests rather than the DOM: when it sees a manifest or a
-media file for a tab, it puts a small **Download** button over the player. The
-button asks the manager to read that manifest, and offers what it found.
+## Configuration
 
-```
-page fetches manifest ──► extension sniffs it (webRequest, observation only)
-                            │
-                            └─► /api/media/probe        → 1080p60 / 720p / 360p
-                                     │  (with the page's cookies, so a
-                                     │   members-only stream probes correctly)
-                                     └─► /api/media/download
-                                            ├─ progressive file → aria2, as usual
-                                            └─ HLS/DASH → ffmpeg fetches the
-                                               segments and muxes them into one
-                                               .mp4, reported as a media job
-```
+Everything is editable in the UI; it is stored in `config.yaml` (created from
+`config.example.yaml`). A few keys worth knowing:
 
-Stream jobs appear in every state frame under `media`, so both front-ends see
-them alongside ordinary downloads.
-
-**Requires ffmpeg** for segmented streams — it is what fetches the parts and
-joins them. A progressive `.mp4` needs nothing extra and goes to aria2 like any
-other download.
-
-**DRM is out of reach.** Netflix, Prime and friends encrypt segments with
-Widevine, and the keys live in a module the browser will not hand over. That is
-a hard boundary, not a missing feature.
-
-## 6. API (over the socket)
-
-The protocol is newline-delimited JSON: send
-`{"id": 1, "method": "GET", "path": "/api/state"}` and get back
-`{"id": 1, "status": 200, "body": {...}}`. `{"method": "SUBSCRIBE"}` starts the
-live frames on that connection as `{"event": "state", "data": {...}}` lines
-(`state`, `event`, `backlog`, `shutdown`), and `UNSUBSCRIBE` stops them. Requests
-on one connection are answered concurrently.
-
-```bash
-echo '{"id":1,"method":"GET","path":"/api/intake/ping"}' \
-  | socat - UNIX-CONNECT:$XDG_RUNTIME_DIR/aria-download-manager.sock
-```
-
-| Method | Path | Purpose |
+| Key | Default | Meaning |
 | --- | --- | --- |
-| `GET` | `/api/state` | latest snapshot, including aria2c's process status under `aria2` |
-| `GET` | `/api/log` | recent events and rule triggers |
-| `POST` | `/api/downloads` | add URIs (`{uris, options, position, paused, mirrors}`) |
-| `POST` | `/api/downloads/file` | add a base64 `.torrent`/`.metalink` |
-| `GET` | `/api/download/{gid}` | detail: status, files, uris, options, servers, peers, piece map |
-| `POST` | `/api/download/{gid}/pause\|resume\|retry` | per-download commands |
-| `POST` | `/api/download/{gid}/options\|position\|select` | change options, queue position, selected files |
-| `DELETE` | `/api/download/{gid}` | remove (`?force=&purge=&delete_files=`) — `delete_files` also deletes what it wrote |
-| `POST` | `/api/downloads/bulk` | one action across a chosen set (`{action, gids, delete_files, force}`) |
-| `POST` | `/api/media/probe` | read a stream manifest and list its qualities (`{url, cookie, referer, user_agent}`) |
-| `POST` | `/api/media/download` | queue a chosen quality — aria2 for a file, ffmpeg for a stream |
-| `POST` | `/api/global/pause-all\|resume-all\|purge` | queue-wide commands |
-| `GET`/`POST` | `/api/global/options` | read/write global aria2 options |
-| `GET`/`POST` | `/api/rules` | read/replace rules; `POST /api/rules/{name}/toggle` |
-| `POST` | `/api/aria2/restart` | restart aria2c |
-| `GET` | `/api/config` | the effective config (RPC secret redacted) |
-| `POST` | `/api/restart` | restart the manager itself (needs `Restart=always`) |
-| `GET` | `/api/history` | finished downloads recorded across restarts (`?limit=&status=`) |
-| `POST` | `/api/history/readd` | queue a past download again (`{key}`) |
-| `POST` | `/api/history/remove`, `/api/history-clear` | forget one entry / all of them |
-| `POST` | `/api/intake/add` | lenient intake used by the extension |
-| `GET` | `/api/intake/ping` | readiness probe: version, whether aria2c is up, the socket path |
+| `torrent.engine` | `auto` | `auto` uses qbittorrent-nox when installed, `aria2` keeps torrents on aria2c |
+| `qbittorrent.managed` | `true` | `false` to use a qBittorrent you already run |
+| `aria2.stop_on_exit` | `true` | `false` keeps aria2c downloading after the manager stops |
+| `desktop.float_windows` | `true` | float the download dialog and window on niri / Hyprland |
+| `rules` | stall recovery | the automatic actions (also on the *Actions* tab) |
 
-aria2 errors come back as status 502 with the aria2 message; if aria2c is not
-running at all, commands return 503 explaining why rather than a bare 500.
+`python3 -m aria_download_manager --print-config` shows the effective config.
 
-## 7. Security
+## Troubleshooting
 
-There is **no authentication**, by design, and nothing that needs it: the manager
-opens no network port at all. Its socket is created with mode `0600` inside
-`$XDG_RUNTIME_DIR` (itself `0700`), so only your user can connect, and no website
-can reach it through your browser.
-
-The aria2 RPC secret is generated randomly on first run and stored at
-`~/.local/share/aria-download-manager/rpc-secret` with `0600` permissions (a secret you
-set explicitly in `config.yaml` is used as-is instead). It is kept on disk rather
-than regenerated per run for a functional reason: without it, a new manager cannot
-authenticate to an aria2c left over from a previous run, so that process could
-neither be adopted nor asked to stop. `/api/config` redacts it.
-
-## 8. Tests
-
-The suite runs the whole stack against a fake aria2 RPC server, so **no aria2c
-installation is required** to run it:
-
-```bash
-python3 tests/test_manager.py     # the whole manager suite
-python3 tests/test_ipc.py         # Unix socket, event stream, native-messaging host
-python3 tests/test_qbittorrent.py # torrents through a real qbittorrent-nox (skipped if absent)
-python3 tests/test_compositor.py  # floating our windows on niri / Hyprland (fake niri, hyprctl)
-```
-
-It covers config merging and persistence, the aria2c command line, the API and
-live stream over the socket (and that no TCP port is opened),
-adding/pausing/removing/repositioning, global options, the
-browser intake (including that a `../../escape.iso` filename is reduced to a
-basename), managed-mode process supervision (spawn → SIGKILL → automatic
-restart → clean shutdown), the orphan cases above (SIGHUP exits with code 0 and
-leaves no aria2c; a SIGKILL'd manager's orphan is adopted by the next run and
-stopped cleanly; a foreign listener is reported and never killed), and — the
-interesting one — that the stall-recovery
-rule really does pause and resume a download whose speed drops, while leaving a
-healthy download untouched.
-
-Other tools:
-
-```bash
-python3 tests/fake_aria2.py --port 6800     # fake aria2 you can point the manager at
-python3 -m aria_download_manager --no-aria2        # ...then attach to it
-
-# Render the manager page from a running manager to a self-contained HTML file
-# (opens offline, screenshot-able headless)
-python3 tests/render_ui.py --tab downloads --expand --out /tmp/ui.html
-```
-
-`tests/fake_aria2.py` seeds a download that deliberately stalls after 4 seconds,
-which is the quickest way to watch a rule fire without waiting for a real server
-to misbehave.
-
-## 9. Troubleshooting
-
-| Symptom | Cause / fix |
+| Symptom | Fix |
 | --- | --- |
-| `aria2c binary 'aria2c' not found in PATH` | install aria2, or set `aria2.binary` to a full path |
-| `aria2c exited during startup` | usually an invalid option in `aria2.options`; check `~/.local/share/aria-download-manager/aria2.log`, or run `--print-argv` |
-| The extension says "the native host is not installed" | run `python3 -m aria_download_manager --install-native-host`, then restart the browser |
-| The extension or widget says "Aria Download Manager is not running (no socket at …)" | start the manager; if `server.socket` is set, re-run `--install-native-host` and set the widget's *Manager socket* to match |
-| A download still lands in the browser | interception is off in Settings, the host is on the blocklist, or it is a `blob:`/`data:` URL aria2 cannot fetch |
-| The extension vanished after restarting Firefox | temporary add-ons do not survive a restart — see §3 |
-| Unfinished downloads did not come back after a restart | they resume from `aria2.session_file` (written every 30 s and on clean shutdown) plus the `.aria2` file beside the partial download — check both still exist |
-| Completed downloads vanished from the list | aria2 never persists finished downloads; the manager's own History filter keeps them (`history.file`) |
-| An action reports "aria2c is not running" while it clearly is | fixed in this build: aria2 answers ordinary errors with HTTP 400 and a JSON body, which was being read as a dead daemon. Errors now show aria2's real message |
-| After closing the terminal, a rerun says "aria2c exited during startup" | fixed in this build: SIGHUP now shuts down cleanly, and any leftover aria2c is adopted or reclaimed. If you still see it, something unrelated holds the port — check with `ss -lptn "sport = :6800"` |
-| A rule fires over and over | raise `cooldown_seconds` / `min_age_seconds`, or lower `max_triggers` |
-| A rule fires on a download that just started | fixed in this build: `min_age_seconds` now counts from when it started transferring, not from when it was queued |
-| Speed shown does not match the bytes arriving | aria2's figure is a moving average — see §4. The row shows the measured figure alongside it when they diverge |
-| "Clear history" appears to do nothing | fixed in this build: dismissals are remembered, *and* aria2's own finished results are purged so the rows also leave the Downloads list |
-| A stall fix makes the download swap places with the next one | fixed in this build: the action reclaims its concurrency slot. See §4 |
+| Extension: "the native host is not installed" | run `./install.sh` (or `python3 -m aria_download_manager --install-native-host`), restart the browser |
+| "Aria Download Manager is not running" | `systemctl --user status aria-download-manager`; logs with `journalctl --user -u aria-download-manager` |
+| `aria2c exited during startup` | usually a bad option in `aria2.options`; see `~/.local/share/aria-download-manager/aria2.log` |
+| A download still lands in the browser | capture is off, the site is excluded in Settings, or it is a `blob:`/`data:` URL aria2 cannot fetch |
+| Torrents go to aria2c | qbittorrent-nox is missing or could not start; Settings says why |
 
-## Layout
+## Uninstall
+
+```bash
+./install.sh --uninstall
+```
+
+Removes the service, the bridge and the plugin link; your downloads, settings
+and history stay.
+
+## Development
+
+```bash
+./run.sh                           # run in the foreground instead of the service
+python3 tests/test_manager.py      # the manager, against a fake aria2 (no aria2c needed)
+python3 tests/test_ipc.py          # socket, live stream, native-messaging bridge
+python3 tests/test_qbittorrent.py  # torrents through a real qbittorrent-nox (skipped if absent)
+python3 tests/test_compositor.py   # window handling on niri / Hyprland (faked)
+python3 tests/test_filetree.py     # the torrent file tree, shared by both front-ends
+```
+
+The extension is released automatically: a push to `main` with a new version in
+`extension/manifest.json` builds, signs and publishes it
+(`.github/workflows/extension-release.yml`).
 
 ```
-aria_download_manager/
-  __main__.py     CLI entrypoint
-  config.py       YAML config: defaults, merge, persistence
-  rpc.py          async aria2 JSON-RPC client (HTTP transport)
-  supervisor.py   spawn / health-check / restart / shut down aria2c
-  state.py        1 Hz poller, snapshot normalisation, live-stream fan-out
-  rules.py        custom download actions
-  qbittorrent.py  qBittorrent as the torrent engine: Web API client, process, row mapping
-  compositor.py   float our windows on niri / Hyprland (niri msg, hyprctl)
-  api.py          the API: FastAPI routes, run in-process (no web server)
-  ipc.py          the Unix socket: newline-delimited JSON into those routes
-  native_host.py  native-messaging bridge for the extension (stdlib only)
-dms-plugin/       DankMaterialShell bar widget (optional; QML front-end over the socket)
-extension/        browser extension (Firefox + Chromium, MV3)
-  manager/        the full manager page, opened from the popup
-  lib/link.js     the native-messaging connection, shared by the background and the page
-  lib/present.js  display helpers (file kinds, time left, totals) shared by every page
-tests/            fake aria2, suites, UI render harness
-systemd/          user service unit
+aria_download_manager/  the manager: API, socket, aria2 and qBittorrent, rules, history
+extension/              browser extension (Firefox + Chromium, MV3) and the manager page
+dms-plugin/             DankMaterialShell widget
+systemd/                user service template (install.sh fills in the paths)
+tests/                  suites, fake aria2, UI render harness
 ```
