@@ -180,8 +180,9 @@ Column {
                             done[f.index] = Number(f.completedLength) || 0
                         detail.progress = done
                         // The manager's priorities, unless something was just changed
-                        // here: a save in flight must not be undone by the refresh.
-                        if (Date.now() - detail.editedAt > 4000) {
+                        // here: a save in flight must not be undone by the refresh,
+                        // nor a choice of no files that aria2 could not take.
+                        if (Date.now() - detail.editedAt > 4000 && !detail.unsavedNone) {
                             const server = ({})
                             for (const f of list)
                                 server[f.index] = f.priority !== undefined ? f.priority : (f.selected === "true" ? 1 : 0)
@@ -208,6 +209,10 @@ Column {
                         }
                     })
     }
+
+    //: aria2 needs a file chosen; with none, the choice stays on screen,
+    //: unsaved, with a word saying so, rather than snapping back.
+    readonly property bool unsavedNone: editedAt > 0 && !isQb && summary.chosen === 0
 
     function changeLevels(next) {
         levels = next
@@ -370,7 +375,7 @@ Column {
 
         interval: 500
         onTriggered: {
-            if (detail.summary.chosen === 0) {
+            if (detail.unsavedNone) {
                 detail.savedText = "Pick at least one file"
                 return
             }
@@ -1278,7 +1283,7 @@ Column {
         OptionRow {
             visible: !detail.reviewing && detail.isQb
             label: "Download in order"
-            hint: "Start watching a video before it finishes. Can be slower."
+            hint: "Fetches each file from start to end, so its first parts can be used before it finishes. Usually slower."
 
             BoolSwitch {
                 checked: detail.sequential
@@ -1292,7 +1297,7 @@ Column {
         OptionRow {
             visible: !detail.reviewing && detail.isQb
             label: "First and last pieces first"
-            hint: "Helps media players open the file sooner."
+            hint: "Gets each file's start and end early, so it can be opened or previewed sooner."
 
             BoolSwitch {
                 checked: detail.firstLast

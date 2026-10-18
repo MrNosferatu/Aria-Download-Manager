@@ -127,20 +127,31 @@ async def float_window(title_part: str, width: int = 0, height: int = 0,
     return ""
 
 
-#: niri window id -> (width, height) it had before we filled the screen with it.
-_unfilled: dict[int, tuple[int, int]] = {}
+#: niri window id -> (width, height, position in the workspace view or None)
+#: it had before we filled the screen with it.
+_unfilled: dict[int, tuple[int, int, list | None]] = {}
+
+
+async def _niri_window(env: dict[str, str], wid: int) -> dict | None:
+    code, out = await _run(["niri", "msg", "-j", "windows"], env)
+    try:
+        return next((w for w in json.loads(out or "[]") if w.get("id") == wid), None) if code == 0 else None
+    except (ValueError, AttributeError):
+        return None
 
 
 async def toggle_maximize(title_part: str, exact: bool = True) -> dict:
     """Fill the screen with our window, or put it back; for its maximize button.
 
     A floating window's own maximize request is ignored by niri, and the
-    DankBar window is always floating there, so the manager does it: the
-    window is sized to the whole working area and moved to its corner, and the
-    size it had is remembered for the way back. A tiled window is maximized to
-    the edges; Hyprland gets its maximize (fullscreen mode 1). Returns which
-    compositor did it ("" for none: the caller falls back to the plain
-    request) and whether the window now fills the screen.
+    DankBar window is always floating there, so the manager does it the way
+    niri maximizes any window: into the tiled layout, its column maximized,
+    with the gaps and border every other maximized window has. The size it
+    had is remembered, and the way back floats it again at that size. A
+    window already tiled just has its column maximized; Hyprland gets its
+    maximize (fullscreen mode 1). Returns which compositor did it ("" for
+    none: the caller falls back to the plain request) and whether the window
+    now fills the screen.
     """
     escaped = re.escape(title_part.strip())
     title = re.compile(f"^{escaped}$" if exact else escaped)
@@ -156,20 +167,34 @@ async def toggle_maximize(title_part: str, exact: bool = True) -> dict:
             window = matches[-1]
             wid = int(window["id"])
             arg = str(wid)
-            if not window.get("is_floating"):
-                await _run(["niri", "msg", "action", "maximize-window-to-edges", "--id", arg], env)
-                return {"by": "niri", "maximized": None}
+            # maximize-column acts on the focused window.
             if wid in _unfilled:
-                width, height = _unfilled.pop(wid)
+                width, height, before = _unfilled.pop(wid)
+                await _run(["niri", "msg", "action", "focus-window", "--id", arg], env)
+                await _run(["niri", "msg", "action", "maximize-column"], env)
+                await _run(["niri", "msg", "action", "move-window-to-floating", "--id", arg], env)
                 await _run(["niri", "msg", "action", "set-window-width", "--id", arg, str(width)], env)
                 await _run(["niri", "msg", "action", "set-window-height", "--id", arg, str(height)], env)
-                await _run(["niri", "msg", "action", "center-window", "--id", arg], env)
+                # Back where it was: niri floats it somewhere of its own, so it
+                # is moved by the difference to the place it had.
+                now = ((await _niri_window(env, wid)) or {}).get("layout", {}).get("tile_pos_in_workspace_view")
+                if before and now:
+                    dx, dy = round(before[0] - now[0]), round(before[1] - now[1])
+                    await _run(["niri", "msg", "action", "move-floating-window", "--id", arg,
+                                "-x", f"{dx:+d}", "-y", f"{dy:+d}"], env)
+                else:
+                    await _run(["niri", "msg", "action", "center-window", "--id", arg], env)
                 return {"by": "niri", "maximized": False}
-            size = (window.get("layout") or {}).get("window_size") or [0, 0]
-            _unfilled[wid] = (int(size[0]) or 1120, int(size[1]) or 820)
-            await _run(["niri", "msg", "action", "set-window-width", "--id", arg, "100%"], env)
-            await _run(["niri", "msg", "action", "set-window-height", "--id", arg, "100%"], env)
-            await _run(["niri", "msg", "action", "move-floating-window", "--id", arg, "-x", "0", "-y", "0"], env)
+            if not window.get("is_floating"):
+                await _run(["niri", "msg", "action", "focus-window", "--id", arg], env)
+                await _run(["niri", "msg", "action", "maximize-column"], env)
+                return {"by": "niri", "maximized": None}
+            layout = window.get("layout") or {}
+            size = layout.get("window_size") or [0, 0]
+            _unfilled[wid] = (int(size[0]) or 1120, int(size[1]) or 820, layout.get("tile_pos_in_workspace_view"))
+            await _run(["niri", "msg", "action", "move-window-to-tiling", "--id", arg], env)
+            await _run(["niri", "msg", "action", "focus-window", "--id", arg], env)
+            await _run(["niri", "msg", "action", "maximize-column"], env)
             return {"by": "niri", "maximized": True}
 
     env = hyprland_env()
@@ -185,6 +210,52 @@ async def toggle_maximize(title_part: str, exact: bool = True) -> dict:
             await _run(["hyprctl", "dispatch", "fullscreen", "1"], env)
             return {"by": "hyprland", "maximized": not window.get("fullscreen")}
     return {"by": "", "maximized": None}
+
+
+async def focus_window(title_part: str, exact: bool = True) -> dict:
+    """Bring our window to the user, wherever it is; for "open the window".
+
+    A window left open on another workspace or monitor is easily forgotten,
+    and toggling it would close what nobody can see. So when it is not the
+    focused window it is focused, which on niri and Hyprland switches to its
+    workspace and monitor. Returns which compositor answered ("" for none),
+    whether the window was found, and whether it already had the focus, in
+    which case the caller closes it instead.
+    """
+    escaped = re.escape(title_part.strip())
+    title = re.compile(f"^{escaped}$" if exact else escaped)
+
+    env = niri_env()
+    if env:
+        code, out = await _run(["niri", "msg", "-j", "windows"], env)
+        try:
+            matches = [w for w in json.loads(out or "[]") if title.search(str(w.get("title") or ""))] if code == 0 else []
+        except (ValueError, AttributeError):
+            matches = []
+        if matches:
+            window = matches[-1]
+            if window.get("is_focused"):
+                return {"by": "niri", "found": True, "wasFocused": True}
+            await _run(["niri", "msg", "action", "focus-window", "--id", str(window["id"])], env)
+            return {"by": "niri", "found": True, "wasFocused": False}
+        return {"by": "niri", "found": False, "wasFocused": False}
+
+    env = hyprland_env()
+    if env:
+        code, out = await _run(["hyprctl", "-j", "clients"], env)
+        try:
+            matches = [w for w in json.loads(out or "[]") if title.search(str(w.get("title") or ""))] if code == 0 else []
+        except (ValueError, AttributeError):
+            matches = []
+        if matches:
+            window = matches[-1]
+            # focusHistoryID 0 is the window that has the focus.
+            if window.get("focusHistoryID") == 0:
+                return {"by": "hyprland", "found": True, "wasFocused": True}
+            await _run(["hyprctl", "dispatch", "focuswindow", f"address:{window['address']}"], env)
+            return {"by": "hyprland", "found": True, "wasFocused": False}
+        return {"by": "hyprland", "found": False, "wasFocused": False}
+    return {"by": "", "found": False, "wasFocused": False}
 
 
 # --------------------------------------------------------------------------

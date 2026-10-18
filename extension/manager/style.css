@@ -721,3 +721,16 @@ input.fld {
 /* Selecting: a row's own buttons step aside, the row's click is a tick. */
 .dl .dl-actions[hidden] { display: none; }
 body:has(#bulk-bar:not([hidden])) .dl .dl-main { cursor: pointer; }
+
+/* The grip between the list and the details pane. */
+/* Fixed to the window, not the pane, which scrolls; the pane sits at the
+   window's right edge, so its left edge is var(--pane) in from there. */
+.pane-grip {
+  position: fixed; right: calc(var(--pane) - 5px); top: var(--head); bottom: 34px; width: 10px;
+  cursor: col-resize; z-index: 3; touch-action: none;
+  &::after { content: ""; position: absolute; left: 3px; top: 50%; width: 4px; height: 48px; margin-top: -24px; border-radius: 2px;
+    background: var(--outline); opacity: 0; transition: opacity var(--t-fast); }
+  &:hover::after { opacity: 1; }
+  &.dragging::after { opacity: 1; background: var(--primary); }
+}
+body.resizing, body:has(.pane-grip.dragging) { cursor: col-resize; user-select: none; }

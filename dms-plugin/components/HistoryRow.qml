@@ -18,8 +18,13 @@ Rectangle {
     //: ticks it; the detail and the row's own buttons step aside.
     property bool selectable: false
     property bool selected: false
+    //: The wide window: a click picks the entry for the details pane, as a
+    //: live row does, instead of opening it here; `current` marks it.
+    property bool listMode: false
+    property bool current: false
 
     signal toggleSelected(bool range)
+    signal picked
 
     onSelectableChanged: {
         if (selectable)
@@ -152,14 +157,14 @@ Rectangle {
     height: expanded ? 52 + detailLoader.height + 14 : 52
     radius: expanded ? 18 : 12
     color: {
-        if (selected)
+        if (selected || current)
             return Theme.withAlpha(Theme.primary, 0.10)
-        if (selectable && rowArea.containsMouse)
+        if ((selectable || listMode) && rowArea.containsMouse)
             return Theme.surfaceContainerHigh
         return expanded ? Theme.surfaceContainerHigh : Theme.surfaceContainer
     }
-    border.width: failed || expanded ? 1 : 0
-    border.color: failed ? Theme.withAlpha(Theme.error, 0.35) : Theme.outlineVariant
+    border.width: failed || expanded || current ? 1 : 0
+    border.color: failed ? Theme.withAlpha(Theme.error, 0.35) : (current ? Theme.primary : Theme.outlineVariant)
 
     //: The one-line head; the detail opens under it.
     Item {
@@ -176,7 +181,7 @@ Rectangle {
 
         anchors.fill: head
         acceptedButtons: Qt.LeftButton | Qt.RightButton
-        hoverEnabled: row.selectable
+        hoverEnabled: row.selectable || row.listMode
         cursorShape: Qt.PointingHandCursor
         onClicked: mouse => {
             if (row.selectable) {
@@ -185,6 +190,8 @@ Rectangle {
             } else if (mouse.button === Qt.RightButton) {
                 const at = rowArea.mapToItem(historyMenu.parent, mouse.x, mouse.y)
                 historyMenu.openAt(at.x, at.y)
+            } else if (row.listMode) {
+                row.picked()
             } else {
                 row.expanded = !row.expanded
             }
@@ -233,7 +240,7 @@ Rectangle {
         anchors.right: parent.right
         anchors.rightMargin: 6
         anchors.verticalCenter: head.verticalCenter
-        visible: !row.selectable
+        visible: !row.selectable && !row.listMode
         width: visible ? implicitWidth : 0
         spacing: 4
 

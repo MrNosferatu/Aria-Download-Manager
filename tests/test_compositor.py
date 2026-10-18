@@ -74,30 +74,49 @@ async def run(tmp: Path) -> None:
     print("\nniri: the maximize button")
     log.unlink()
     windows.write_text(json.dumps([{"id": 4, "title": "Aria Download Manager", "is_floating": True,
-                                    "layout": {"window_size": [1120, 820]}}]))
+                                    "layout": {"window_size": [1120, 820], "tile_pos_in_workspace_view": [400, 60]}}]))
     done = await compositor.toggle_maximize("Aria Download Manager")
-    check("a floating window is sized to the working area and moved to its corner",
+    check("a floating window goes into the layout with its column maximized, as niri maximizes any",
           done == {"by": "niri", "maximized": True} and calls() == [
-              "msg action set-window-width --id 4 100%",
-              "msg action set-window-height --id 4 100%",
-              "msg action move-floating-window --id 4 -x 0 -y 0"], f"{done} {calls()}")
+              "msg action move-window-to-tiling --id 4",
+              "msg action focus-window --id 4",
+              "msg action maximize-column"], f"{done} {calls()}")
     log.unlink()
+    # Floated again, niri puts it at the top left of the work area.
+    windows.write_text(json.dumps([{"id": 4, "title": "Aria Download Manager", "is_floating": True,
+                                    "layout": {"window_size": [1120, 820], "tile_pos_in_workspace_view": [8, 46]}}]))
     done = await compositor.toggle_maximize("Aria Download Manager")
-    check("the second press puts back the size it had",
+    check("the second press floats it again at the size and the place it had",
           done == {"by": "niri", "maximized": False} and calls() == [
+              "msg action focus-window --id 4",
+              "msg action maximize-column",
+              "msg action move-window-to-floating --id 4",
               "msg action set-window-width --id 4 1120",
               "msg action set-window-height --id 4 820",
-              "msg action center-window --id 4"], f"{done} {calls()}")
+              "msg action move-floating-window --id 4 -x +392 -y +14"], f"{done} {calls()}")
     log.unlink()
     windows.write_text(json.dumps([{"id": 5, "title": "Aria Download Manager", "is_floating": False}]))
     done = await compositor.toggle_maximize("Aria Download Manager")
-    check("a tiled one is maximized to the edges",
-          done["by"] == "niri" and calls() == ["msg action maximize-window-to-edges --id 5"], str(calls()))
+    check("a tiled one has its column maximized",
+          done["by"] == "niri" and calls() == ["msg action focus-window --id 5", "msg action maximize-column"], str(calls()))
     log.unlink()
     windows.write_text(json.dumps([{"id": 6, "title": "Aria Download Manager — Mozilla Firefox",
                                     "is_floating": True}]))
     done = await compositor.toggle_maximize("Aria Download Manager")
     check("a browser page of that name is never touched", not calls(), str(calls()))
+
+    print("\nniri: open the window that is already open")
+    if log.exists():
+        log.unlink()
+    windows.write_text(json.dumps([{"id": 7, "title": "Aria Download Manager", "is_floating": True, "is_focused": False}]))
+    done = await compositor.focus_window("Aria Download Manager")
+    check("one left on another workspace is focused, which takes the user there",
+          done == {"by": "niri", "found": True, "wasFocused": False}
+          and calls() == ["msg action focus-window --id 7"], f"{done} {calls()}")
+    log.unlink()
+    windows.write_text(json.dumps([{"id": 7, "title": "Aria Download Manager", "is_floating": True, "is_focused": True}]))
+    done = await compositor.focus_window("Aria Download Manager")
+    check("one already in focus is left for the caller to close", done["wasFocused"] and not calls(), f"{done} {calls()}")
 
     print("\nHyprland")
     if log.exists():
@@ -124,6 +143,11 @@ async def run(tmp: Path) -> None:
     done = await compositor.toggle_maximize("Aria Download Manager")
     check("Hyprland maximizes it", done == {"by": "hyprland", "maximized": True} and calls() == [
         "dispatch focuswindow address:0x66", "dispatch fullscreen 1"], f"{done} {calls()}")
+    log.unlink()
+    windows.write_text(json.dumps([{"address": "0x77", "title": "Aria Download Manager", "focusHistoryID": 3}]))
+    done = await compositor.focus_window("Aria Download Manager")
+    check("Hyprland focuses one open elsewhere", done["wasFocused"] is False
+          and calls() == ["dispatch focuswindow address:0x77"], f"{done} {calls()}")
 
     print("\nneither")
     log.unlink()

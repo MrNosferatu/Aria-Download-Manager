@@ -1094,8 +1094,8 @@ class QBEngine:
             if level not in LEVEL_TO_QB:
                 raise ValueError(f"priority must be 0-3, got {level}")
             groups.setdefault(to_qb_priority(level), []).append(int(index) - 1)
-        if not any(p > 0 for p in groups):
-            raise ValueError("pick at least one file to download")
+        # Every file skipped is allowed: qBittorrent keeps what is on disk
+        # and simply wants nothing more (aria2 cannot; see file_priorities).
         state = str((await self._info(h)).get("state", ""))
         for prio, ids in groups.items():
             await self.client.file_priority(h, sorted(ids), prio)

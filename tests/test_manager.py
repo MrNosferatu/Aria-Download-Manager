@@ -1100,6 +1100,26 @@ def test_shown_speed() -> None:
           shown_speed({"downloadSpeed": 1000, "measuredSpeed": None}) == 1000)
 
 
+def test_reported_target() -> None:
+    print("\nopening a torrent's file or folder")
+    from fastapi import HTTPException
+    from aria_download_manager.api import _reported_target
+    paths = ["/dl/Top/a.jpg", "/dl/Top/Sub/b.jpg"]
+
+    def refused(wanted: str) -> bool:
+        try:
+            _reported_target(wanted, paths, "/dl")
+        except HTTPException:
+            return True
+        return False
+
+    check("a reported file opens", _reported_target("/dl/Top/a.jpg", paths, "/dl") == "/dl/Top/a.jpg")
+    check("a folder of its tree opens", _reported_target("/dl/Top/Sub/", paths, "/dl") == "/dl/Top/Sub")
+    check("the download folder itself does not", refused("/dl"))
+    check("nor a folder outside it, a stray path or a .. trick",
+          refused("/") and refused("/dl/Other") and refused("/dl/Top/Sub/../../etc") and refused("/dl/To"))
+
+
 def test_triggers_for() -> None:
     """A download's detail lists what the actions did to it, through restarts."""
     print("\nunit: triggers per download")
@@ -1679,6 +1699,7 @@ def main() -> int:
         test_file_plan()
         test_metadata_rows()
         test_rule_download_type()
+        test_reported_target()
         test_triggers_for()
         test_shown_speed()
         test_routing(tmp_dir / "c12")

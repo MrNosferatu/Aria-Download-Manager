@@ -9,14 +9,20 @@
    all, and a filter for big torrents. Changes go to `onChange(levels)` as
    they happen; the page decides when to save (or, for a finished torrent in
    History, to fetch). `notes` puts a word on a file's row ("not on disk");
-   `onOpen(path)` opens a file on a double click. */
+   `onOpen(path)` opens a file or folder on a double click. A click folds a folder;
+   Ctrl+click or a press and hold picks a row (Shift+click a range), after
+   which a click adds or takes one away, and the priority menu then sets the
+   picked ones. With `menu(x, y, items)` (the page's popMenu) a right click
+   brings up the row's menu: open it, show it in its folder, its priority,
+   pick; `onOpen(path, true)` asks for the folder a file is in. */
 'use strict';
 
 const FT_LEVELS = [[1, 'Normal'], [2, 'High'], [3, 'Max']];
 // The menu says "don't download" in full; a skipped row reads Skip.
 const FT_ROW_LEVELS = [[0, "Don't download"], ...FT_LEVELS];
-const FT_SORTS = [['name', 'Name'], ['size', 'Size'], ['progress', 'Progress'], ['priority', 'Priority']];
+const FT_SORTS = [['name', 'Name'], ['size', 'Size'], ['progress', '%'], ['priority', 'Priority']];
 const FT_CHEVRON = '<svg class="ico" viewBox="0 0 24 24"><path d="M10 6 8.59 7.41 13.17 12l-4.58 4.59L10 18l6-6z"/></svg>';
+const FT_FILE = '<svg class="ico" viewBox="0 0 24 24"><path d="M14 2H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V8l-6-6zm4 18H6V4h7v5h5v11z"/></svg>';
 const FT_FOLDER = '<svg class="ico" viewBox="0 0 24 24"><path d="M10 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z"/></svg>';
 
 // Each page has its own byte formatter: the dialog lib/common.js's, the
@@ -47,9 +53,13 @@ function mountFileTree(host, options) {
     root: null,
     editedAt: 0,
     notes: options.notes || {},
+    picked: {},
+    anchor: '',
+    rows: [],
   };
   const onChange = options.onChange || (() => {});
   const onOpen = options.onOpen || null;
+  const menu = options.menu || null;
   const pathOf = (index) => (S.files.find((f) => String(f.index) === String(index)) || {}).path || '';
 
   host.classList.add('ftree');
@@ -60,13 +70,15 @@ function mountFileTree(host, options) {
       <input class="ft-filter" data-role="filter" placeholder="Filter files" spellcheck="false">
       <span class="ft-spacer"></span>
       <button type="button" class="btn btn-sm ft-foldall" data-role="foldall"></button>
+      <button type="button" class="btn btn-sm btn-text ft-unpick" data-role="unpick" hidden>Unpick</button>
       <select class="ft-setall" data-role="setall" aria-label="Priority for every chosen file">
-        <option value="">Priority for all…</option>
+        <option value="" data-role="setall-label">Priority for all…</option>
+        <option value="0" data-role="setall-skip" hidden>Don't download</option>
         ${FT_LEVELS.map(([v, l]) => `<option value="${v}">${l}</option>`).join('')}
       </select>
     </div>
     <div class="ft-head" role="row">
-      ${FT_SORTS.map(([key, label]) => `<button type="button" class="ft-col ft-col-${key}" data-sort="${key}">${label}<span class="ft-arrow"></span></button>`).join('')}
+      ${FT_SORTS.map(([key, label]) => `<button type="button" class="ft-col ft-col-${key}" data-sort="${key}" title="Sort by ${key}">${label}<span class="ft-arrow"></span></button>`).join('')}
     </div>
     <div class="ft-list" role="tree"></div>`;
   const list = host.querySelector('.ft-list');
@@ -80,6 +92,30 @@ function mountFileTree(host, options) {
     onChange(Object.assign({}, S.levels));
   }
 
+  // A row's right-click menu, as popMenu items ([icon, label, run] or null
+  // for a line). A picked row stands for all the picked ones.
+  function rowMenu(row, pick, fold) {
+    const items = [];
+    if (onOpen && row.isDir) {
+      items.push(['folder', 'Open folder', () => onOpen(S.base.replace(/\/+$/, '') + row.key)]);
+    } else if (onOpen) {
+      const path = pathOf(row.index);
+      if (path && !S.notes[row.index]) {
+        items.push(['open', 'Open', () => onOpen(path)], ['folder', 'Show in folder', () => onOpen(path, true)]);
+      }
+    }
+    if (row.isDir) items.push(['chevron', row.open ? 'Fold' : 'Unfold', fold]);
+    const all = treePickedIndices(S.rows, S.picked);
+    const group = S.picked[row.key] && all.length > 1 ? all : null;
+    if (items.length) items.push(null);
+    for (const [level, word] of FT_ROW_LEVELS) {
+      items.push([!group && row.level === level ? 'check' : 'none', group ? `${word} · ${group.length} files` : word,
+        () => changed(treeSetLevel(S.levels, group || row.indices, level))]);
+    }
+    items.push(null, S.picked[row.key] ? ['close', 'Unpick', () => pick(false, true)] : ['add', 'Pick', () => pick(false, true)]);
+    return items;
+  }
+
   function draw() {
     if (!S.root) S.root = treeBuild(S.files, S.base);
     // Keep the control being used where it is across the redraw.
@@ -88,14 +124,19 @@ function mountFileTree(host, options) {
     const focusRole = active && active.dataset ? active.dataset.role : null;
 
     const rows = treeRows(S.root, S.levels, S.collapsed, S.filter, S.sort, S.desc);
+    S.rows = rows;
     list.replaceChildren(...rows.map(rowElement));
     if (!rows.length) {
       list.innerHTML = '<p class="ft-empty">No files match.</p>';
     }
 
     const sum = treeSummary(S.files, S.levels);
-    $r('count').textContent = `${sum.chosen} of ${sum.count} files wanted · ${ftBytes(sum.selected)} of ${ftBytes(sum.total)}${
-      S.root.name ? ` · inside ${S.root.name}/` : ''}`;
+    $r('count').textContent = `${sum.chosen} of ${sum.count} files wanted · ${ftBytes(sum.selected)} of ${ftBytes(sum.total)}`;
+    // Picked rows: the priority menu sets them, and says so.
+    const picked = treePickedIndices(rows, S.picked).length;
+    $r('unpick').hidden = !picked;
+    $r('setall-skip').hidden = !picked;
+    $r('setall-label').textContent = picked ? `Priority for ${picked} picked…` : 'Priority for all…';
     const folders = ftFolderKeys(S.root);
     const anyFolded = folders.some((k) => S.collapsed[k]);
     $r('foldall').hidden = !folders.length;
@@ -116,7 +157,7 @@ function mountFileTree(host, options) {
 
   function rowElement(row) {
     const el = document.createElement('div');
-    el.className = `ft-row${row.isDir ? ' is-dir' : ''}${row.state === 0 ? ' is-off' : ''}`;
+    el.className = `ft-row${row.isDir ? ' is-dir' : ''}${row.state === 0 ? ' is-off' : ''}${S.picked[row.key] ? ' is-picked' : ''}`;
     el.dataset.key = row.key;
     el.setAttribute('role', 'treeitem');
     if (row.isDir) el.setAttribute('aria-expanded', String(row.open));
@@ -131,14 +172,16 @@ function mountFileTree(host, options) {
       <span class="ft-name">
         <input type="checkbox" data-role="check" aria-label="Download"${row.state === 2 ? ' checked' : ''}>
         ${row.isDir ? `<button type="button" class="ft-twisty${row.open ? ' is-open' : ''}" data-role="twisty" aria-label="${row.open ? 'Fold' : 'Unfold'}">${FT_CHEVRON}</button>` : ''}
-        ${row.isDir ? `<span class="ft-folder">${FT_FOLDER}</span>` : ''}
+        ${S.progress
+          // The icon inside a progress ring, as the DankBar pill draws it.
+          ? `<span class="ft-ring${row.state === 0 ? ' is-off' : pct >= 100 ? ' is-full' : row.isDir || pct > 0 ? ' is-moving' : ''}" style="--p:${row.state === 0 ? 0 : pct}">${row.isDir ? FT_FOLDER : FT_FILE}</span>`
+          : row.isDir ? `<span class="ft-folder">${FT_FOLDER}</span>` : ''}
         <span class="ft-label"></span>
         ${!row.isDir && S.notes[row.index] ? `<span class="ft-note">${S.notes[row.index]}</span>` : ''}
         ${row.isDir ? `<span class="ft-count">${row.count === 1 ? '1 file' : `${row.count} files`}</span>` : ''}
       </span>
       <span class="ft-size">${size}</span>
       <span class="ft-done${pct >= 100 ? ' is-full' : ''}" title="${ftBytes(row.wantedDone)} of ${ftBytes(row.wanted)}">
-        <span class="ft-bar-track"><span class="ft-bar-fill" style="width:${row.state === 0 ? 0 : pct}%"></span></span>
         <span class="ft-pct">${row.state === 0 ? (row.isDir ? '—' : 'skip') : `${pct}%`}</span>
       </span>
       <select class="ft-level${row.level >= 2 ? ' is-raised' : ''}" data-role="level" aria-label="Priority">${levelOptions}</select>`;
@@ -147,7 +190,7 @@ function mountFileTree(host, options) {
     if (!row.isDir && S.notes[row.index]) el.classList.add('is-noted');
     if (!row.isDir && onOpen) {
       el.addEventListener('dblclick', (e) => {
-        if (e.target.closest('input, select, button')) return;
+        if (e.target.closest('input, select, button') || Object.keys(S.picked).length) return;
         const path = pathOf(row.index);
         if (path && !S.notes[row.index]) onOpen(path);
       });
@@ -161,13 +204,51 @@ function mountFileTree(host, options) {
       const value = Number(e.target.value);
       if (value >= 0) changed(treeSetLevel(S.levels, row.indices, value));
     });
-    if (row.isDir) {
-      const fold = () => {
-        S.collapsed[row.key] = row.open;
-        draw();
-      };
-      el.querySelector('[data-role="twisty"]').addEventListener('click', fold);
-      label.addEventListener('click', fold);
+    const pick = (range, add) => {
+      const next = treePick(S.rows, S.picked, S.anchor, row.key, range, add);
+      S.picked = next.picked;
+      S.anchor = next.anchor;
+      draw();
+    };
+    const fold = () => {
+      S.collapsed[row.key] = row.open;
+      draw();
+    };
+    // A click folds a folder, so a plain click never starts picking: Ctrl+click
+    // or a press and hold does (Shift+click a range), and while rows are
+    // picked a click adds or takes one away. Its own controls do their own thing.
+    // The hold redraws the rows, so whether it fired is kept in S for the
+    // click that follows on the new row.
+    let holdTimer = 0;
+    el.addEventListener('pointerdown', (e) => {
+      S.held = false;
+      if (e.button !== 0 || e.target.closest('input, select, button')) return;
+      holdTimer = setTimeout(() => { S.held = true; pick(false, true); }, 500);
+    });
+    for (const type of ['pointerup', 'pointerleave', 'pointercancel']) {
+      el.addEventListener(type, () => clearTimeout(holdTimer));
+    }
+    el.addEventListener('click', (e) => {
+      if (S.held || e.target.closest('input, select, button')) return;
+      if (e.shiftKey || e.ctrlKey || e.metaKey) pick(e.shiftKey, e.ctrlKey || e.metaKey);
+      else if (Object.keys(S.picked).length) pick(false, true);
+      else if (row.isDir) {
+        // It folds at once; the second click of a double click opens it
+        // instead of folding it back, so there is neither a wait nor a flicker.
+        if (e.detail === 2) {
+          if (onOpen) onOpen(S.base.replace(/\/+$/, '') + row.key);
+          return;
+        }
+        fold();
+      }
+    });
+    if (row.isDir) el.querySelector('[data-role="twisty"]').addEventListener('click', fold);
+    if (menu) {
+      el.addEventListener('contextmenu', (e) => {
+        if (e.target.closest('input, select, button')) return;
+        e.preventDefault();
+        menu(e.clientX, e.clientY, rowMenu(row, pick, fold));
+      });
     }
     return el;
   }
@@ -184,11 +265,21 @@ function mountFileTree(host, options) {
     changed(treeSetChosen(S.levels, every, e.target.checked));
   });
   $r('setall').addEventListener('change', (e) => {
-    const level = Number(e.target.value);
+    const value = e.target.value;
     e.target.value = '';
-    if (!level) return;
+    if (value === '') return;
+    const picked = treePickedIndices(S.rows, S.picked);
+    if (picked.length) {
+      changed(treeSetLevel(S.levels, picked, Number(value)));
+      return;
+    }
     const chosen = S.files.map((f) => String(f.index)).filter((i) => treeLevelOf(S.levels, i) > 0);
-    changed(treeSetLevel(S.levels, chosen, level));
+    if (Number(value) > 0) changed(treeSetLevel(S.levels, chosen, Number(value)));
+  });
+  $r('unpick').addEventListener('click', () => {
+    S.picked = {};
+    S.anchor = '';
+    draw();
   });
   $r('filter').addEventListener('input', (e) => {
     S.filter = e.target.value;
@@ -215,7 +306,10 @@ function mountFileTree(host, options) {
     update(files, levels) {
       S.files = files || [];
       S.root = null;
-      if (levels && Date.now() - S.editedAt > 4000) S.levels = Object.assign({}, levels);
+      // Nor over a choice of no files the page could not save (aria2 needs
+      // one): it stays on screen with the page's word on it.
+      const unsavedNone = S.editedAt && !Object.values(S.levels).some((v) => Number(v) > 0);
+      if (levels && Date.now() - S.editedAt > 4000 && !unsavedNone) S.levels = Object.assign({}, levels);
       // Not under an open priority menu: redrawing would snap it shut.
       if (document.activeElement?.tagName === 'SELECT' && host.contains(document.activeElement)) return;
       draw();

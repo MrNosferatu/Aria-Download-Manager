@@ -257,9 +257,9 @@ PluginComponent {
         windowLoader.item.toggle()
     }
 
-    //: Built when opened and let go once closed: a hidden window kept its
-    //: whole tree alive and cost the shell about 6% CPU and 80 MB for as long
-    //: as DMS ran. Reopening builds it again, which takes a moment, not more.
+    //: Built the first time it is opened and kept: a window mapped anew opens
+    //: tiled on niri before it is floated. While hidden it unloads its
+    //: contents instead (Aria2Window).
     LazyLoader {
         id: windowLoader
 
@@ -268,20 +268,6 @@ PluginComponent {
         Aria2Window {
             service: root.svc
             onDockRequested: root.openPopout()
-            onVisibleChanged: {
-                if (!visible)
-                    windowUnload.restart()
-            }
-        }
-    }
-
-    Timer {
-        id: windowUnload
-
-        interval: 500
-        onTriggered: {
-            if (windowLoader.item && !windowLoader.item.visible)
-                windowLoader.active = false
         }
     }
 

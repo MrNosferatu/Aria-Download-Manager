@@ -412,6 +412,8 @@ const ICONS = {
   down: 'M20 12l-1.41-1.41L13 16.17V4h-2v12.17l-5.58-5.59L4 12l8 8 8-8z',
   open: 'M19 19H5V5h7V3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14c1.1 0 2-.9 2-2v-7h-2v7zM14 3v2h3.59l-9.83 9.83 1.41 1.41L19 6.41V10h2V3h-7z',
   chevron: 'M10 6 8.59 7.41 13.17 12l-4.58 4.59L10 18l6-6z',
+  // An empty icon: keeps a menu's labels in line beside a ticked one.
+  none: '',
   check: 'M9 16.17 4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z',
   folder: 'M20 6h-8l-2-2H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2zm0 12H4V8h16v10z',
   home: 'M10 20v-6h4v6h5v-8h3L12 3 2 12h3v8z',
@@ -888,6 +890,13 @@ function toggleDetail(gid) {
 //: The side pane's head: the selected download's tile, name, state and its
 //: actions with words. Repainted on every frame; the body refreshes on a timer.
 function renderPane() {
+  // A finished download aria2 forgot ("h:" + its key): its record instead.
+  if (S.paneGid.startsWith('h:')) {
+    const entry = pastEntries().find((e) => `h:${e.key}` === S.paneGid);
+    if (entry) { renderPastPane(entry); return; }
+    S.paneGid = '';
+  }
+  $('#pane-body')._past = '';
   const dl = S.paneGid && (S.state?.downloads || []).find((d) => d.gid === S.paneGid);
   if (S.paneGid && !dl) S.paneGid = '';
   $('#pane-empty').hidden = !!dl;
@@ -918,9 +927,35 @@ function renderPane() {
   }
 }
 
+// A finished entry in the pane: its name and how it ended on top, then the
+// same record its row opens in a narrow window (fillHistoryDetail).
+function renderPastPane(entry) {
+  $('#pane-empty').hidden = true;
+  $('#pane-head').hidden = false;
+  $('#pane-body').hidden = false;
+  const kind = fileKind(entry.name || entry.key);
+  const failed = entry.status === 'error';
+  $('#pane-tile').className = `dl-tile is-${failed ? 'error' : entry.file_exists === false ? 'missing' : 'complete'}`;
+  $('path', $('#pane-tile')).setAttribute('d', kind.path);
+  $('#pane-name').textContent = entry.name || entry.key;
+  $('#pane-name').title = entry.path || entry.name || '';
+  const how = failed ? 'Failed' : entry.status === 'removed' ? 'Stopped' : 'Finished';
+  $('#pane-status').textContent = [how, fmtBytes(entry.total || entry.completed || 0),
+    entry.finished_at ? new Date(entry.finished_at * 1000).toLocaleString() : '',
+    entry.file_exists === false ? 'no longer on disk' : ''].filter(Boolean).join(' · ');
+  $('#pane-actions')._key = '';
+  $('#pane-actions').replaceChildren();
+  const body = $('#pane-body');
+  if (body._past !== entry.key) {
+    body._past = entry.key;
+    body.innerHTML = '<div class="hdetail"><p class="hint">Loading…</p></div>';
+    fillHistoryDetail(body.firstElementChild, entry);
+  }
+}
+
 async function refreshPane() {
   const gid = S.paneGid;
-  if (!gid) return;
+  if (!gid || gid.startsWith('h:')) return;
   let data;
   try {
     data = await api(`/api/download/${gid}`);
@@ -1003,7 +1038,8 @@ function renderDetail(host, gid, data) {
     if (!draft.tree) {
       draft.tree = mountFileTree($d('d-tree'), {
         files, base: st.dir || '', levels, progress: true,
-        onOpen: (path) => act(`/api/download/${gid}/open`, { method: 'POST', body: { file: path } }).catch(() => {}),
+        onOpen: (path, folder) => act(`/api/download/${gid}/open`, { method: 'POST', body: { file: path, folder: !!folder } }).catch(() => {}),
+        menu: popMenu,
         onChange: (next) => saveLevels(gid, draft, next, $d('d-saved')),
       });
     } else {
@@ -1036,9 +1072,11 @@ function renderDetail(host, gid, data) {
 
 // Priorities save half a second after the last change, so a burst of clicks
 // is one request.
+// aria2 needs a file chosen; qBittorrent takes a torrent with every file
+// skipped.
 function saveLevels(gid, draft, levels, status) {
   clearTimeout(draft.saveTimer);
-  if (!Object.values(levels).some((v) => Number(v) > 0)) {
+  if (!gid.startsWith('qb-') && !Object.values(levels).some((v) => Number(v) > 0)) {
     status.textContent = 'Pick at least one file';
     return;
   }
@@ -1153,12 +1191,12 @@ function buildDownloadOptions(gid, opts, isTorrent, qb, status) {
   advanced.innerHTML = '<summary>Advanced</summary>';
   if (qb) {
     toggle(advanced, 'sequential-download', 'Download in order',
-      'Lets you start watching a video before it finishes. Can be slower.');
+      'Fetches each file from start to end, so its first parts can be used before it finishes. Usually slower.');
     toggle(advanced, 'first-last-piece-first', 'First and last pieces first',
-      'Helps media players open the file sooner.');
+      "Gets each file's start and end early, so it can be opened or previewed sooner.");
   } else {
     for (const [key, label, hint] of [
-      ['max-connection-per-server', 'Connections per server', 'More can be faster; some servers allow few.'],
+      ['max-connection-per-server', 'Connections per server', 'Up to 16. More can be faster; some servers allow only a few.'],
       ['split', 'Parts', 'How many pieces are fetched at the same time.'],
     ]) {
       const input = document.createElement('input');
@@ -1461,12 +1499,12 @@ async function submitAdd() {
 /* Simple: what decides how a download behaves. The same eight the DankBar
    widget shows, so both surfaces teach the same starting point. */
 const SIMPLE_OPTIONS = [
-  ['max-concurrent-downloads', 'Downloads at once', 'number', 'How many run in parallel; the rest wait in the queue.'],
-  ['max-connection-per-server', 'Connections per server', 'number', 'Up to 16. More connections usually means faster downloads from one server.'],
-  ['split', 'Parts per download', 'number', 'A file is fetched in this many pieces at the same time.'],
+  ['max-concurrent-downloads', 'Downloads at once', 'number', 'How many run at once; the rest wait in the queue.'],
+  ['max-connection-per-server', 'Connections per server', 'number', 'Up to 16. More can be faster; some servers allow only a few.'],
+  ['split', 'Parts per download', 'number', 'One file is fetched in this many pieces at once.'],
   ['max-overall-download-limit', 'Download speed limit', 'text', 'Across every download. Blank means no limit.'],
-  ['max-overall-upload-limit', 'Upload speed limit', 'text', 'For torrents. Blank means no limit.'],
-  ['download-only', 'Torrents: download only', 'bool', 'Never seed. While a torrent downloads it uploads at most 1 B/s, and it stops the moment it finishes. Overrides the upload limit.'],
+  ['max-overall-upload-limit', 'Upload speed limit', 'text', 'Torrents only. Blank means no limit.'],
+  ['download-only', 'Torrents: download only', 'bool', 'Never seed: at most 1 B/s up while downloading, and stop the moment it finishes.'],
   ['continue', 'Resume unfinished files', 'bool', 'Pick up a partial file where it stopped instead of starting over.'],
 ];
 
@@ -2103,7 +2141,7 @@ function renderPast(container, rows) {
   if (S.pastBox.parentNode !== container || container.lastElementChild !== S.pastBox) container.append(S.pastBox);
   // Redrawn only when what it shows changed: an open detail keeps its place.
   const signature = JSON.stringify([rows.map((e) => [e.key, e.status, e.file_exists, e.finished_at, S.selection.has(`h:${e.key}`)]),
-    S.historyOpen, S.selecting]);
+    S.historyOpen, S.selecting, S.paneGid, WIDE.matches]);
   if (signature === S.pastSignature) return;
   S.pastSignature = signature;
   const host = S.pastBox;
@@ -2120,13 +2158,14 @@ function renderPast(container, rows) {
       e.dir ? escapeHtml(e.dir.replace(/^\/home\/[^/]+/, '~')) : '',
     ].filter(Boolean).join(' · ');
     const key = escapeHtml(e.key);
-    const open = S.historyOpen === e.key;
+    const open = S.historyOpen === e.key && !WIDE.matches;
+    const current = WIDE.matches && S.paneGid === `h:${e.key}`;
     const primary = open ? '' : failed || missing || partway
       ? (e.url ? `<button class="btn btn-sm" data-hist="readd" data-key="${key}">${icon(partway ? 'play' : 'retry')}${
         failed ? 'Retry' : partway ? 'Resume' : 'Again'}</button>` : '')
       : `<button class="btn btn-sm" data-hist="open" data-key="${key}">${icon('open')}Open</button>`;
     const picked = S.selection.has(`h:${e.key}`);
-    return `<article class="dl is-${failed ? 'error' : missing ? 'missing' : 'complete'}${open ? ' is-open' : ''}${picked ? ' is-selected' : ''}" data-entry="${key}">
+    return `<article class="dl is-${failed ? 'error' : missing ? 'missing' : 'complete'}${open ? ' is-open' : ''}${picked ? ' is-selected' : ''}${current ? ' is-current' : ''}" data-entry="${key}">
       <div class="dl-main" data-hist="${S.selecting ? 'pick' : 'toggle'}" data-key="${key}">
         ${S.selecting ? `<input type="checkbox" class="dl-pick" tabindex="-1" aria-label="Select"${picked ? ' checked' : ''}>` : ''}
         <span class="dl-tile" aria-hidden="true"><svg class="ico" viewBox="0 0 24 24"><path d="${kind.path}"/></svg></span>
@@ -2169,7 +2208,14 @@ function renderPast(container, rows) {
       if (what === 'toggle') {
         if (ev.target.closest('button') && ev.target.closest('button') !== btn) return;
         ev.stopPropagation();
-        S.historyOpen = S.historyOpen === key ? '' : key;
+        if (WIDE.matches) {
+          // Beside the list, as a live download's detail is.
+          S.paneGid = S.paneGid === `h:${key}` ? '' : `h:${key}`;
+          for (const [g, r] of S.rows) r.classList.toggle('is-current', g === S.paneGid);
+          renderPane();
+        } else {
+          S.historyOpen = S.historyOpen === key ? '' : key;
+        }
         renderDownloads();
         return;
       }
@@ -2253,7 +2299,8 @@ async function fillHistoryDetail(host, entry) {
       levels,
       notes,
       progress: true,
-      onOpen: (path) => act('/api/history/open', { method: 'POST', body: { key: entry.key, file: path } }).catch(() => {}),
+      onOpen: (path, folder) => act('/api/history/open', { method: 'POST', body: { key: entry.key, file: path, folder: !!folder } }).catch(() => {}),
+      menu: popMenu,
       onChange: (next) => {
         clearTimeout(timer);
         timer = setTimeout(() => {
@@ -3129,7 +3176,43 @@ function switchTab(name) {
   if (name === 'rules') loadRules();
 }
 
+/* The details pane's width, dragged by the grip on its left edge and kept
+   in this browser; it leaves the list at least 360 px. */
+const PANE_DEFAULT = 380;
+function setPaneWidth(px, save) {
+  const rail = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--rail')) || 220;
+  const width = Math.round(Math.max(300, Math.min(innerWidth - rail - 360, px)));
+  document.documentElement.style.setProperty('--pane', `${width}px`);
+  if (save) {
+    try { localStorage.setItem('aria.paneWidth', String(width)); } catch { /* the width still holds for now */ }
+  }
+}
+
+function wirePaneGrip() {
+  let stored = 0;
+  try { stored = Number(localStorage.getItem('aria.paneWidth')) || 0; } catch { /* default width */ }
+  if (stored) setPaneWidth(stored, false);
+  const grip = $('#pane-grip');
+  grip.addEventListener('pointerdown', (e) => {
+    e.preventDefault();
+    grip.setPointerCapture(e.pointerId);
+    grip.classList.add('dragging');
+    const move = (ev) => setPaneWidth(innerWidth - ev.clientX, false);
+    const up = (ev) => {
+      grip.releasePointerCapture(ev.pointerId);
+      grip.classList.remove('dragging');
+      grip.removeEventListener('pointermove', move);
+      grip.removeEventListener('pointerup', up);
+      setPaneWidth(innerWidth - ev.clientX, true);
+    };
+    grip.addEventListener('pointermove', move);
+    grip.addEventListener('pointerup', up);
+  });
+  grip.addEventListener('dblclick', () => setPaneWidth(PANE_DEFAULT, true));
+}
+
 function init() {
+  wirePaneGrip();
   S.addUnits = {
     minSplit: unitInput('size', null, null, 'Default'),
     limit: unitInput('speed', null),

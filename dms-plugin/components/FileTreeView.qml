@@ -1,4 +1,6 @@
 import QtQuick
+import QtQuick.Controls
+import Quickshell
 import qs.Common
 import qs.Widgets
 import "../lib/Fmt.js" as Fmt
@@ -8,8 +10,11 @@ import "../lib/FileTree.js" as FileTree
 //: summary, Expand all, a filter for big torrents, then Name | Size |
 //: Progress | Priority. Folders carry their files' totals. Changes go out
 //: as `levelsEdited`; the owner saves them (a live download's detail) or
-//: fetches them (a finished torrent in History). A file opens on a double
-//: click.
+//: fetches them (a finished torrent in History). A click folds a folder; a
+//: double click opens a file or folder. Ctrl+click or a press and hold picks a row
+//: (Shift+click a range), after which a click adds or takes one away, and a
+//: bar offers a priority for all the picked ones. A right click brings up
+//: the row's menu: open it, open with, show in folder, its priority, pick.
 Column {
     id: view
 
@@ -33,6 +38,23 @@ Column {
     signal openRequested(string path)
 
     property var collapsed: ({})
+    //: Rows picked with the pointer, by key, and where a Shift range starts.
+    property var picked: ({})
+    property string pickAnchor: ""
+    readonly property var pickedIndices: FileTree.treePickedIndices(rows, picked)
+
+    function pick(key, modifiers) {
+        const next = FileTree.treePick(rows, picked, pickAnchor, key, (modifiers & Qt.ShiftModifier) !== 0,
+                                       (modifiers & Qt.ControlModifier) !== 0)
+        picked = next.picked
+        pickAnchor = next.anchor
+    }
+
+    function clearPicked() {
+        picked = ({})
+        pickAnchor = ""
+    }
+
     property string filter: ""
     property string sortKey: "name"
     property bool sortDesc: false
@@ -47,9 +69,112 @@ Column {
         return out
     }
 
+    //: A click folds a folder at once; a second click soon after opens it
+    //: instead of folding it back, so there is neither a wait nor a flicker.
+    //: Folding rebuilds the rows, so that second click lands on a new row, as
+    //: a click or (Qt still counts it) a double click; the view keeps the first.
+    property string lastFolderKey: ""
+    property real lastFolderAt: 0
+
+    function folderClicked(key, open) {
+        const now = Date.now()
+        if (key === lastFolderKey && now - lastFolderAt < Math.max(500, Qt.styleHints.mouseDoubleClickInterval)) {
+            lastFolderKey = ""
+            openRequested(folderPath(key))
+            return
+        }
+        toggleFold(key, open)
+        lastFolderKey = key
+        lastFolderAt = now
+    }
+
+    //: A row's right click: what can be done with that file or folder. The
+    //: menu belongs to the view, as a live download rebuilds its rows.
+    property var menuRuns: []
+
+    function openRowMenu(r, x, y) {
+        const entries = []
+        const runs = []
+        const add = (entry, run) => {
+            entries.push(entry)
+            runs.push(run || null)
+        }
+        const note = r.isDir ? "" : (notes[r.index] || "")
+        const path = r.isDir ? folderPath(r.key) : (pathByIndex[r.index] || "")
+        if (r.isDir) {
+            add({
+                    "icon": "folder_open",
+                    "text": "Open folder"
+                }, () => openRequested(path))
+            add({
+                    "icon": r.open ? "unfold_less" : "unfold_more",
+                    "text": r.open ? "Fold" : "Unfold"
+                }, () => toggleFold(r.key, r.open))
+        } else if (path && !note) {
+            add({
+                    "icon": "open_in_new",
+                    "text": "Open"
+                }, () => openRequested(path))
+            add({
+                    "icon": "apps",
+                    "text": "Open with…"
+                }, () => Quickshell.execDetached(["dms", "open", "--type", "file", path]))
+            add({
+                    "icon": "folder_open",
+                    "text": "Show in folder"
+                }, () => openRequested(path.replace(/\/[^/]*$/, "")))
+        }
+        if (!held) {
+            // A picked row stands for all the picked ones.
+            const group = picked[r.key] && pickedIndices.length > 1 ? pickedIndices : null
+            if (entries.length)
+                add({
+                        "separator": true
+                    })
+            add({
+                    "heading": group ? "Priority for " + group.length + " files" : "Priority"
+                })
+            levelChoices.forEach((word, level) => add({
+                                                          "text": word,
+                                                          "checked": !group && level === r.level
+                                                      }, () => levelsEdited(FileTree.treeSetLevel(levels, group || r.indices, level))))
+            add({
+                    "separator": true
+                })
+            add({
+                    "icon": picked[r.key] ? "deselect" : "check_box",
+                    "text": picked[r.key] ? "Unpick" : "Pick"
+                }, () => pick(r.key, Qt.ControlModifier))
+        }
+        if (!entries.length)
+            return
+        menuRuns = runs
+        treeMenu.entries = entries
+        treeMenu.openAt(x, y)
+    }
+
+    MenuPopup {
+        id: treeMenu
+
+        menuWidth: 220
+        // It hangs off the whole tree, so a press anywhere else closes it.
+        closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+        onTriggered: index => {
+            const run = view.menuRuns[index]
+            if (run)
+                run()
+        }
+    }
+
+    //: A folder row's path on disk: its key is the path under `base`.
+    function folderPath(key) {
+        return base ? String(base).replace(/\/+$/, "") + key : key
+    }
+
     //: Back to unfolded and unfiltered, for another download.
     function reset() {
         collapsed = ({})
+        clearPicked()
     }
 
     function doneOf(indices) {
@@ -84,7 +209,9 @@ Column {
     //: keeps room.
     readonly property bool narrowFiles: width < 520
     readonly property int fileSizeWidth: narrowFiles ? 64 : 76
-    readonly property int fileBarWidth: reviewing || held || narrowFiles ? 0 : 132
+    //: Progress is the ring round each row's icon; this column only holds its
+    //: percent, and steps aside in a narrow pane.
+    readonly property int fileBarWidth: reviewing || held || narrowFiles ? 0 : 36
     readonly property int fileChipWidth: held ? 0 : (narrowFiles ? 72 : 84)
     readonly property int fileIndent: narrowFiles ? 14 : 22
     readonly property var levelWords: ["Skip", "Normal", "High", "Max"]
@@ -114,7 +241,7 @@ Column {
             anchors.rightMargin: 8
             anchors.verticalCenter: parent.verticalCenter
             text: view.summary.chosen + " of " + view.summary.count + " files wanted · " + Fmt.bytes(view.summary.selected) + " of "
-                  + Fmt.bytes(view.summary.total) + (view.tree.name ? " · inside " + view.tree.name + "/" : "")
+                  + Fmt.bytes(view.summary.total)
                   + (view.saving ? " · saving…" : "")
             font.pixelSize: Theme.fontSizeSmall
             color: Theme.surfaceVariantText
@@ -154,6 +281,57 @@ Column {
         onTextChanged: view.filter = text
     }
 
+    //: The picked rows: how many files they hold, a priority for all of them.
+    Rectangle {
+        width: parent.width
+        height: visible ? 40 : 0
+        visible: view.pickedIndices.length > 0 && !view.held
+        radius: 12
+        color: Theme.primaryContainer
+
+        StyledText {
+            id: pickedCount
+
+            anchors.left: parent.left
+            anchors.leftMargin: 12
+            anchors.verticalCenter: parent.verticalCenter
+            text: view.pickedIndices.length === 1 ? "1 file picked" : view.pickedIndices.length + " files picked"
+            font.pixelSize: Theme.fontSizeSmall + 1
+            font.weight: Font.DemiBold
+            color: Theme.onPrimaryContainer
+        }
+
+        Row {
+            anchors.right: parent.right
+            anchors.rightMargin: 6
+            anchors.verticalCenter: parent.verticalCenter
+            spacing: 2
+
+            Repeater {
+                model: view.narrowFiles ? ["Skip", "Normal", "High", "Max"] : view.levelChoices
+
+                PillButton {
+                    required property var modelData
+                    required property int index
+
+                    size: 30
+                    kind: "text"
+                    text: modelData
+                    onClicked: view.levelsEdited(FileTree.treeSetLevel(view.levels, view.pickedIndices, index))
+                }
+            }
+
+            DankActionButton {
+                buttonSize: 30
+                iconSize: 18
+                iconName: "close"
+                iconColor: Theme.onPrimaryContainer
+                tooltipText: "Unpick"
+                onClicked: view.clearPicked()
+            }
+        }
+    }
+
     //: Name | Size | Progress | Priority; a heading sorts by it.
     Item {
         width: parent.width
@@ -181,9 +359,54 @@ Column {
             }
         }
 
-        Heading {
+        //: Narrow, the % column gives way to the rings, but sorting by
+        //: progress stays: a small ring at the left, as on the rows.
+        Item {
+            id: ringSort
+
             anchors.left: parent.left
             anchors.leftMargin: 12
+            width: ringHead.width + (view.sortKey === "progress" ? ringArrow.implicitWidth + 2 : 0)
+            height: 14
+            anchors.verticalCenter: parent.verticalCenter
+            visible: view.narrowFiles && !view.reviewing && !view.held
+
+            Rectangle {
+                id: ringHead
+
+                width: 12
+                height: 12
+                radius: 6
+                anchors.verticalCenter: parent.verticalCenter
+                color: "transparent"
+                border.width: 1.5
+                border.color: view.sortKey === "progress" ? Theme.primary : Theme.outline
+            }
+
+            StyledText {
+                id: ringArrow
+
+                anchors.left: ringHead.right
+                anchors.leftMargin: 2
+                anchors.verticalCenter: parent.verticalCenter
+                visible: view.sortKey === "progress"
+                text: view.sortDesc ? "↓" : "↑"
+                font.pixelSize: Theme.fontSizeSmall - 1
+                font.weight: Font.Bold
+                color: Theme.primary
+            }
+
+            MouseArea {
+                anchors.fill: parent
+                anchors.margins: -4
+                cursorShape: Qt.PointingHandCursor
+                onClicked: view.sortBy("progress")
+            }
+        }
+
+        Heading {
+            anchors.left: ringSort.visible ? ringSort.right : parent.left
+            anchors.leftMargin: ringSort.visible ? 10 : 12
             anchors.verticalCenter: parent.verticalCenter
             label: "Name"
             on: view.sortKey === "name"
@@ -209,7 +432,8 @@ Column {
             Heading {
                 width: view.fileBarWidth
                 visible: width > 0
-                label: "Progress"
+                label: "%"
+                horizontalAlignment: Text.AlignRight
                 on: view.sortKey === "progress"
                 desc: view.sortDesc
                 onClicked: view.sortBy("progress")
@@ -245,22 +469,65 @@ Column {
             width: view.width
             height: r.isDir ? 38 : 34
 
+            readonly property bool isPicked: !!view.picked[r.key]
+
             Rectangle {
                 anchors.fill: parent
                 radius: 10
-                color: rowHover.hovered ? Theme.withAlpha(Theme.surfaceText, 0.06)
-                                        : (fileRow.r.isDir ? Theme.withAlpha(Theme.surfaceText, 0.03) : "transparent")
+                color: {
+                    if (fileRow.isPicked)
+                        return Theme.withAlpha(Theme.primary, 0.14)
+                    if (rowHover.hovered)
+                        return Theme.withAlpha(Theme.surfaceText, 0.06)
+                    return fileRow.r.isDir ? Theme.withAlpha(Theme.surfaceText, 0.03) : "transparent"
+                }
             }
 
             HoverHandler {
                 id: rowHover
             }
 
-            //: A file opens on a double click, once it is on disk.
+            //: A click folds a folder, so a plain click never starts picking;
+            //: Ctrl+click or a press and hold does (Shift+click a range), and
+            //: while rows are picked a click adds or takes one away. A double
+            //: click opens a file once it is on disk, or a folder; a right
+            //: click brings up the row's menu.
             MouseArea {
+                id: rowArea
+
+                property bool held: false
+
                 anchors.fill: parent
-                enabled: !fileRow.r.isDir
-                onDoubleClicked: {
+                acceptedButtons: Qt.LeftButton | Qt.RightButton
+                onPressed: held = false
+                onPressAndHold: mouse => {
+                    if (mouse.button !== Qt.LeftButton || view.held)
+                        return
+                    held = true
+                    view.pick(fileRow.r.key, Qt.ControlModifier)
+                }
+                onClicked: mouse => {
+                    if (mouse.button === Qt.RightButton) {
+                        const at = rowArea.mapToItem(view, mouse.x, mouse.y)
+                        view.openRowMenu(fileRow.r, at.x, at.y)
+                        return
+                    }
+                    if (held || view.held)
+                        return
+                    if (mouse.modifiers & (Qt.ControlModifier | Qt.ShiftModifier))
+                        view.pick(fileRow.r.key, mouse.modifiers)
+                    else if (view.pickedIndices.length > 0)
+                        view.pick(fileRow.r.key, Qt.ControlModifier)
+                    else if (fileRow.r.isDir)
+                        view.folderClicked(fileRow.r.key, fileRow.r.open)
+                }
+                onDoubleClicked: mouse => {
+                    if (mouse.button !== Qt.LeftButton || view.held || view.pickedIndices.length > 0)
+                        return
+                    if (fileRow.r.isDir) {
+                        view.folderClicked(fileRow.r.key, fileRow.r.open)
+                        return
+                    }
                     const path = view.pathByIndex[fileRow.r.index]
                     if (path && !fileRow.note)
                         view.openRequested(path)
@@ -332,16 +599,29 @@ Column {
                 }
             }
 
-            DankIcon {
+            //: The kind of file (or the folder) inside a progress ring, as the
+            //: bar pill draws its icon: bytes done over bytes wanted, green at
+            //: 100%. A skipped row has no ring; neither has a held torrent,
+            //: which only needs its choice.
+            BarGlyph {
                 id: kindGlyph
 
                 anchors.left: fold.right
-                anchors.leftMargin: 4
+                anchors.leftMargin: 2
                 anchors.verticalCenter: parent.verticalCenter
                 visible: !view.held
-                name: fileRow.r.isDir ? (fileRow.r.open ? "folder_open" : "folder") : Fmt.kindIcon(fileRow.r.name, false, false)
-                size: fileRow.r.isDir ? 20 : 18
-                color: fileRow.r.isDir ? Theme.primary : (fileRow.skipped ? Theme.outline : Theme.surfaceVariantText)
+                size: 22
+                iconName: fileRow.r.isDir ? (fileRow.r.open ? "folder_open" : "folder") : Fmt.kindIcon(fileRow.r.name, false, false)
+                progress: fileRow.skipped || view.reviewing ? -1 : fileRow.pct / 100
+                tint: {
+                    if (fileRow.skipped)
+                        return Theme.outline
+                    if (!view.reviewing && fileRow.pct >= 100)
+                        return Theme.success
+                    if (fileRow.r.isDir || (!view.reviewing && fileRow.pct > 0))
+                        return Theme.primary
+                    return Theme.surfaceVariantText
+                }
             }
 
             Row {
@@ -364,12 +644,6 @@ Column {
                     font.weight: fileRow.r.isDir ? Font.DemiBold : Font.Normal
                     color: fileRow.note ? Theme.warning : (fileRow.skipped ? Theme.outline : Theme.surfaceText)
 
-                    MouseArea {
-                        anchors.fill: parent
-                        enabled: fileRow.r.isDir
-                        cursorShape: fileRow.r.isDir ? Qt.PointingHandCursor : Qt.ArrowCursor
-                        onClicked: view.toggleFold(fileRow.r.key, fileRow.r.open)
-                    }
                 }
 
                 StyledText {
@@ -388,27 +662,6 @@ Column {
                     text: fileRow.r.count === 1 ? "1 file" : fileRow.r.count + " files"
                     font.pixelSize: Theme.fontSizeSmall - 1
                     color: Theme.outline
-                }
-            }
-
-            //: Narrow: the progress as a line under the name.
-            Rectangle {
-                anchors.left: kindGlyph.visible ? kindGlyph.right : fold.right
-                anchors.leftMargin: 6
-                anchors.right: tail.left
-                anchors.rightMargin: 8
-                anchors.bottom: parent.bottom
-                anchors.bottomMargin: 4
-                visible: view.narrowFiles && !view.reviewing && !view.held && !fileRow.skipped
-                height: 3
-                radius: 1.5
-                color: Theme.surfaceContainerHighest
-
-                Rectangle {
-                    width: parent.width * fileRow.pct / 100
-                    height: parent.height
-                    radius: 1.5
-                    color: fileRow.pct >= 100 ? Theme.success : Theme.primary
                 }
             }
 
@@ -434,42 +687,15 @@ Column {
                     lineHeight: 0.9
                 }
 
-                //: Bytes done over bytes wanted; green at 100%.
-                Item {
+                //: The ring's figure, for when the ring is not precise enough.
+                StyledText {
                     anchors.verticalCenter: parent.verticalCenter
                     width: view.fileBarWidth
-                    height: 16
                     visible: width > 0
-
-                    Rectangle {
-                        anchors.left: parent.left
-                        anchors.right: pctText.left
-                        anchors.rightMargin: 8
-                        anchors.verticalCenter: parent.verticalCenter
-                        height: 6
-                        radius: 3
-                        color: Theme.surfaceContainerHighest
-
-                        Rectangle {
-                            width: parent.width * fileRow.pct / 100
-                            height: parent.height
-                            radius: 3
-                            visible: !fileRow.skipped
-                            color: fileRow.pct >= 100 ? Theme.success : Theme.primary
-                        }
-                    }
-
-                    StyledText {
-                        id: pctText
-
-                        anchors.right: parent.right
-                        anchors.verticalCenter: parent.verticalCenter
-                        width: 34
-                        horizontalAlignment: Text.AlignRight
-                        text: fileRow.skipped ? (fileRow.r.isDir ? "—" : "skip") : Math.floor(fileRow.pct) + "%"
-                        font.pixelSize: Theme.fontSizeSmall - 1
-                        color: Theme.surfaceVariantText
-                    }
+                    horizontalAlignment: Text.AlignRight
+                    text: fileRow.skipped ? (fileRow.r.isDir ? "—" : "skip") : Math.floor(fileRow.pct) + "%"
+                    font.pixelSize: Theme.fontSizeSmall - 1
+                    color: fileRow.pct >= 100 && !fileRow.skipped ? Theme.success : Theme.surfaceVariantText
                 }
 
                 //: Skip, Normal, High, Max, or Mixed when a folder's files

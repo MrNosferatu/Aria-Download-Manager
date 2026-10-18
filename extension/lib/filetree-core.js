@@ -25,8 +25,9 @@ function treeCompareNames(a, b) {
 }
 
 /* Folders and files from the flat list. `base` (the download's folder) is cut
-   off each path; when every file sits in one top folder (a torrent's own
-   name), that folder is dropped too, since the name is shown already. */
+   off each path. A torrent's own top folder is kept as a folder row, so the
+   whole torrent can be ticked or given a priority in one go; `root.name` is
+   that folder's name when there is exactly one. */
 function treeBuild(files, base) {
   const prefix = base ? String(base).replace(/\/+$/, '') + '/' : '';
   const rel = (files || []).map((f) => {
@@ -34,10 +35,7 @@ function treeBuild(files, base) {
     return (prefix && path.indexOf(prefix) === 0 ? path.slice(prefix.length) : path).split('/').filter((p) => p);
   });
   let top = '';
-  if (rel.length && rel.every((parts) => parts.length > 1 && parts[0] === rel[0][0])) {
-    top = rel[0][0];
-    for (const parts of rel) parts.shift();
-  }
+  if (rel.length && rel.every((parts) => parts.length > 1 && parts[0] === rel[0][0])) top = rel[0][0];
   const root = { name: top, key: '', dirs: {}, files: [] };
   (files || []).forEach((f, i) => {
     let node = root;
@@ -62,6 +60,35 @@ function treeBuild(files, base) {
 function treeLevelOf(levels, index) {
   const v = levels ? levels[index] : undefined;
   return v === undefined || v === null ? 1 : Number(v);
+}
+
+/* Rows picked with the pointer (a click, Shift for a range, Ctrl to add or
+   take one away), for acting on several at once. `picked` maps a row key to
+   true, `anchor` is where a range starts; `rows` the rows as drawn. Returns
+   the next {picked, anchor}. */
+function treePick(rows, picked, anchor, key, range, add) {
+  const keys = rows.map((r) => r.key);
+  let next = add || range ? Object.assign({}, picked) : {};
+  if (range && keys.indexOf(anchor) >= 0) {
+    const a = keys.indexOf(anchor);
+    const b = keys.indexOf(key);
+    for (let i = Math.min(a, b); i <= Math.max(a, b); i++) next[keys[i]] = true;
+    return { picked: next, anchor };
+  }
+  if (add) {
+    if (next[key]) delete next[key];
+    else next[key] = true;
+  } else if (!(picked[key] && Object.keys(picked).length === 1)) {
+    next[key] = true;
+  }
+  return { picked: next, anchor: key };
+}
+
+// The file indices behind the picked rows; a folder stands for all inside it.
+function treePickedIndices(rows, picked) {
+  const out = {};
+  for (const r of rows) if (picked[r.key]) for (const i of r.indices) out[i] = true;
+  return Object.keys(out);
 }
 
 // Every file under a folder, depth first.

@@ -330,6 +330,20 @@ async def run(app: FastAPI, stop: asyncio.Event, started: Callable[[], None] | N
         await stop.wait()
 
 
+def _reported_target(wanted: str, paths: list, root: str) -> str:
+    """`wanted` if it is one of the reported file paths, or a folder of the
+    download's tree: inside its folder `root` and holding one of them."""
+    paths = [p for p in paths if p]
+    if wanted in paths:
+        return wanted
+    folder = wanted.rstrip("/")
+    base = root.rstrip("/")
+    if (folder and base and os.path.normpath(folder) == folder and folder.startswith(base + "/")
+            and any(p.startswith(folder + "/") for p in paths)):
+        return folder
+    raise HTTPException(404, "that file is not part of this download")
+
+
 # --------------------------------------------------------------------------
 # app factory
 # --------------------------------------------------------------------------
@@ -1550,11 +1564,11 @@ def create_app(cfg: Config) -> FastAPI:
         if not row:
             raise HTTPException(404, "no such download")
         if req.file:
-            # One of its files (a torrent's tree), as aria2 or qBittorrent lists them.
+            # One of its files (a torrent's tree), as aria2 or qBittorrent lists
+            # them, or a folder of its tree that holds one.
             files = (await qb.detail(gid)).get("files") if qbt.is_gid(gid) else await rpc.get_files(gid)
-            if req.file not in {f.get("path") for f in files or []}:
-                raise HTTPException(404, "that file is not part of this download")
-            return await _open_reported(req.file, os.path.dirname(req.file), req.folder)
+            target = _reported_target(req.file, [f.get("path") for f in files or []], row.get("dir") or "")
+            return await _open_reported(target, os.path.dirname(target), req.folder)
         return await _open_reported(row.get("path") or "", row.get("dir") or "", req.folder)
 
     @app.post("/api/history/open")
@@ -1564,10 +1578,10 @@ def create_app(cfg: Config) -> FastAPI:
         if not entry:
             raise HTTPException(404, "no such history entry")
         if req.file:
-            # Only a file the manager recorded for this entry, never any path.
-            if req.file not in {f.get("path") for f in entry.get("files") or []}:
-                raise HTTPException(404, "that file is not part of this download")
-            return await _open_reported(req.file, os.path.dirname(req.file), req.folder)
+            # Only a file the manager recorded for this entry, or a folder of
+            # its tree that holds one, never any path.
+            target = _reported_target(req.file, [f.get("path") for f in entry.get("files") or []], entry.get("dir") or "")
+            return await _open_reported(target, os.path.dirname(target), req.folder)
         return await _open_reported(entry.get("path") or "", entry.get("dir") or "", req.folder)
 
     async def _open_reported(path: str, folder: str, want_folder: bool) -> dict:
@@ -1589,6 +1603,15 @@ def create_app(cfg: Config) -> FastAPI:
             return {"ok": True, "floated": ""}
         size = (max(0, min(req.width, 4000)), max(0, min(req.height, 4000)))
         return {"ok": True, "floated": await compositor.float_window(req.title, *size, exact=req.exact)}
+
+    @app.post("/api/window/focus")
+    async def focus_window(req: FloatRequest):
+        """Focus the window titled so if it is open elsewhere (niri, Hyprland).
+
+        The DankBar window's "open" asks first: one left on another
+        workspace is brought forward rather than closed unseen.
+        """
+        return {"ok": True, **await compositor.focus_window(req.title, exact=req.exact)}
 
     @app.post("/api/window/maximize")
     async def maximize_window(req: FloatRequest):

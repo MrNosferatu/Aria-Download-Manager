@@ -219,7 +219,9 @@ async def test_e2e(tmp_dir: Path) -> None:
                   await wait_for(lambda: 40_000 <= (row(want_gid) or {}).get("total", 0) < 60_000, 10),
                   str(row(want_gid)))
             status, body = await call("POST", f"/api/download/{want_gid}/files", {"levels": {"1": 0, "2": 0, "3": 0}})
-            check("skipping every file is refused", status == 400, str(body))
+            _, detail = await call("GET", f"/api/download/{want_gid}")
+            check("skipping every file is allowed: qBittorrent keeps what it has",
+                  status == 200 and [f["priority"] for f in detail["files"]] == [0, 0, 0], f"{body} {detail.get('files')}")
             status, _ = await call("POST", f"/api/download/{want_gid}/select", {"indices": [1, 3]})
             _, detail = await call("GET", f"/api/download/{want_gid}")
             check("plain selection maps to normal/skip",

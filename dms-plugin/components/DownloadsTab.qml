@@ -909,7 +909,10 @@ Item {
                     entry: tab.pastById[rowItem.modelData] || ({})
                     selectable: tab.selecting
                     selected: tab.isSelected(rowItem.modelData)
+                    listMode: tab.pickMode && !tab.selecting
+                    current: tab.pickMode && tab.selectedGid === rowItem.modelData
                     onToggleSelected: range => tab.toggleSelection(rowItem.modelData, range)
+                    onPicked: tab.selectedGid = rowItem.modelData
                 }
             }
         }

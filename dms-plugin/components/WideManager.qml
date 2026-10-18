@@ -29,9 +29,23 @@ Item {
             return null
         return service.downloads.find(d => d.gid === selectedGid) || null
     }
+    //: A finished download aria2 no longer holds, picked as "h:" + its key:
+    //: the pane shows its record (HistoryDetail) instead.
+    readonly property var pastSelected: {
+        if (!service || selectedGid.indexOf("h:") !== 0)
+            return null
+        return service.pastEntries.find(e => "h:" + e.key === selectedGid) || null
+    }
 
     readonly property int railWidth: 210
-    readonly property int paneWidth: 360
+    //: The details pane's width: dragged by the handle between it and the
+    //: list, kept in the plugin's settings, and held to what leaves the list
+    //: room.
+    property int draggedPaneWidth: -1
+    readonly property int storedPaneWidth: parseInt((service && service.cfg.windowPaneWidth) || "360") || 360
+    readonly property int paneMin: 300
+    readonly property int paneMax: Math.max(paneMin, width - rail.width - 360)
+    readonly property int paneWidth: Math.max(paneMin, Math.min(paneMax, draggedPaneWidth > 0 ? draggedPaneWidth : storedPaneWidth))
     readonly property int statusHeight: 34
 
     Connections {
@@ -251,6 +265,63 @@ Item {
         }
     }
 
+    // ---- the handle between the list and the pane --------------------------
+    //: Drag to give the list or the details more room; a double click goes
+    //: back to the usual width.
+    Item {
+        id: splitter
+
+        anchors.right: pane.left
+        anchors.top: pane.top
+        anchors.bottom: pane.bottom
+        width: Theme.spacingM
+        visible: pane.visible
+        z: 5
+
+        property real startX: 0
+        property int startWidth: 0
+
+        Rectangle {
+            anchors.centerIn: parent
+            width: 4
+            height: Math.min(48, parent.height)
+            radius: 2
+            color: splitArea.pressed ? Theme.primary : Theme.outline
+            opacity: splitArea.pressed || splitArea.containsMouse ? 1 : 0
+            Behavior on opacity {
+                NumberAnimation {
+                    duration: Theme.shortDuration
+                }
+            }
+        }
+
+        MouseArea {
+            id: splitArea
+
+            anchors.fill: parent
+            anchors.leftMargin: -4
+            anchors.rightMargin: -4
+            hoverEnabled: true
+            cursorShape: Qt.SplitHCursor
+            preventStealing: true
+            onPressed: mouse => {
+                splitter.startX = mapToItem(manager, mouse.x, 0).x
+                splitter.startWidth = manager.paneWidth
+            }
+            onPositionChanged: mouse => {
+                if (pressed)
+                    manager.draggedPaneWidth = splitter.startWidth - (mapToItem(manager, mouse.x, 0).x - splitter.startX)
+            }
+            onReleased: {
+                PluginService.savePluginData("ariaDownloadManager", "windowPaneWidth", String(manager.paneWidth))
+            }
+            onDoubleClicked: {
+                manager.draggedPaneWidth = 360
+                PluginService.savePluginData("ariaDownloadManager", "windowPaneWidth", "360")
+            }
+        }
+    }
+
     // ---- the selected download ----------------------------------------------
     Rectangle {
         id: pane
@@ -279,7 +350,7 @@ Item {
         StyledText {
             anchors.centerIn: parent
             width: parent.width - Theme.spacingXL * 2
-            visible: !manager.selected
+            visible: !manager.selected && !manager.pastSelected
             horizontalAlignment: Text.AlignHCenter
             wrapMode: Text.WordWrap
             text: "Pick a download to see its details here."
@@ -508,6 +579,105 @@ Item {
                     held: manager.service.isHeldForChoice(manager.selected)
                 }
             }
+        }
+
+        //: A finished download aria2 no longer holds: its name and how it
+        //: ended, then its record — actions, and a torrent's files.
+        Column {
+            id: pastHead
+
+            readonly property var e: manager.pastSelected || ({})
+
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.top: parent.top
+            anchors.margins: Theme.spacingM
+            visible: !!manager.pastSelected
+            spacing: Theme.spacingS
+
+            Row {
+                width: parent.width
+                spacing: 12
+
+                Rectangle {
+                    width: 44
+                    height: 44
+                    radius: 12
+                    color: Theme.surfaceContainerHighest
+
+                    DankIcon {
+                        anchors.centerIn: parent
+                        name: Fmt.kindIcon(pastHead.e.name || "", !!pastHead.e.isTorrent, false)
+                        size: 20
+                        color: pastHead.e.status === "error" ? Theme.error : (pastHead.e.file_exists === false ? Theme.outline : Theme.success)
+                    }
+                }
+
+                Column {
+                    width: parent.width - 44 - 12
+                    anchors.verticalCenter: parent.verticalCenter
+                    spacing: 2
+
+                    StyledText {
+                        width: parent.width
+                        text: pastHead.e.name || ""
+                        font.pixelSize: Theme.fontSizeMedium
+                        font.weight: Font.Bold
+                        color: Theme.surfaceText
+                        wrapMode: Text.NoWrap
+                        elide: Text.ElideMiddle
+                    }
+
+                    StyledText {
+                        width: parent.width
+                        text: {
+                            const e = pastHead.e
+                            const how = e.status === "error" ? "Failed" : (e.status === "removed" ? "Stopped" : "Finished")
+                            const bits = [how, Fmt.bytes(e.total || e.completed || 0)]
+                            const when = Fmt.shortWhen(e.finished_at || e.added_at)
+                            if (when)
+                                bits.push(when)
+                            if (e.file_exists === false)
+                                bits.push("no longer on disk")
+                            return bits.join(" · ")
+                        }
+                        font.pixelSize: Theme.fontSizeSmall - 1
+                        color: Theme.surfaceVariantText
+                        wrapMode: Text.NoWrap
+                        elide: Text.ElideRight
+                    }
+                }
+            }
+        }
+
+        DankFlickable {
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.top: pastHead.bottom
+            anchors.topMargin: Theme.spacingM
+            anchors.bottom: parent.bottom
+            anchors.leftMargin: Theme.spacingM
+            anchors.bottomMargin: Theme.spacingS
+            visible: !!manager.pastSelected
+            clip: true
+            contentHeight: pastDetail ? pastDetail.implicitHeight : 0
+            contentWidth: width
+
+            //: Rebuilt per entry, so nothing picked carries over.
+            Repeater {
+                id: pastDetailRepeater
+
+                model: manager.pastSelected ? [manager.selectedGid] : []
+
+                HistoryDetail {
+                    width: parent.width - Theme.spacingM
+                    service: manager.service
+                    entry: manager.pastSelected || ({})
+                    onForgotten: manager.selectedGid = ""
+                }
+            }
+
+            readonly property var pastDetail: pastDetailRepeater.count ? pastDetailRepeater.itemAt(0) : null
         }
     }
 

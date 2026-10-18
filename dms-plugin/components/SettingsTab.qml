@@ -46,20 +46,20 @@ Item {
     //: the same starting point, each with one grey line (board 8). Counts are
     //: steppers: [key, label, kind, help, minimum, maximum (0 = none)].
     readonly property var simpleOptions: [
-        ["max-concurrent-downloads", "Downloads at once", "stepper", "The rest wait in the queue", 1, 0],
-        ["max-connection-per-server", "Connections per server", "stepper", "More can be faster; some servers refuse", 1, 16],
-        ["split", "Parts per download", "stepper", "Split one file into this many pieces", 1, 0],
-        ["max-overall-download-limit", "Download speed limit", "text", "For everything together"],
-        ["max-overall-upload-limit", "Upload speed limit", "text", "Torrents only"],
-        ["download-only", "Torrents: download only", "bool", "Never seed; stop the moment a torrent finishes"],
-        ["continue", "Resume interrupted downloads", "bool", "Pick up where a download left off after a restart"]
+        ["max-concurrent-downloads", "Downloads at once", "stepper", "How many run at once; the rest wait in the queue", 1, 0],
+        ["max-connection-per-server", "Connections per server", "stepper", "Up to 16. More can be faster; some servers allow only a few", 1, 16],
+        ["split", "Parts per download", "stepper", "One file is fetched in this many pieces at once", 1, 0],
+        ["max-overall-download-limit", "Download speed limit", "text", "Across every download. Blank means no limit"],
+        ["max-overall-upload-limit", "Upload speed limit", "text", "Torrents only. Blank means no limit"],
+        ["download-only", "Torrents: download only", "bool", "Never seed: at most 1 B/s up while downloading, and stop the moment it finishes"],
+        ["continue", "Resume unfinished files", "bool", "Pick up a partial file where it stopped instead of starting over"]
     ]
 
     // The groups board 19 names, which the chips above them jump to.
     readonly property var groups: [
         {
             "title": "Connection",
-            "options": [["max-concurrent-downloads", "Downloads at once", "number"], ["max-connection-per-server", "Connections per server", "number"], ["split", "Parts per download", "number"], ["min-split-size", "Smallest part", "text"], ["optimize-concurrent-downloads", "Tune parallelism automatically", "bool"], ["max-tries", "Max retries", "number"], ["retry-wait", "Retry wait (s)", "number"], ["timeout", "Timeout (s)", "number"], ["connect-timeout", "Connect timeout (s)", "number"], ["max-file-not-found", "Not-found replies before giving up", "number"]]
+            "options": [["max-concurrent-downloads", "Downloads at once", "number"], ["max-connection-per-server", "Connections per server", "number"], ["split", "Parts per download", "number"], ["min-split-size", "Smallest part", "text"], ["optimize-concurrent-downloads", "Tune parallelism automatically", "bool"], ["max-tries", "Attempts (0 = unlimited)", "number"], ["retry-wait", "Retry wait (s)", "number"], ["timeout", "Timeout (s)", "number"], ["connect-timeout", "Connect timeout (s)", "number"], ["max-file-not-found", "Not-found replies before giving up", "number"]]
         },
         {
             "title": "Speed",
