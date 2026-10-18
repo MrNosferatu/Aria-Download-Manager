@@ -147,6 +147,14 @@ PluginComponent {
     //: A click hides the card until the pointer has left and come back, so it
     //: never sits over the popout or the menu the click just opened.
     property bool hoverSuppressed: false
+    //: The popout is open: it already shows everything the card would, so the
+    //: card stays away for as long as it is (set by the popout's content).
+    property bool popoutShowing: false
+
+    onPopoutShowingChanged: {
+        if (popoutShowing)
+            dismissHover()
+    }
 
     onPillHoveredChanged: {
         if (pillHovered) {
@@ -171,7 +179,7 @@ PluginComponent {
         interval: 400
         repeat: false
         onTriggered: {
-            if (!root.pillHovered || root.hoverSuppressed || !root.axis || quickMenu.shouldBeVisible)
+            if (!root.pillHovered || root.hoverSuppressed || !root.axis || quickMenu.shouldBeVisible || root.popoutShowing)
                 return
             const edge = root.axis.edge === "left" ? 2 : (root.axis.edge === "right" ? 3 : (root.axis.edge === "bottom" ? 1 : 0))
             hoverCardLoader.active = true
@@ -494,6 +502,8 @@ PluginComponent {
             service: root.svc
             contentHeight: root.popoutHeightSetting
             onDetachRequested: root.showWindow()
+            onShowingChanged: root.popoutShowing = showing
+            Component.onDestruction: root.popoutShowing = false
         }
     }
 }
