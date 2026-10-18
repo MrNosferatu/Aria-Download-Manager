@@ -2143,7 +2143,6 @@ async function fillHistoryDetail(host, entry) {
   }
   const picks = S.historyPicks.get(entry.key) || new Set();
   S.historyPicks.set(entry.key, picks);
-  const files = record.files || [];
   const torrent = Boolean(entry.isTorrent);
   const stopped = entry.status === 'error' || entry.status === 'removed';
   const magnet = record.magnet || (String(record.url || '').startsWith('magnet:') ? record.url : '');
@@ -2154,6 +2153,8 @@ async function fillHistoryDetail(host, entry) {
     for (const base of [`${entry.path}/`, `${entry.dir}/`]) if (path.startsWith(base)) return path.slice(base.length);
     return path;
   };
+  // In natural order, as the file tree shows them: "(2)" before "(10)".
+  const files = (record.files || []).slice().sort((a, b) => treeCompareNames(relative(a.path), relative(b.path)));
   const counts = { done: 0, missing: 0, skipped: 0 };
   for (const f of files) counts[stateOf(f)] += 1;
 

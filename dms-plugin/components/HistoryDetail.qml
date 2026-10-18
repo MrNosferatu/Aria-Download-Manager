@@ -3,6 +3,7 @@ import Quickshell
 import qs.Common
 import qs.Widgets
 import "../lib/Fmt.js" as Fmt
+import "../lib/FileTree.js" as FileTree
 
 //: A finished download's detail, opened from its History row (Revision 2,
 //: board 4). A torrent lists its files, each done, skipped or no longer on
@@ -21,7 +22,8 @@ Column {
 
     signal forgotten
 
-    readonly property var files: record ? (record.files || []) : []
+    //: In natural order, as the file tree shows them: "(2)" before "(10)".
+    readonly property var files: (record ? (record.files || []) : []).slice().sort((a, b) => FileTree.treeCompareNames(relative(a.path), relative(b.path)))
     readonly property bool torrent: !!entry.isTorrent
     readonly property bool stopped: entry.status === "error" || entry.status === "removed"
     readonly property string magnet: record ? (record.magnet || (String(record.url || "").indexOf("magnet:") === 0 ? record.url : "")) : ""
