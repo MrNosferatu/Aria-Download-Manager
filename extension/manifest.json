@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Aria Download Manager",
-  "version": "1.6.1",
+  "version": "1.6.2",
   "description": "Hand the browser's downloads to your local Aria Download Manager, with the page's cookies, referer and user-agent.",
   "browser_specific_settings": {
     "gecko": {
