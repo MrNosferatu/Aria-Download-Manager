@@ -231,14 +231,9 @@ Rectangle {
         return m ? m[1] : ""
     }
 
-    //: aria2's own figure is a long average that lags a stall; the measured
-    //: one is what actually arrived. One number, the truer one.
-    readonly property real shownSpeed: {
-        const measured = dl.engine === "qbittorrent" ? null : dl.measuredSpeed
-        const disagrees = measured !== null && measured !== undefined
-                        && Math.abs(measured - dl.downloadSpeed) > Math.max(65536, dl.downloadSpeed * 0.35)
-        return disagrees ? measured : (dl.downloadSpeed || 0)
-    }
+    //: The manager's one speed for it (state.py shown_speed): the same figure
+    //: the bar and the speed strip add up.
+    readonly property real shownSpeed: dl.speed !== undefined ? dl.speed : (dl.downloadSpeed || 0)
 
     //: Three facts at most — size, speed, time left. Connections and seeders
     //: are in the detail view. A failure replaces the line with its reason,

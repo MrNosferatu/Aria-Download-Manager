@@ -619,12 +619,9 @@ function metaFor(dl) {
   }
   const bits = [dl.total ? `${fmtBytes(dl.completed)} of ${fmtBytes(dl.total)}` : fmtBytes(dl.completed)];
   if (dl.status === 'active') {
-    // aria2's own figure is a long average that lags a stall; the measured
-    // one is what actually arrived. One number, the truer one.
-    const measured = dl.engine === 'qbittorrent' ? null : dl.measuredSpeed;
-    const disagrees = measured != null
-      && Math.abs(measured - dl.downloadSpeed) > Math.max(65536, dl.downloadSpeed * 0.35);
-    bits.push(fmtSpeed(disagrees ? measured : dl.downloadSpeed));
+    // The manager's one speed for it (the measured one when aria2's average
+    // lags), the same figure the header adds up.
+    bits.push(fmtSpeed(dl.speed ?? dl.downloadSpeed));
     if (dl.eta != null && dl.eta >= 0) bits.push(`${humanEta(dl.eta)} left`);
   }
   if (dl.status === 'waiting') bits.push(dl.queuePosition != null ? `#${dl.queuePosition + 1} in queue` : 'Waiting for a free slot');

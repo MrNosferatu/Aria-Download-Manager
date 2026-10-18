@@ -1085,6 +1085,21 @@ def test_rule_download_type() -> None:
           and not engine._matches(only_plain, torrent, tracker, 1e6))
 
 
+def test_shown_speed() -> None:
+    """One speed per download: the measured one when aria2's average lags."""
+    print("\nunit: the speed a download shows")
+    from aria_download_manager.state import shown_speed
+
+    check("aria2's figure when the measured one agrees",
+          shown_speed({"downloadSpeed": 300000, "measuredSpeed": 290000}) == 300000)
+    check("the measured one when aria2's average lags a stall",
+          shown_speed({"downloadSpeed": 300000, "measuredSpeed": 0}) == 0)
+    check("qBittorrent's own figure, nothing measured against it",
+          shown_speed({"engine": "qbittorrent", "downloadSpeed": 293000, "measuredSpeed": 0}) == 293000)
+    check("aria2's figure before anything is measured",
+          shown_speed({"downloadSpeed": 1000, "measuredSpeed": None}) == 1000)
+
+
 def test_triggers_for() -> None:
     """A download's detail lists what the actions did to it, through restarts."""
     print("\nunit: triggers per download")
@@ -1665,6 +1680,7 @@ def main() -> int:
         test_metadata_rows()
         test_rule_download_type()
         test_triggers_for()
+        test_shown_speed()
         test_routing(tmp_dir / "c12")
         test_download_only_migration(tmp_dir / "c11")
         test_config(tmp_dir / "c1")

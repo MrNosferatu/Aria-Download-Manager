@@ -67,6 +67,21 @@ def is_metadata(item: dict) -> bool:
     return not os.path.isabs(path)
 
 
+def shown_speed(row: dict) -> int:
+    """The one speed a download shows, everywhere it is shown.
+
+    aria2's own figure is a long average that lags a stall; the measured one
+    (bytes written over a few seconds) is what actually arrived. The measured
+    one wins when the two clearly disagree. qBittorrent's figure is its own,
+    and nothing is measured against it.
+    """
+    speed = int(row.get("downloadSpeed") or 0)
+    measured = None if row.get("engine") == "qbittorrent" else row.get("measuredSpeed")
+    if measured is not None and abs(measured - speed) > max(65536, speed * 0.35):
+        return int(measured)
+    return speed
+
+
 def normalize(item: dict) -> dict:
     total = _int(item.get("totalLength"))
     done = _int(item.get("completedLength"))
@@ -355,7 +370,7 @@ class Poller:
                 self._measure_speed(row, now)
                 downloads.append(row)
         stat = stat or {}
-        extra_down = extra_up = 0
+        extra_up = 0
         for source in self.sources:
             result = await source()
             if not result:
@@ -364,8 +379,17 @@ class Poller:
             for row in rows:
                 self._measure_speed(row, now)
                 downloads.append(row)
-            extra_down += _int((transfer or {}).get("dl_info_speed"))
             extra_up += _int((transfer or {}).get("up_info_speed"))
+        # One speed per download, and the total as their sum, so the bar, the
+        # speed strip and each row agree; time left comes from the same figure
+        # (aria2's and qBittorrent's own estimates each average differently).
+        down_total = 0
+        for row in downloads:
+            row["speed"] = shown_speed(row)
+            left = row.get("total", 0) - row.get("completed", 0)
+            if row.get("status") == "active":
+                down_total += row["speed"]
+                row["eta"] = round(left / row["speed"]) if row["speed"] > 0 and left > 0 else None
         others = [d for d in downloads if d.get("engine", "aria2") != "aria2"]
         # Forget downloads that have gone away, so the map cannot grow forever.
         live = {d["gid"] for d in downloads if d["gid"]}
@@ -404,7 +428,7 @@ class Poller:
             "ts": time.time(),
             "downloads": downloads,
             "global": {
-                "downloadSpeed": _int(stat.get("downloadSpeed")) + extra_down,
+                "downloadSpeed": down_total,
                 "uploadSpeed": _int(stat.get("uploadSpeed")) + extra_up,
                 "numActive": _int(stat.get("numActive")),
                 "numWaiting": _int(stat.get("numWaiting")),
