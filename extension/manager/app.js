@@ -579,14 +579,19 @@ function buildRow(gid) {
     row.classList.toggle('is-selected', row._refs.pick.checked);
   });
   // Selecting, a click anywhere on the row ticks it and nothing else
-  // happens; otherwise the tile and the name open the detail.
+  // happens; otherwise a click anywhere on it opens or folds the detail, as a
+  // finished row's does. Its buttons do their own thing, bar the tile, which
+  // is the detail's own button.
   $('.dl-main', row).addEventListener('click', (e) => {
-    if (!S.selecting || e.target.closest('button, input, select, a')) return;
+    const control = e.target.closest('button, input, select, a');
+    if (control && control !== row._refs.tile) return;
+    if (!S.selecting) {
+      toggleDetail(gid);
+      return;
+    }
     row._refs.pick.checked = !row._refs.pick.checked;
     row._refs.pick.dispatchEvent(new Event('change'));
   });
-  row._refs.tile.addEventListener('click', () => { if (!S.selecting) toggleDetail(gid); });
-  row._refs.name.addEventListener('click', () => { if (!S.selecting) toggleDetail(gid); });
   row._actionKey = '';
   return row;
 }

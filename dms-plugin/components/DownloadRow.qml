@@ -499,16 +499,20 @@ Rectangle {
     }
 
     //: Selecting, a click anywhere on the row ticks it (Shift for a range)
-    //: and nothing else happens. Otherwise, in the wide list the whole row
-    //: picks the download; anywhere, a double click opens it and a right
-    //: click brings up its menu at the pointer.
+    //: and nothing else happens. Otherwise a click on the card's head opens
+    //: or folds its details, as a finished row's does (in the wide list,
+    //: picks the download), but not a click inside the details below it;
+    //: anywhere, a double click opens it and a right click brings up its
+    //: menu at the pointer.
     MouseArea {
         id: rowArea
 
+        readonly property bool overHead: mouseY <= body.y + body.height + 7
+
         anchors.fill: parent
         acceptedButtons: Qt.LeftButton | Qt.RightButton
-        hoverEnabled: row.listMode || row.selectable
-        cursorShape: row.listMode || row.selectable ? Qt.PointingHandCursor : Qt.ArrowCursor
+        hoverEnabled: true
+        cursorShape: row.listMode || row.selectable || overHead ? Qt.PointingHandCursor : Qt.ArrowCursor
         onClicked: mouse => {
             if (row.selectable) {
                 if (mouse.button === Qt.LeftButton)
@@ -516,7 +520,7 @@ Rectangle {
             } else if (mouse.button === Qt.RightButton) {
                 const at = rowArea.mapToItem(rowMenu.parent, mouse.x, mouse.y)
                 rowMenu.openAt(at.x, at.y)
-            } else if (row.listMode) {
+            } else if (row.listMode || overHead) {
                 row.toggleExpand()
             }
         }
