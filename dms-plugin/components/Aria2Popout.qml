@@ -439,15 +439,15 @@ PopoutComponent {
     Rectangle {
         id: tabBar
 
-        //: "3 on" or "off" beside Actions: the master switch and how much it
-        //: governs, readable from any tab.
+        //: How many actions are on ("3"), or "off" beside Actions: the master
+        //: switch and how much it governs, readable from any tab.
         readonly property string actionsBadge: {
             if (!popout.service || !popout.online)
                 return ""
             if (!popout.service.rulesEnabled)
                 return "off"
             const on = popout.service.rules.filter(r => r.enabled !== false).length
-            return on > 0 ? on + " on" : ""
+            return on > 0 ? String(on) : ""
         }
         readonly property var tabs: [
             {

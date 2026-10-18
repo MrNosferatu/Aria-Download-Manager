@@ -341,7 +341,9 @@ function applyState(state) {
   const masterChanged = S.rulesEnabled !== !!rules.enabled;
   S.rulesEnabled = !!rules.enabled;
   if (masterChanged) paintRuleCount();
-  $('#rail-actions').textContent = rules.enabled ? 'on' : 'off';
+  // How many actions are on, or "off" while automatic actions are.
+  const actionsOn = S.rules.filter((r) => r.enabled !== false).length;
+  $('#rail-actions').textContent = rules.enabled ? (actionsOn ? String(actionsOn) : '') : 'off';
   $('#sb-actions').textContent = `Automatic actions ${rules.enabled ? 'on' : 'off'}`;
   $('#master-hint').textContent = rules.enabled
     ? 'Watch running downloads and step in when one stalls.'

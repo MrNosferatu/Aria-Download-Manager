@@ -126,7 +126,8 @@ Item {
                     return ""
                 if (!manager.service.rulesEnabled)
                     return "off"
-                return manager.service.rules.filter(r => r.enabled !== false).length + " on"
+                const on = manager.service.rules.filter(r => r.enabled !== false).length
+                return on > 0 ? String(on) : ""
             }
             selected: manager.section === "actions"
             onActivated: manager.pick("actions")
