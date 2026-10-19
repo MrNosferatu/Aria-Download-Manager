@@ -302,8 +302,9 @@ async function openDialog(settings, item) {
   payload.nameGuessed = !item.filename && !item.downloadAttr;
   const id = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
   await dialogStore.set({ [`dialog:${id}`]: payload });
+  // Compact to start with: the dialog fits its height to what it shows.
   const width = 640;
-  const height = 700;
+  const height = 360;
   const place = {};
   try {
     // Centred over the window the download came from.

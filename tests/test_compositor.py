@@ -118,6 +118,16 @@ async def run(tmp: Path) -> None:
     done = await compositor.size_column("Aria Download Manager", "default")
     check("default leaves niri's own width alone", done["by"] == "" and not calls(), f"{done} {calls()}")
 
+    print("\nniri: a dialog fitting its height")
+    if log.exists():
+        log.unlink()
+    windows.write_text(json.dumps([
+        {"id": 3, "title": "old.zip — Aria Download Manager", "is_floating": True},
+        {"id": 4, "title": "pack.zip — Aria Download Manager", "is_floating": True}]))
+    done = await compositor.resize_window("pack.zip — Aria Download Manager", 640, 310)
+    check("the floating window with exactly that title is resized, by id", done == "niri" and calls() == [
+        "msg action set-window-width --id 4 640", "msg action set-window-height --id 4 310"], f"{done} {calls()}")
+
     print("\nniri: open the window that is already open")
     if log.exists():
         log.unlink()
@@ -161,6 +171,10 @@ async def run(tmp: Path) -> None:
     done = await compositor.focus_window("Aria Download Manager")
     log.unlink()
     windows.write_text(json.dumps([{"address": "0x88", "title": "Aria Download Manager", "floating": False}]))
+    done = await compositor.resize_window("Aria Download Manager", 640, 310)
+    check("Hyprland resizes a window by its address", done == "hyprland"
+          and calls()[-1] == "dispatch resizewindowpixel exact 640 310,address:0x88", f"{done} {calls()}")
+    log.unlink()
     done = await compositor.size_column("Aria Download Manager", "full")
     check("on Hyprland, full maximizes it", done == {"by": "hyprland", "maximized": True}
           and calls() == ["dispatch focuswindow address:0x88", "dispatch fullscreen 1"], f"{done} {calls()}")

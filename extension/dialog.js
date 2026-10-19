@@ -61,6 +61,54 @@ function mount(templateId) {
   $('body').replaceChildren($(templateId).content.cloneNode(true));
 }
 
+/* The window's height follows what it shows: a file asks little, a torrent's
+   file list much, up to most of the screen, past which the list scrolls. A
+   tiling compositor floats it at this size through the manager, which also
+   resizes it later; elsewhere the browser does. */
+const DIALOG_WIDTH = 640;
+
+function naturalHeight() {
+  const head = document.querySelector('.dlg-head')?.offsetHeight || 0;
+  const foot = document.querySelector('.dlg-foot')?.offsetHeight || 0;
+  const chrome = Math.max(0, window.outerHeight - window.innerHeight);
+  // The body stretches to fill the window, so its own height says nothing:
+  // what it holds does (its children, their margins, its padding).
+  const body = $('body');
+  const style = getComputedStyle(body);
+  let inner = parseFloat(style.paddingTop) + parseFloat(style.paddingBottom);
+  for (const el of body.children) {
+    const m = getComputedStyle(el);
+    inner += el.offsetHeight + parseFloat(m.marginTop) + parseFloat(m.marginBottom);
+  }
+  return Math.min(Math.round(screen.availHeight * 0.85), Math.ceil(head + inner + foot + chrome));
+}
+
+let fitTimer = 0;
+function fitHeight() {
+  clearTimeout(fitTimer);
+  // After the layout settles (a mounted view, a tree drawn, a section opened).
+  fitTimer = setTimeout(async () => {
+    const height = naturalHeight();
+    if (Math.abs(height - window.outerHeight) < 4) return;
+    const body = { title: document.title, exact: true, width: window.outerWidth || DIALOG_WIDTH, height };
+    const done = await ManagerLink.call('POST', '/api/window/resize', body).catch(() => null);
+    if (done && done.by) return;
+    try {
+      const win = await api.windows.getCurrent();
+      await api.windows.update(win.id, { height });
+    } catch { /* the size it has will do */ }
+  }, 60);
+}
+
+// Whatever the body shows (a view, a notice, a tree folding, a section
+// opening) is watched for its size, and the window follows.
+const sizeWatch = new ResizeObserver(fitHeight);
+new MutationObserver(() => {
+  sizeWatch.disconnect();
+  for (const el of $('body').children) sizeWatch.observe(el);
+}).observe($('body'), { childList: true });
+for (const el of $('body').children) sizeWatch.observe(el);
+
 /* ------------------------------------------------------------- folders */
 /* "Save to" is a menu of the folders that already mean something: the download
    folder (or, with sorting on, the folder this file sorts into), each sorting
@@ -174,15 +222,22 @@ function closeSoon() {
 
 /* ------------------------------------------------------------------ start */
 async function init() {
-  // A tiling compositor (niri, Hyprland) would tile this window; the manager
-  // asks it to float it instead. Fire and forget: it waits for the window.
-  ManagerLink.call('POST', '/api/window/float', {
-    title: document.title, width: window.outerWidth, height: window.outerHeight,
-  }).catch(() => {});
   const id = location.hash.slice(1);
   const key = `dialog:${id}`;
   const stored = await store.get(key);
   D.payload = stored[key];
+  // Named for its file, so the manager finds this window and not another
+  // dialog's when it floats and resizes it.
+  if (D.payload) {
+    document.title = `${D.payload.filename || filenameFromUrl(D.payload.url) || 'New download'} — Aria Download Manager`;
+  }
+  // A tiling compositor (niri, Hyprland) would tile this window, at a whole
+  // column's size; the manager asks it to float it instead, at the dialog's
+  // own size (the size it was measured at may already be the column's).
+  // Fire and forget: it waits for the window.
+  ManagerLink.call('POST', '/api/window/float', {
+    title: document.title, exact: true, width: DIALOG_WIDTH, height: naturalHeight(),
+  }).catch(() => {});
   if (!D.payload) {
     $('title').textContent = 'Nothing to download';
     $('subtitle').textContent = '';

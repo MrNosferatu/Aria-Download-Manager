@@ -1743,6 +1743,12 @@ def create_app(cfg: Config) -> FastAPI:
         size = (max(0, min(req.width, 4000)), max(0, min(req.height, 4000)))
         return {"ok": True, "floated": await compositor.float_window(req.title, *size, exact=req.exact)}
 
+    @app.post("/api/window/resize")
+    async def resize_window(req: FloatRequest):
+        """Resize a window (the download dialog fitting what it shows)."""
+        size = (max(0, min(req.width, 4000)), max(0, min(req.height, 4000)))
+        return {"ok": True, "by": await compositor.resize_window(req.title, *size, exact=req.exact)}
+
     @app.post("/api/window/column")
     async def size_window_column(req: ColumnRequest):
         """Open the DankBar window's column at a width when it opens tiled."""

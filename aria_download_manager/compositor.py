@@ -127,6 +127,40 @@ async def float_window(title_part: str, width: int = 0, height: int = 0,
     return ""
 
 
+async def resize_window(title_part: str, width: int, height: int, exact: bool = True) -> str:
+    """Resize the newest window with this title, floating or not: a dialog
+    fitting its height to what it shows. Returns which compositor did it."""
+    if not title_part.strip() or width <= 0 or height <= 0:
+        return ""
+    escaped = re.escape(title_part.strip())
+    title = re.compile(f"^{escaped}$" if exact else escaped)
+
+    async def newest(list_argv, env):
+        code, out = await _run(list_argv, env)
+        try:
+            matches = [w for w in json.loads(out or "[]") if title.search(str(w.get("title") or ""))] if code == 0 else []
+        except (ValueError, AttributeError):
+            return None
+        return matches[-1] if matches else None
+
+    env = niri_env()
+    if env:
+        window = await newest(["niri", "msg", "-j", "windows"], env)
+        if window and window.get("id") is not None:
+            wid = str(window["id"])
+            await _run(["niri", "msg", "action", "set-window-width", "--id", wid, str(width)], env)
+            await _run(["niri", "msg", "action", "set-window-height", "--id", wid, str(height)], env)
+            return "niri"
+    env = hyprland_env()
+    if env:
+        window = await newest(["hyprctl", "-j", "clients"], env)
+        if window and window.get("address"):
+            await _run(["hyprctl", "dispatch", "resizewindowpixel",
+                        f"exact {width} {height},address:{window['address']}"], env)
+            return "hyprland"
+    return ""
+
+
 #: The widths the DankBar window's column can open at, tiled.
 COLUMN_WIDTHS = {"half": "50%", "two-thirds": "66.667%", "full": "100%"}
 
