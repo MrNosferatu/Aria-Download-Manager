@@ -50,7 +50,8 @@ The installer, safe to run again after a `git pull`:
 ### The browser extension
 
 - **Firefox:** open the `.xpi` from
-  [Releases](https://github.com/MrNosferatu/Aria-Download-Manager/releases).
+  [Releases](https://github.com/MrNosferatu/Aria-Download-Manager/releases). From 1.6.6 on it updates
+  itself (about:addons → Check for Updates).
 - **Chromium:** `chrome://extensions` → *Developer mode* → *Load unpacked* →
   this checkout's `extension/` folder, then run `./install.sh` again so the
   bridge registers that extension.

@@ -83,6 +83,19 @@ jobs:
           cp extension/dist/*.xpi "release/aria-download-manager-extension-${{ steps.version.outputs.version }}.xpi"
           echo "signed=true" >> "$GITHUB_OUTPUT"
 
+      # Firefox finds updates for a self-distributed add-on only through the
+      # manifest's update_url: .../releases/latest/download/updates.json,
+      # which GitHub redirects to the newest release's copy of this file.
+      - name: Update manifest for Firefox
+        if: steps.version.outputs.new == 'true' && steps.sign.outputs.signed == 'true'
+        run: |
+          version="${{ steps.version.outputs.version }}"
+          id=$(jq -r '.browser_specific_settings.gecko.id' extension/manifest.json)
+          link="https://github.com/${{ github.repository }}/releases/download/${{ steps.version.outputs.tag }}/aria-download-manager-extension-$version.xpi"
+          jq -n --arg id "$id" --arg version "$version" --arg link "$link" \
+            '{addons: {($id): {updates: [{version: $version, update_link: $link}]}}}' > release/updates.json
+          cat release/updates.json
+
       - name: Release notes
         if: steps.version.outputs.new == 'true'
         run: |
@@ -92,7 +105,7 @@ jobs:
             echo
             echo "## Install"
             if [ "${{ steps.sign.outputs.signed }}" = "true" ]; then
-              echo "- **Firefox:** open the \`.xpi\` (about:addons → gear → Install Add-on From File)."
+              echo "- **Firefox:** open the \`.xpi\` (about:addons → gear → Install Add-on From File). From 1.6.6 on it updates itself (about:addons → Check for Updates)."
             else
               echo "- **Firefox:** no signed \`.xpi\` this time (AMO credentials not set); load the zip as a temporary add-on."
             fi
@@ -116,4 +129,4 @@ jobs:
             --target "$GITHUB_SHA" \
             --title "Extension ${{ steps.version.outputs.version }}" \
             --notes-file release/notes.md \
-            release/aria-download-manager-extension-*
+            release/aria-download-manager-extension-* $( [ -f release/updates.json ] && echo release/updates.json )
