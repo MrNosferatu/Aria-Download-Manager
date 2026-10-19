@@ -21,7 +21,8 @@ version=$(python3 -c "import json; print(json.load(open('manifest.json'))['versi
 
 case "${1:-build}" in
   lint)
-    npx --yes web-ext lint --source-dir . --ignore-files 'dist/**' 'build.sh' 'store/**' 'README.md'
+    # Self-hosted: it updates through its own update_url, not AMO.
+    npx --yes web-ext lint --self-hosted --source-dir . --ignore-files 'dist/**' 'build.sh' 'store/**' 'README.md'
     ;;
   build)
     npx --yes web-ext build --source-dir . --artifacts-dir dist --overwrite-dest \
