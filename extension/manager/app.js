@@ -464,6 +464,8 @@ const STATUS_LABEL = {
 };
 const statusLabel = (s) => STATUS_LABEL[s] || capitalise(s);
 
+const isFinished = (d) => ['complete', 'error', 'removed'].includes(d.status);
+
 function visibleDownloads() {
   const all = (S.state?.downloads || []).slice();
   // 'paused' sits with the running downloads rather than below the queue: a
@@ -478,7 +480,10 @@ function visibleDownloads() {
   const byQueue = (a, b) => (rankOf(a) - rankOf(b)) || ((a.queuePosition ?? 0) - (b.queuePosition ?? 0));
   const dir = S.sortDesc ? -1 : 1;
   if (S.sort === 'queue') {
-    all.sort((a, b) => dir * byQueue(a, b));
+    // A finished download has no place in the queue: those follow it, by when
+    // they finished, whichever way the queue itself is turned.
+    all.sort((a, b) => (isFinished(a) - isFinished(b))
+      || (isFinished(a) ? (b.finishedAt ?? 0) - (a.finishedAt ?? 0) : dir * byQueue(a, b)));
   } else {
     const key = S.sort === 'added' ? 'addedAt' : 'finishedAt';
     all.sort((a, b) => {
@@ -523,6 +528,23 @@ function visiblePast() {
   }));
 }
 
+/* Each row's place in the list. Live rows and finished ones from the history
+   are drawn apart (an open detail must survive a redraw), so they are put in
+   one order with CSS: everything finished by date, newest first, after the
+   queue; or, sorted by a date, everything by that date. */
+function listOrder(list, past) {
+  const added = S.sort === 'added';
+  const rows = [
+    ...list.map((d) => ({ id: d.gid, at: added ? d.addedAt : d.finishedAt, done: isFinished(d) })),
+    ...past.map((e) => ({ id: `h:${e.key}`, at: (added ? e.added_at : e.finished_at) ?? e.first_seen, done: true })),
+  ];
+  if (S.sort === 'queue') {
+    return [...rows.filter((r) => !r.done), ...rows.filter((r) => r.done).sort((a, b) => (b.at ?? 0) - (a.at ?? 0))];
+  }
+  const dir = S.sortDesc ? -1 : 1;
+  return rows.sort((a, b) => (a.at == null || b.at == null ? (a.at == null) - (b.at == null) : dir * (a.at - b.at)));
+}
+
 function renderDownloads() {
   const list = visibleDownloads();
   const past = visiblePast();
@@ -559,6 +581,9 @@ function renderDownloads() {
     if (!seen.has(gid)) { row.remove(); S.rows.delete(gid); S.expanded.delete(gid); }
   }
   renderPast(container, past);
+  const place = new Map(listOrder(list, past).map((row, index) => [row.id, index]));
+  for (const dl of list) S.rows.get(dl.gid).style.order = place.get(dl.gid);
+  past.forEach((e, i) => { S.pastBox.children[i].style.order = place.get(`h:${e.key}`); });
   for (const dl of list) {
     const origin = S.openWhenListed.has(dl.gid) ? dl.gid : dl.following;
     if (!origin || !S.openWhenListed.has(origin) || dl.numFiles < 2) continue;

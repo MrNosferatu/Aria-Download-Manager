@@ -291,8 +291,11 @@ Item {
         const rankOf = d => service.isActing(d.gid) ? 0 : (rank[d.status] !== undefined ? rank[d.status] : 9)
         const byQueue = (a, b) => (rankOf(a) - rankOf(b)) || ((a.queuePosition || 0) - (b.queuePosition || 0))
         const dir = sortDesc ? -1 : 1
+        const isFinished = d => ["complete", "error", "removed"].indexOf(d.status) >= 0
         if (sortField === "queue") {
-            list.sort((a, b) => dir * byQueue(a, b))
+            // A finished download has no place in the queue: those follow it
+            // (below, with the history), whichever way the queue is turned.
+            list.sort((a, b) => (isFinished(a) - isFinished(b)) || (isFinished(a) ? 0 : dir * byQueue(a, b)))
         } else {
             const key = sortField === "added" ? "addedAt" : "finishedAt"
             list.sort((a, b) => {
@@ -307,14 +310,21 @@ Item {
             })
         }
 
-        // Finished ones aria2 has forgotten: after the queue, newest first, or
-        // among the live ones by the same date.
+        // Finished ones aria2 has forgotten: with the finished live ones after
+        // the queue, newest first, or among all of them by the same date.
         const past = pastEntries.filter(e => (filter === "all" || pastStatus(e) === filter)
                                             && (!needle || String(e.name || e.key || "").toLowerCase().indexOf(needle) >= 0))
         let next
         if (sortField === "queue") {
-            past.sort((a, b) => (b.finished_at || 0) - (a.finished_at || 0))
-            next = list.map(d => d.gid).concat(past.map(e => "h:" + e.key))
+            const finished = list.filter(isFinished).map(d => ({
+                                                                  "id": d.gid,
+                                                                  "at": d.finishedAt || 0
+                                                              })).concat(past.map(e => ({
+                                                                                            "id": "h:" + e.key,
+                                                                                            "at": e.finished_at || 0
+                                                                                        })))
+            finished.sort((a, b) => b.at - a.at)
+            next = list.filter(d => !isFinished(d)).map(d => d.gid).concat(finished.map(f => f.id))
         } else {
             const live = sortField === "added" ? "addedAt" : "finishedAt"
             const old = sortField === "added" ? "added_at" : "finished_at"
