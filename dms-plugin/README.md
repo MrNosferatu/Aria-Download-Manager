@@ -27,13 +27,13 @@ The plugin lives in this repo and is symlinked into the DMS plugin directory, so
 `git pull` updates it in place:
 
 ```sh
-ln -s "$PWD/dms-plugin" ~/.config/DankMaterialShell/plugins/ariaDownloadManager
+ln -s "$PWD/dms-plugin" ~/.config/dms/plugins/ariaDownloadManager
 dms ipc call plugins enable ariaDownloadManager
 ```
 
 Then add it to the bar: **Settings → DankBar → Widgets**, add *Aria Download Manager*
 to a section (or edit `barConfigs[].rightWidgets` in
-`~/.config/DankMaterialShell/settings.json` and add
+`~/.config/dms/settings.json` and add
 `{"id": "ariaDownloadManager", "enabled": true}`).
 
 Start the daemon first — `./run.sh`, or the systemd user unit in `systemd/`.

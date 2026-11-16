@@ -18,7 +18,7 @@ cd "$(dirname "$(readlink -f "$0")")"
 ROOT=$PWD
 UNIT_DIR="$HOME/.config/systemd/user"
 UNIT="$UNIT_DIR/aria-download-manager.service"
-DMS_PLUGIN="$HOME/.config/DankMaterialShell/plugins/ariaDownloadManager"
+DMS_PLUGIN="$HOME/.config/dms/plugins/ariaDownloadManager"
 HOST=aria_download_manager
 RELEASES=https://github.com/MrNosferatu/Aria-Download-Manager/releases
 
@@ -165,7 +165,7 @@ say "Registering the browser extension's bridge"
 run "$PY" -m aria_download_manager --install-native-host
 
 # ---------------------------------------------------------------- DankBar
-if have dms && [[ -d "$HOME/.config/DankMaterialShell" ]]; then
+if have dms && [[ -d "$HOME/.config/dms" ]]; then
   say "Installing the DankBar plugin"
   if [[ "$(readlink -f "$DMS_PLUGIN" 2>/dev/null)" == "$ROOT/dms-plugin" ]]; then
     note "already linked"
